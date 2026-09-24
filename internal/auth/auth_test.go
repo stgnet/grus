@@ -96,3 +96,13 @@ func TestCodes(t *testing.T) {
 		t.Fatal("wrong code accepted")
 	}
 }
+
+// The sister-group visibility rule: only a public group's posts may be
+// cited in another group, whatever that group's own visibility.
+func TestCanCite(t *testing.T) {
+	for vis, want := range map[string]bool{"public": true, "private": false, "hidden": false, "": false} {
+		if CanCite(vis) != want {
+			t.Errorf("CanCite(%q) = %v", vis, !want)
+		}
+	}
+}

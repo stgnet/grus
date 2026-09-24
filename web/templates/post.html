@@ -28,7 +28,7 @@
   {{template "photos" .Images}}
   {{template "post-actions" (dict "P" . "D" $d)}}
   {{if .Threads}}{{template "threads" (dict "P" . "D" $d)}}{{end}}
-  {{if .CanComment}}{{template "comment-form" .Post.ID}}{{end}}
+  {{if .CanComment}}{{template "comment-form" (dict "ID" .Post.ID "Anon" $d.AllowAnon)}}{{end}}
 </article>
 {{end}}
 
@@ -71,7 +71,7 @@
 {{range $d.MoreNotes}}{{template "note" .}}{{end}}
 </details>
 {{end}}
-{{if $d.CanComment}}{{template "comment-form" $p.ID}}{{end}}
+{{if $d.CanComment}}{{template "comment-form" (dict "ID" $p.ID "Anon" $d.AllowAnon)}}{{end}}
 </section>
 
 {{if $d.IsMember}}<p class="muted"><a href="/sources/new?post={{$p.ID}}">Add an outside source</a> (a link to a page about this, anywhere on the web)</p>{{end}}
@@ -136,6 +136,7 @@
       <form method="post" action="/p/{{$p.ID}}/delete" class="inline confirm" data-confirm="Remove this post?"><input type="hidden" name="reason" value=""><button class="link">Remove</button></form>
     {{end}}
   {{end}}
+  {{if and $p.Anonymous $d.CanMod (not $v.CanEdit)}}<a href="/p/{{$p.ID}}/reveal">Who wrote this?</a>{{end}}
   {{if and $p.ContinuesID (or $v.CanEdit $d.CanMod)}}
     <form method="post" action="/p/{{$p.ID}}/moveout" class="inline"><button class="link">Move back out</button></form>
   {{end}}
@@ -166,6 +167,7 @@
       <form method="post" action="/p/{{$v.Post.ID}}/comment" enctype="multipart/form-data" class="stack resize">
         <input type="hidden" name="parent" value="{{.Comment.ID}}">
         <textarea name="body" rows="3" required></textarea>
+        {{if $d.AllowAnon}}<label class="check muted"><input type="checkbox" name="anonymous"> Reply anonymously</label>{{end}}
         <button>Reply</button>
       </form>
     </details>
@@ -185,9 +187,10 @@
 {{end}}
 
 {{define "comment-form"}}
-<form method="post" action="/p/{{.}}/comment" enctype="multipart/form-data" class="stack resize">
+<form method="post" action="/p/{{.ID}}/comment" enctype="multipart/form-data" class="stack resize">
   <label>Add a comment <textarea name="body" rows="4"></textarea></label>
   <label class="muted">Photo (optional) <input type="file" name="photo" accept="image/*"></label>
+  {{if .Anon}}<label class="check muted"><input type="checkbox" name="anonymous"> Comment anonymously</label>{{end}}
   <button>Comment</button>
 </form>
 {{end}}
@@ -197,7 +200,8 @@
   <p class="note-head"><strong>{{.Heading}}</strong> · <a href="{{.URL}}">{{.Title}}</a> <span class="muted">({{month .Date}})</span></p>
   {{if .Text}}<p>{{.Text}}</p>{{end}}
   <p class="meta">{{if .Text}}updated {{date .UpdatedAt}} · {{end}}<a href="{{.URL}}">Jump to post</a>
-  {{if .CanRemove}}<form method="post" action="/p/{{.HostPostID}}/unlink" class="inline confirm" data-confirm="Remove this link? It won't be linked again automatically."><input type="hidden" name="other" value="{{.SourcePostID}}"><button class="link">Remove link</button></form>{{end}}</p>
+  {{if and .CanRemove .Sister}}<form method="post" action="/p/{{.HostPostID}}/unsister" class="inline confirm" data-confirm="Remove this link? It won't be linked again automatically."><input type="hidden" name="group" value="{{.SourceGroupID}}"><input type="hidden" name="other" value="{{.SourcePostID}}"><button class="link">Remove link</button></form>
+  {{else if .CanRemove}}<form method="post" action="/p/{{.HostPostID}}/unlink" class="inline confirm" data-confirm="Remove this link? It won't be linked again automatically."><input type="hidden" name="other" value="{{.SourcePostID}}"><button class="link">Remove link</button></form>{{end}}</p>
 </aside>
 {{end}}
 
@@ -217,6 +221,7 @@
       {{else}}
         <form method="post" action="/c/{{$c.ID}}/delete" class="inline confirm" data-confirm="Remove this comment?"><button class="link">Remove</button></form>
       {{end}}
+      {{if $c.Anonymous}}<a href="/c/{{$c.ID}}/reveal">Who wrote this?</a>{{end}}
     {{end}}
   </div>
 </div>

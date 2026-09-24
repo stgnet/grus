@@ -73,6 +73,18 @@ var registry = map[string]func() Command{
 	"AllowDomain":           func() Command { return new(AllowDomain) },
 	"DetachSource":          func() Command { return new(DetachSource) },
 	"RequestArchiveRemoval": func() Command { return new(RequestArchiveRemoval) },
+
+	// M4: joining, invites, anonymous reveals, sister groups
+	"ReviewJoin":       func() Command { return new(ReviewJoin) },
+	"CreateInvite":     func() Command { return new(CreateInvite) },
+	"RevokeInvite":     func() Command { return new(RevokeInvite) },
+	"LeaveGroup":       func() Command { return new(LeaveGroup) },
+	"RevealAuthor":     func() Command { return new(RevealAuthor) },
+	"ProposeSister":    func() Command { return new(ProposeSister) },
+	"AnswerSister":     func() Command { return new(AnswerSister) },
+	"EndSister":        func() Command { return new(EndSister) },
+	"RemoveSisterLink": func() Command { return new(RemoveSisterLink) },
+	"MarkSisterStale":  func() Command { return new(MarkSisterStale) },
 }
 
 // envelope is how a command sits in the log: its type name plus its fields

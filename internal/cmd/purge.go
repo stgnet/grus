@@ -104,6 +104,7 @@ func (c *Purge) Apply(a *Applier) (any, error) {
 				`DELETE FROM post_topics WHERE post_id NOT IN (SELECT id FROM posts)`,
 				`DELETE FROM nudges WHERE post_id NOT IN (SELECT id FROM posts)`,
 				`DELETE FROM source_links WHERE post_id != 0 AND post_id NOT IN (SELECT id FROM posts)`,
+				`DELETE FROM sister_links WHERE post_id NOT IN (SELECT id FROM posts)`,
 				`DELETE FROM faq_comments WHERE purge_after < ?1`,
 				`UPDATE posts SET continues_post_id = NULL, continued_at = NULL
 				   WHERE continues_post_id IS NOT NULL AND continues_post_id NOT IN (SELECT id FROM posts)`,

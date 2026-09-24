@@ -91,6 +91,7 @@ type CreateGroup struct {
 	Slug        string
 	Name        string
 	Description string
+	Visibility  string // "" = public
 	OwnerID     int64
 	At          int64
 }
@@ -102,6 +103,13 @@ func (c *CreateGroup) Apply(a *Applier) (any, error) {
 	if c.Name == "" {
 		return nil, fmt.Errorf("a group needs a name")
 	}
+	vis := c.Visibility
+	if vis == "" {
+		vis = "public"
+	}
+	if vis != "public" && vis != "private" && vis != "hidden" {
+		return nil, Invalid("visibility must be public, private or hidden")
+	}
 	err := a.Site(func(tx *sql.Tx) error {
 		var n int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM groups WHERE slug = ?`, c.Slug).Scan(&n); err != nil {
@@ -110,8 +118,8 @@ func (c *CreateGroup) Apply(a *Applier) (any, error) {
 		if n > 0 {
 			return ErrSlugTaken
 		}
-		_, err := tx.Exec(`INSERT INTO groups (id, slug, name, created_at) VALUES (?, ?, ?, ?)`,
-			c.GroupID, c.Slug, c.Name, c.At)
+		_, err := tx.Exec(`INSERT INTO groups (id, slug, name, visibility, created_at) VALUES (?, ?, ?, ?, ?)`,
+			c.GroupID, c.Slug, c.Name, vis, c.At)
 		return err
 	})
 	if err != nil {
@@ -121,7 +129,9 @@ func (c *CreateGroup) Apply(a *Applier) (any, error) {
 	// between the two, replaying this entry skips the part site.db already
 	// has and does this part (see Applier).
 	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`INSERT INTO settings (id, name, description) VALUES (1, ?, ?)`, c.Name, c.Description); err != nil {
+		// A private group's FAQ starts private too.
+		if _, err := tx.Exec(`INSERT INTO settings (id, name, description, visibility, public_faq) VALUES (1, ?, ?, ?, ?)`,
+			c.Name, c.Description, vis, vis == "public"); err != nil {
 			return err
 		}
 		if c.OwnerID != 0 {

@@ -39,6 +39,13 @@
 <p><a href="/how-it-works">How this site works</a></p>
 {{end}}
 
+{{if $d.Sisters}}
+<section class="sister-faqs">
+<h2>In sister groups</h2>
+<ul>{{range $d.Sisters}}<li>For {{if .Topics}}{{.Topics}}{{else}}more on the same ground{{end}}, see the <a href="{{.URL}}">{{.Name}} FAQ</a></li>{{end}}</ul>
+</section>
+{{end}}
+
 {{if $d.CanMod}}
 <details class="tools"><summary>Edit the FAQ</summary>
   <p><a class="button secondary" href="/faq/new">Write an entry</a></p>

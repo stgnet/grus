@@ -50,6 +50,7 @@ type noteView struct {
 	Date      int64
 	URL       string
 	CanRemove bool
+	Sister    bool // from a sister group: removing it is a mod's call
 }
 
 // combinedView is a combined note with its numbered sources, so the "[2]"
@@ -75,6 +76,7 @@ type postData struct {
 	MoreNotes []noteView // beyond the 5 newest: "N more related posts"
 	CanMod    bool
 	IsMember  bool
+	AllowAnon bool // the group allows anonymous comments
 	// M3: how the comments are laid out, and what surrounds them.
 	Arr       arrangement
 	Plain     bool // ?order=time
@@ -134,7 +136,7 @@ func (s *Server) postData(c *greq, p *store.Post) (*postData, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &postData{PostView: *main, CanMod: c.mod(), IsMember: c.member()}
+	d := &postData{PostView: *main, CanMod: c.mod(), IsMember: c.member(), AllowAnon: c.st.AllowAnonymous}
 	ups, err := s.Store.Updates(c.g.ID, p.ID)
 	if err != nil {
 		return nil, err
@@ -184,6 +186,9 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 	}
 	d := &PostView{Post: *p, Author: authorOf(names, p.UserID, p.Anonymous)}
 	d.CanEdit = c.u != nil && p.UserID == c.u.ID
+	if d.CanEdit && p.Anonymous {
+		d.Author += " (you)" // only the author sees this; everyone else sees just "Anonymous member"
+	}
 	d.CanComment = !p.Locked && (p.Status == "visible" || p.Status == "flagged")
 
 	byComment := map[int64][]store.Image{}
@@ -195,8 +200,12 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 		}
 	}
 	view := func(cm store.Comment) commentView {
-		return commentView{Comment: cm, Author: authorOf(names, cm.UserID, cm.Anonymous),
+		v := commentView{Comment: cm, Author: authorOf(names, cm.UserID, cm.Anonymous),
 			Images: byComment[cm.ID], CanEdit: c.u != nil && cm.UserID == c.u.ID}
+		if v.CanEdit && cm.Anonymous {
+			v.Author += " (you)"
+		}
+		return v
 	}
 	readable := func(cm store.Comment) bool {
 		return c.canRead(&auth.Item{AuthorID: cm.UserID, Status: cm.Status})
@@ -239,9 +248,37 @@ func (s *Server) placeNotes(c *greq, d *postData) error {
 		return err
 	}
 	var views []noteView
+	var sisterLinks map[[2]int64]store.SisterLink
 	for _, n := range notes {
-		if n.Kind != "link" || n.SourceGroupID != c.g.ID {
-			continue // other kinds and cross-group notes arrive with M3 and M4
+		if n.Kind != "link" {
+			continue
+		}
+		if n.SourceGroupID != c.g.ID {
+			// A note written from a sister group's post, shown only while
+			// the pairing holds and the visibility rule allows it (checked
+			// here too, not just when it was made, because either group's
+			// settings may have changed since).
+			g, ok := s.sisterCitable(c, n.SourceGroupID)
+			if !ok {
+				continue
+			}
+			if sisterLinks == nil {
+				links, err := s.Store.SisterLinks(c.g.ID, d.Post.ID)
+				if err != nil {
+					return err
+				}
+				sisterLinks = map[[2]int64]store.SisterLink{}
+				for _, l := range links {
+					sisterLinks[[2]int64{l.OtherGroup, l.OtherPost}] = l
+				}
+			}
+			l, ok := sisterLinks[[2]int64{n.SourceGroupID, n.SourcePostID}]
+			if !ok || l.State != "active" || n.Text == "" {
+				continue // not written yet: a sister note has nothing to show without its text
+			}
+			views = append(views, noteView{Note: n, Title: l.Title, Date: l.Date, Heading: "In the " + g.Name + " group",
+				URL: s.groupURL(g, c.rt.primary, fmt.Sprintf("/p/%d", n.SourcePostID)), CanRemove: d.CanMod, Sister: true})
+			continue
 		}
 		other, err := s.Store.Post(c.g.ID, n.SourcePostID)
 		if err != nil {

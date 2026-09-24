@@ -108,6 +108,7 @@ type feedData struct {
 	FAQEntries  int  // the FAQ, pinned at the top of the feed
 	Newcomer    bool // not a member: "New here? Start with the FAQ"
 	CanMod      bool
+	Requests    int // for mods: people asking to join
 }
 
 type postCard struct {
@@ -135,6 +136,10 @@ func (s *Server) groupHome(w http.ResponseWriter, r *http.Request) {
 	d := feedData{Settings: c.st, CanRead: c.canRead(nil), IsMember: c.member(), Pending: c.v.Status == "pending", Sort: sort}
 	d.MemberCount, _ = s.Store.MemberCount(c.g.ID)
 	d.CanMod = c.mod()
+	if d.CanMod {
+		reqs, _ := s.Store.JoinRequests(c.g.ID)
+		d.Requests = len(reqs)
+	}
 	if auth.CanReadFAQ(c.v, c.st.Visibility, c.st.PublicFAQ) {
 		d.FAQEntries, _ = s.Store.EntryCount(c.g.ID)
 		d.Newcomer = !d.IsMember && d.FAQEntries > 0
@@ -197,6 +202,8 @@ type aboutData struct {
 	Rules       []string
 	Mods        []string
 	MemberCount int
+	Sisters     []sisterView
+	IsMember    bool
 }
 
 // groupAbout shows the description, rules, and who the mods are.
@@ -227,26 +234,12 @@ func (s *Server) groupAbout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d.MemberCount, _ = s.Store.MemberCount(c.g.ID)
+	if d.Sisters, err = s.sisterViews(c, true); err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	d.IsMember = c.member() || c.v.Status == "pending"
 	s.render(w, r, http.StatusOK, "about", c.page("About "+c.g.Name, d))
-}
-
-// groupJoin is the one-tap Join button.
-func (s *Server) groupJoin(w http.ResponseWriter, r *http.Request) {
-	c := s.group(w, r)
-	if c == nil {
-		return
-	}
-	if c.u == nil || c.u.Handle == "" {
-		s.writer(w, r, c, "/") // sends them to sign in, then back here
-		return
-	}
-	_, err := s.Log.Apply(&cmd.JoinGroup{GroupID: c.g.ID, UserID: c.u.ID,
-		Answers: strings.TrimSpace(r.FormValue("answers")), At: s.Now().Unix()})
-	if err != nil {
-		s.render(w, r, http.StatusForbidden, "message", c.page("Can't join", message{Title: "Can't join", Text: cmdMessage(err)}))
-		return
-	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // pathID reads a numeric id from the path.

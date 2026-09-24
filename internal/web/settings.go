@@ -14,6 +14,8 @@ import (
 
 type settingsData struct {
 	Settings *store.Settings
+	Sisters  []sisterView // proposed and active sister groups
+	Saved    bool
 }
 
 func (s *Server) owner(w http.ResponseWriter, r *http.Request) *greq {
@@ -28,12 +30,25 @@ func (s *Server) owner(w http.ResponseWriter, r *http.Request) *greq {
 	return c
 }
 
+func (s *Server) settingsData(c *greq) (*settingsData, error) {
+	d := &settingsData{Settings: c.st}
+	var err error
+	d.Sisters, err = s.sisterViews(c, false)
+	return d, err
+}
+
 func (s *Server) settingsForm(w http.ResponseWriter, r *http.Request) {
 	c := s.owner(w, r)
 	if c == nil {
 		return
 	}
-	s.render(w, r, http.StatusOK, "settings", c.page("Group settings", settingsData{Settings: c.st}))
+	d, err := s.settingsData(c)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	d.Saved = r.URL.Query().Get("saved") == "1"
+	s.render(w, r, http.StatusOK, "settings", c.page("Group settings", d))
 }
 
 // settingsSave applies the form. Checkboxes are sent only when ticked, so
@@ -44,14 +59,33 @@ func (s *Server) settingsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	set := map[string]any{}
-	for _, k := range []string{"name", "description", "rules"} {
-		set[k] = strings.TrimSpace(r.FormValue(k))
+	r.ParseForm()
+	for _, k := range []string{"name", "description", "rules", "visibility", "join_policy", "join_questions"} {
+		if _, sent := r.PostForm[k]; sent {
+			set[k] = strings.TrimSpace(r.PostFormValue(k))
+		}
 	}
-	for _, k := range []string{"ai_enabled", "allow_indexing"} {
+	for _, k := range []string{"ai_enabled", "allow_indexing", "allow_anonymous", "public_faq"} {
 		set[k] = r.FormValue(k) == "on"
 	}
+	// A public group has no separate FAQ setting (its FAQ is public like
+	// everything else), so the box isn't on the form; leave it alone, and
+	// UpdateSettings turns it off if the group goes private.
+	if r.FormValue("visibility") == "public" || c.st.Visibility == "public" {
+		delete(set, "public_faq")
+	}
 	_, err := s.Log.Apply(&cmd.UpdateSettings{GroupID: c.g.ID, Set: set, By: c.u.ID, At: s.Now().Unix()})
-	if s.commandFailed(w, r, c, err, "settings", settingsData{Settings: c.st}) {
+	if err != nil && cmd.IsInput(err) {
+		d, derr := s.settingsData(c)
+		if derr != nil {
+			s.serverError(w, r, derr)
+			return
+		}
+		s.commandFailed(w, r, c, err, "settings", d)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)

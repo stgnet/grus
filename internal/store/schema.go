@@ -133,6 +133,33 @@ CREATE TABLE ai_usage (
   PRIMARY KEY (day, node, purpose)
 );
 `,
+	// 3: M4 visibility and sister groups. visibility, ai_enabled and name
+	// are copies of the group's own settings, kept in step by
+	// UpdateSettings, so that a node which doesn't hold a group's file (M7)
+	// can still list it correctly and apply the sister-group visibility
+	// rule to notes that point into it.
+	`
+ALTER TABLE groups ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public';
+ALTER TABLE groups ADD COLUMN ai_enabled INTEGER NOT NULL DEFAULT 1;
+
+-- Sister groups (plan section 2). One row per pair, smaller id first.
+-- A pairing is proposed by one group's owner and only takes effect when an
+-- owner of the other group accepts it. topics, if set, limits which posts
+-- are matched across the pair (words, any of which must appear).
+CREATE TABLE group_pairs (
+  group_a     INTEGER NOT NULL,
+  group_b     INTEGER NOT NULL,
+  proposed_by_group INTEGER NOT NULL,
+  topics      TEXT NOT NULL DEFAULT '',
+  state       TEXT NOT NULL CHECK (state IN ('proposed', 'active', 'ended')),
+  proposed_by INTEGER NOT NULL,
+  decided_by  INTEGER,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (group_a, group_b),
+  CHECK (group_a < group_b)
+);
+`,
 }
 
 var groupMigrations = []string{
@@ -530,5 +557,34 @@ CREATE TABLE source_domains (
   added_by   INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
+`,
+	// 5: M4 invites, anonymous reveals, and sister-group links.
+	`
+ALTER TABLE invites ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE invites ADD COLUMN revoked    INTEGER NOT NULL DEFAULT 0;
+
+-- A link between a post here and a post in a sister group. Both groups
+-- keep a row (each from its own side), so either can remember a mod's
+-- rejection without reading the other's file. Whether a note shows on
+-- each side is decided by the visibility rule (auth.CanCite).
+CREATE TABLE sister_links (
+  post_id     INTEGER NOT NULL,
+  other_group INTEGER NOT NULL,
+  other_post  INTEGER NOT NULL,
+  source      TEXT NOT NULL CHECK (source IN ('auto', 'mod')),
+  state       TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'rejected')),
+  -- The other post's title and date, for the note's heading, since this
+  -- node may not hold the other group's file (M7).
+  other_title TEXT NOT NULL DEFAULT '',
+  other_date  INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (post_id, other_group, other_post)
+);
+CREATE INDEX sister_links_other ON sister_links(other_group, other_post);
+
+-- A note written from a post in another group can't sum that post's
+-- version from this file, so the version it was last queued for is kept
+-- here; a worker sweep raises it when the other thread changes.
+ALTER TABLE notes ADD COLUMN ext_version INTEGER NOT NULL DEFAULT 0;
 `,
 }

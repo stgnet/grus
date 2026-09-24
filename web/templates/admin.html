@@ -11,6 +11,7 @@
   <label>Address name (the part before the domain) <input name="slug" value="{{index .Data.Form "slug"}}" required></label>
   <label>Name <input name="name" value="{{index .Data.Form "name"}}" required></label>
   <label>Description <textarea name="description" rows="2">{{index .Data.Form "description"}}</textarea></label>
+  <label>Visibility <select name="visibility"><option value="public">Public</option><option value="private" {{if eq (index .Data.Form "visibility") "private"}}selected{{end}}>Private</option><option value="hidden" {{if eq (index .Data.Form "visibility") "hidden"}}selected{{end}}>Hidden</option></select></label>
   <button>Create group</button>
 </form>
 

@@ -1,0 +1,14 @@
+{{define "content"}}{{$d := .Data}}
+<h1>Who wrote this?</h1>
+{{if $d.Handle}}
+<p>This anonymous {{$d.Kind}} was written by <strong>{{$d.Handle}}</strong>.</p>
+<p class="muted">This was recorded in the mod log with your reason. Other members still see it as anonymous.</p>
+{{else}}
+<p>Anonymous posts are anonymous to other members, not to the group's moderators when they need to act. Every look is recorded in the mod log, with the reason you give.</p>
+<form method="post" class="stack">
+  <label>Why do you need to know? <input name="reason" maxlength="500" required></label>
+  <button>Show the author</button>
+</form>
+{{end}}
+<p><a href="/p/{{$d.PostID}}{{if eq $d.Kind "comment"}}#c{{$d.ID}}{{end}}">Back to the post</a></p>
+{{end}}

@@ -1,0 +1,24 @@
+{{define "content"}}{{$d := .Data}}{{$s := $d.Settings}}
+<h1>{{$s.Name}}</h1>
+{{if $s.Description}}<p class="lead">{{$s.Description}}</p>{{end}}
+{{if eq $d.Done "pending"}}
+<p class="notice">Thanks. Your request is with the group's moderators, and you'll be able to post once they let you in.</p>
+<form method="post" action="/leave" class="inline"><button class="link">Withdraw my request</button></form>
+{{else}}
+{{if $s.Rules}}<h2>Rules</h2><div class="body">{{text $s.Rules}}</div>{{end}}
+{{if not .User}}
+<p><a class="button" href="{{.LoginURL}}">Sign in to join</a></p>
+{{else if $d.Invite}}
+<form method="post" action="/invite/{{$d.Invite}}" class="stack"><button>Join {{$s.Name}}</button></form>
+{{else}}
+<form method="post" action="/join" class="stack">
+  {{if $s.JoinQuestions}}
+  <div class="body">{{text $s.JoinQuestions}}</div>
+  <label>Your answers <textarea name="answers" rows="5" maxlength="2000" required>{{$d.Answers}}</textarea></label>
+  <p class="muted">Only the group's moderators see these.</p>
+  {{end}}
+  <button>{{if eq $s.JoinPolicy "open"}}Join{{else}}Ask to join{{end}}</button>
+</form>
+{{end}}
+{{end}}
+{{end}}

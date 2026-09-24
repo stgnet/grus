@@ -161,12 +161,14 @@ func (s *Server) adminCreateGroup(w http.ResponseWriter, r *http.Request) {
 		"slug":        strings.ToLower(strings.TrimSpace(r.FormValue("slug"))),
 		"name":        strings.TrimSpace(r.FormValue("name")),
 		"description": strings.TrimSpace(r.FormValue("description")),
+		"visibility":  r.FormValue("visibility"),
 	}
 	_, err := s.Log.Apply(&cmd.CreateGroup{
 		GroupID:     s.IDs.Next(),
 		Slug:        form["slug"],
 		Name:        form["name"],
 		Description: form["description"],
+		Visibility:  form["visibility"],
 		OwnerID:     u.ID,
 		At:          s.Now().Unix(),
 	})

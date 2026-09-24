@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stgnet/grus/internal/auth"
 	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/cmd"
 	"github.com/stgnet/grus/internal/fetch"
@@ -28,9 +29,20 @@ type Worker struct {
 	Fetch  *fetch.Fetcher // reads outside pages; nil = outside pages wait
 }
 
+// sweepEvery is how often the worker looks for sister-group notes whose
+// source thread changed.
+const sweepEvery = 15 * time.Minute
+
 // Run works the queue until ctx ends.
 func (w *Worker) Run(ctx context.Context) {
+	var swept time.Time
 	for {
+		if time.Since(swept) > sweepEvery {
+			swept = time.Now()
+			if err := w.sweepSisters(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("ai worker: sister sweep: %v", err)
+			}
+		}
 		n, err := w.RunOnce(ctx)
 		if err != nil && ctx.Err() == nil {
 			log.Printf("ai worker: %v", err)
@@ -161,6 +173,15 @@ func (w *Worker) RunJob(ctx context.Context, groupID int64, j store.Job) (cmd.Co
 				res.Entries = append(res.Entries, m.ID)
 			case m.Kind == kindPage && len(res.Sources) < 3:
 				res.Sources = append(res.Sources, m.ID)
+			case m.Kind == kindSister && len(res.Sisters) < 2:
+				o, err := st.Post(m.Group, m.ID)
+				if err != nil {
+					return nil, err
+				}
+				if o != nil {
+					res.Sisters = append(res.Sisters, cmd.SisterMatch{Group: m.Group, Post: o.ID, Version: o.ThreadVersion,
+						Title: o.Title, Date: o.CreatedAt, NoteHere: w.IDs.Next(), NoteThere: w.IDs.Next()})
+				}
 			}
 		}
 		return w.stamp(res), nil
@@ -191,10 +212,18 @@ func (w *Worker) RunJob(ctx context.Context, groupID int64, j store.Job) (cmd.Co
 				return nil, err
 			}
 		case "link":
-			if n.SourcePostID == 0 || n.SourceGroupID != groupID {
-				return w.stamp(res), nil // not ours to write
+			if n.SourcePostID == 0 {
+				return w.stamp(res), nil
 			}
-			text, changed, err = w.Engine.Note(ctx, groupID, n.HostPostID, n.SourcePostID, n.Text)
+			if n.SourceGroupID != groupID {
+				// A sister-group note: written only while the pairing is
+				// active and the visibility rule allows it.
+				ok, err := w.sisterAllowed(groupID, n.SourceGroupID)
+				if err != nil || !ok {
+					return w.stamp(res), err
+				}
+			}
+			text, changed, err = w.Engine.Note(ctx, groupID, n.HostPostID, n.SourceGroupID, n.SourcePostID, n.Text)
 			if err != nil {
 				return nil, err
 			}
@@ -263,9 +292,10 @@ func (w *Worker) stamp(c cmd.Command) cmd.Command {
 
 // Kinds of match candidate.
 const (
-	kindPost = "post"
-	kindFAQ  = "faq"
-	kindPage = "page"
+	kindPost   = "post"
+	kindFAQ    = "faq"
+	kindPage   = "page"
+	kindSister = "sister" // a post in a sister group
 )
 
 // candidates finds what a post is most likely about the same thing as,
@@ -337,7 +367,141 @@ func (w *Worker) candidates(groupID int64, p *store.Post) ([]Candidate, error) {
 			out = append(out, Candidate{ID: s.ID, Kind: kindPage, Text: oneLine(pageLine(s), candidateLen)})
 		}
 	}
+	sisters, err := w.sisterCandidates(groupID, p, query)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, sisters...), nil
+}
+
+// sisterCandidates finds posts in sister groups that may be about the same
+// thing (plan section 2, "How links are found"): the same full-text
+// search, run on each sister group this group may link with, limited to
+// the pairing's topics if it has any. This node holds every group (only a
+// full copy runs a worker), so it's a local query, not a network call.
+func (w *Worker) sisterCandidates(groupID int64, p *store.Post, query string) ([]Candidate, error) {
+	st := w.Engine.Store
+	sisters, err := st.Sisters(groupID)
+	if err != nil || len(sisters) == 0 {
+		return nil, err
+	}
+	have, err := st.SisterLinks(groupID, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	linked := map[[2]int64]bool{}
+	for _, l := range have {
+		linked[[2]int64{l.OtherGroup, l.OtherPost}] = true // active or rejected: don't offer again
+	}
+	var out []Candidate
+	for _, sis := range sisters {
+		ok, err := w.sisterAllowed(groupID, sis.Other)
+		if err != nil {
+			return nil, err
+		}
+		// Either direction's note may be allowed: this post's note needs the
+		// sister to be public, the sister post's note needs this group to be.
+		// sisterAllowed covers the first; check the second too.
+		back, err := w.sisterAllowed(sis.Other, groupID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok && !back {
+			continue
+		}
+		g, err := st.GroupByID(sis.Other)
+		if err != nil || g == nil {
+			return nil, err
+		}
+		q := query
+		if sis.Topics != "" {
+			q = "(" + query + ") AND (" + store.FTSQuery("", strings.Split(sis.Topics, ",")...) + ")"
+		}
+		hits, err := st.Search(sis.Other, q, 4, false)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range hits {
+			if linked[[2]int64{sis.Other, h.PostID}] {
+				continue
+			}
+			o, err := st.Post(sis.Other, h.PostID)
+			if err != nil {
+				return nil, err
+			}
+			if o == nil || o.ContinuesID != 0 || o.Status != "visible" {
+				continue
+			}
+			out = append(out, Candidate{ID: o.ID, Kind: kindSister, Group: sis.Other,
+				Text: "In the " + g.Name + " group: " + summaryLine(o)})
+			if len(out) >= 4 {
+				return out, nil
+			}
+		}
+	}
 	return out, nil
+}
+
+// sisterAllowed: may a note shown in group here be written from a post in
+// group from? The pairing must be active, both groups must use AI, and
+// the visibility rule (auth.CanCite) must allow it.
+func (w *Worker) sisterAllowed(here, from int64) (bool, error) {
+	st := w.Engine.Store
+	pairs, err := st.Sisters(here)
+	if err != nil {
+		return false, err
+	}
+	paired := false
+	for _, p := range pairs {
+		paired = paired || p.Other == from
+	}
+	if !paired {
+		return false, nil
+	}
+	h, err := st.GroupByID(here)
+	if err != nil || h == nil {
+		return false, err
+	}
+	f, err := st.GroupByID(from)
+	if err != nil || f == nil {
+		return false, err
+	}
+	return h.AIEnabled && f.AIEnabled && auth.CanCite(f.Visibility), nil
+}
+
+// sweepSisters is the cross-group refresh: for each note written from a
+// post in a sister group, if that thread has changed since the note was
+// queued, mark the note stale so it's rewritten. (A change in one group
+// can't reach into another group's file by itself; see cmd/sisters.go.)
+func (w *Worker) sweepSisters(ctx context.Context) error {
+	st := w.Engine.Store
+	groups, err := st.GroupFileIDs()
+	if err != nil {
+		return err
+	}
+	for _, g := range groups {
+		notes, err := st.SisterNotes(g)
+		if err != nil {
+			return err
+		}
+		for _, n := range notes {
+			if ctx.Err() != nil {
+				return nil
+			}
+			o, err := st.Post(n.OtherGroup, n.OtherPost)
+			if err != nil {
+				return err
+			}
+			if o == nil || o.ThreadVersion <= n.ExtVersion {
+				continue // gone (its deletion already hid the note), or unchanged
+			}
+			if _, err := w.Log.Apply(&cmd.MarkSisterStale{GroupID: g, NoteID: n.NoteID, Version: o.ThreadVersion,
+				Title: o.Title, At: w.Now().Unix()}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func postForMatch(p *store.Post) string {

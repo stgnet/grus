@@ -5,4 +5,8 @@
 <p class="muted">{{plural $d.MemberCount "member" "members"}} · {{$d.Settings.Visibility}} group</p>
 {{if $d.Rules}}<h2>Rules</h2><ol>{{range $d.Rules}}<li>{{.}}</li>{{end}}</ol>{{end}}
 {{if $d.Mods}}<h2>Moderators</h2><ul>{{range $d.Mods}}<li>{{.}}</li>{{end}}</ul>{{end}}
+{{if $d.Sisters}}<h2>Sister groups</h2>
+<p class="muted">Related groups. Posts here may point to their public posts, and search looks there too.</p>
+<ul>{{range $d.Sisters}}<li><a href="{{.URL}}">{{.Group.Name}}</a>{{if .Topics}} <span class="muted">({{.Topics}})</span>{{end}}</li>{{end}}</ul>{{end}}
+{{if $d.IsMember}}<form method="post" action="/leave" class="inline confirm" data-confirm="Leave this group?"><button class="link">Leave this group</button></form>{{end}}
 {{end}}

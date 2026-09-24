@@ -30,7 +30,15 @@ func (f *fakeLLM) Call(ctx context.Context, req Request, out any) (Usage, error)
 	case strings.Contains(req.System, digestTask):
 		answer = `{"digest": "Members discuss a rattling fridge fan."}`
 	case strings.Contains(req.System, matchTask):
-		answer = `{"same_topic": [1, 1, 42]}` // a repeat and a nonsense number, both ignored
+		// The first item, plus any sister-group post; a repeat and a
+		// nonsense number, both ignored.
+		picks := []string{"1", "1", "42"}
+		for _, line := range strings.Split(req.Prompt, "\n") {
+			if n, rest, ok := strings.Cut(line, ". In the "); ok && rest != "" {
+				picks = append(picks, n)
+			}
+		}
+		answer = `{"same_topic": [` + strings.Join(picks, ", ") + `]}`
 	case strings.Contains(req.System, noteTask):
 		if strings.Contains(req.Prompt, "CURRENT NOTE") {
 			answer = `{"changed": false, "note": ""}`

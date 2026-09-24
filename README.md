@@ -8,10 +8,11 @@ or more servers, with one passwordless login for all of them.
 Grus is a single Go binary with SQLite files and a Raft-replicated command
 log. No database server, no JavaScript framework, no third-party anything.
 
-**Status: milestone M3.** Sign-in, groups, replication, posts and photos,
-the archive import, search with quick answers, link notes, and each group's
-FAQ, thread summaries, topics and outside sources work. Visibility settings,
-anonymous posting and sister groups arrive in M4.
+**Status: milestone M4.** Sign-in, groups, replication, posts and photos,
+the archive import, search with quick answers, link notes, each group's
+FAQ, thread summaries, topics and outside sources, private and hidden
+groups, join approval and invites, anonymous posting, and sister groups
+work. Moderation tools arrive in M5.
 
 ## What's here in M0
 

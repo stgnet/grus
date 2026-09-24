@@ -92,6 +92,11 @@ func number(lo, hi int) func(any) (any, error) {
 	}
 }
 
+// mirrored lists the settings site.db keeps a copy of (see the groups
+// table), so a node without this group's file can still list the group and
+// apply the sister-group visibility rule.
+var mirrored = map[string]bool{"name": true, "visibility": true, "ai_enabled": true}
+
 func (c *UpdateSettings) Apply(a *Applier) (any, error) {
 	// Columns in a fixed order, so every node builds the same statement.
 	var cols []string
@@ -99,6 +104,7 @@ func (c *UpdateSettings) Apply(a *Applier) (any, error) {
 		cols = append(cols, k)
 	}
 	sort.Strings(cols)
+	values := map[string]any{}
 	var sets []string
 	var args []any
 	for _, k := range cols {
@@ -110,17 +116,50 @@ func (c *UpdateSettings) Apply(a *Applier) (any, error) {
 		if err != nil {
 			return nil, Invalid("%s %v", strings.ReplaceAll(k, "_", " "), err)
 		}
+		values[k] = v
 		sets = append(sets, k+" = ?")
 		args = append(args, v)
 	}
 	if len(sets) == 0 {
 		return nil, nil
 	}
-	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
+	err := a.Group(c.GroupID, func(tx *sql.Tx) error {
+		// A public group going private: its FAQ goes private with it,
+		// unless the same change says otherwise. The owner can then turn
+		// the public preview on deliberately (plan section 4, "Privacy").
+		if vis, ok := values["visibility"]; ok && vis != "public" {
+			if _, set := values["public_faq"]; !set {
+				var old string
+				tx.QueryRow(`SELECT visibility FROM settings WHERE id = 1`).Scan(&old)
+				if old == "public" {
+					sets = append(sets, "public_faq = 0")
+				}
+			}
+		}
 		if _, err := tx.Exec(`UPDATE settings SET `+strings.Join(sets, ", ")+` WHERE id = 1`, args...); err != nil {
 			return err
 		}
 		return modLog(tx, c.By, "settings", "group", c.GroupID, strings.Join(cols, ", "), c.At)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var siteSets []string
+	var siteArgs []any
+	for _, k := range cols {
+		if mirrored[k] {
+			siteSets = append(siteSets, k+" = ?")
+			siteArgs = append(siteArgs, values[k])
+		}
+	}
+	if len(siteSets) == 0 {
+		return nil, nil
+	}
+	// A second transaction, on site.db; as with CreateGroup, a replay
+	// after a crash between the two finishes whichever part is missing.
+	return nil, a.Site(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE groups SET `+strings.Join(siteSets, ", ")+` WHERE id = ?`, append(siteArgs, c.GroupID)...)
+		return err
 	})
 }
 

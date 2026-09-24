@@ -29,6 +29,8 @@ type submitData struct {
 	// Related are threads to link the new post to, ticked already: the
 	// closest matches when it came from "Post this question".
 	Related []searchHit
+	// The group allows anonymous posts, and whether this one is.
+	AllowAnon, Anonymous bool
 }
 
 func (s *Server) submitForm(w http.ResponseWriter, r *http.Request) {
@@ -40,7 +42,7 @@ func (s *Server) submitForm(w http.ResponseWriter, r *http.Request) {
 	if c == nil || !s.writer(w, r, c, back) {
 		return
 	}
-	d := submitData{Title: strings.TrimSpace(r.URL.Query().Get("title"))}
+	d := submitData{Title: strings.TrimSpace(r.URL.Query().Get("title")), AllowAnon: c.st.AllowAnonymous}
 	if len(d.Title) > cmd.MaxTitleLen {
 		d.Title = d.Title[:cmd.MaxTitleLen]
 	}
@@ -65,7 +67,8 @@ func (s *Server) submitPost(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusBadRequest, "submit", c.errPage("New post", "That upload was too large. Try fewer or smaller photos.", submitData{}))
 		return
 	}
-	d := submitData{Title: strings.TrimSpace(r.FormValue("title")), Body: strings.TrimSpace(r.FormValue("body"))}
+	d := submitData{Title: strings.TrimSpace(r.FormValue("title")), Body: strings.TrimSpace(r.FormValue("body")),
+		AllowAnon: c.st.AllowAnonymous, Anonymous: r.FormValue("anonymous") == "on"}
 	var files []*multipart.FileHeader
 	if r.MultipartForm != nil {
 		files = r.MultipartForm.File["photos"]
@@ -81,7 +84,7 @@ func (s *Server) submitPost(w http.ResponseWriter, r *http.Request) {
 	}
 	id := s.IDs.Next()
 	_, err = s.Log.Apply(&cmd.CreatePost{GroupID: c.g.ID, PostID: id, UserID: c.u.ID,
-		Title: d.Title, Body: d.Body, Images: images, At: s.Now().Unix()})
+		Title: d.Title, Body: d.Body, Anonymous: d.Anonymous, Images: images, At: s.Now().Unix()})
 	if cmd.IsInput(err) {
 		s.render(w, r, http.StatusBadRequest, "submit", c.errPage("New post", capitalize(cmdMessage(err))+".", d))
 		return
@@ -309,7 +312,8 @@ func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
 	fmt.Sscan(r.FormValue("parent"), &parent)
 	id := s.IDs.Next()
 	_, err := s.Log.Apply(&cmd.CreateComment{GroupID: c.g.ID, CommentID: id, PostID: p.ID, ParentID: parent,
-		UserID: c.u.ID, Body: strings.TrimSpace(r.FormValue("body")), Image: image, At: s.Now().Unix()})
+		UserID: c.u.ID, Body: strings.TrimSpace(r.FormValue("body")), Anonymous: r.FormValue("anonymous") == "on",
+		Image: image, At: s.Now().Unix()})
 	if err != nil {
 		if cmd.IsInput(err) {
 			s.render(w, r, http.StatusBadRequest, "message", c.page("Can't comment",

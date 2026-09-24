@@ -169,6 +169,26 @@ read: they need a description instead. Anyone can ask for a page (or an
 imported archive thread) to be taken down, and it is, at once; the mods can
 restore it if the request was mistaken.
 
+## 9. Private groups, invites and sister groups
+
+A group's owners set who can read it (public, private, hidden) and how
+people join (open, approval with questions, invite only) on its Settings
+page. Invite links are made on `/mod/members`, where mods also answer join
+requests; a hidden group can only be reached through one. A copy of each
+group's name, visibility and "Use AI" setting is kept in `site.db`, so any
+node can list groups and apply the sister-group rule without the group's
+own file.
+
+Sister groups are paired by their owners (one proposes, the other
+accepts). The worker then links related posts across the pair. A note is
+only placed where everyone who can read it could also read the post it was
+written from: a public group's posts can be cited anywhere, a private
+group's nowhere else. The rule is checked when a link is made, again when
+a note is shown, and again when a search card is shown, so changing a
+group's visibility takes effect at once. Every 15 minutes the worker
+checks whether threads that sister notes were written from have changed,
+and queues those notes to be rewritten.
+
 ## Retention
 
 The leader submits a `Purge` command once a day. It removes expired sign-in

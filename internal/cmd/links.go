@@ -89,10 +89,10 @@ func addLink(tx *sql.Tx, groupID, a, b int64, source string, by int64, ids [4]in
 	default:
 		return err
 	}
-	if err := linkNote(tx, groupID, a, b, ids[0], at); err != nil {
+	if err := linkNote(tx, groupID, a, b, ids[0], 0, at); err != nil {
 		return err
 	}
-	if err := linkNote(tx, groupID, b, a, ids[1], at); err != nil {
+	if err := linkNote(tx, groupID, b, a, ids[1], 0, at); err != nil {
 		return err
 	}
 	if err := feedWeight(tx, older, newer, at); err != nil {
@@ -236,21 +236,26 @@ func syncCombined(tx *sql.Tx, groupID, host, newID, at int64) error {
 // linkNote makes (or reactivates) the note on host that points at other,
 // placed after the host thread's latest comment: "at the point in the
 // thread where the connection was made". It's queued to be written now.
-func linkNote(tx *sql.Tx, groupID, host, other, id, at int64) error {
+//
+// groupID is the group other is in: this group, or a sister group (M4),
+// in which case ext is the other thread's version as the worker read it
+// (see noteVersion).
+func linkNote(tx *sql.Tx, groupID, host, other, id, ext, at int64) error {
 	var existing int64
 	err := tx.QueryRow(`SELECT n.id FROM notes n JOIN note_sources s ON s.note_id = n.id
 		WHERE n.host_post_id = ? AND n.kind = 'link' AND s.group_id = ? AND s.post_id = ?`, host, groupID, other).Scan(&existing)
 	switch {
 	case err == nil:
 		id = existing
-		if _, err := tx.Exec(`UPDATE notes SET state = 'active', removed_by = NULL, stale = 1 WHERE id = ?`, id); err != nil {
+		if _, err := tx.Exec(`UPDATE notes SET state = 'active', removed_by = NULL, stale = 1,
+			ext_version = MAX(ext_version, ?) WHERE id = ?`, ext, id); err != nil {
 			return err
 		}
 	case errors.Is(err, sql.ErrNoRows):
 		var after int64
 		tx.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM comments WHERE post_id = ? AND status IN ('visible', 'flagged')`, host).Scan(&after)
-		if _, err := tx.Exec(`INSERT INTO notes (id, host_post_id, after_comment_id, kind, created_at, updated_at)
-			VALUES (?, ?, ?, 'link', ?, ?)`, id, host, after, at, at); err != nil {
+		if _, err := tx.Exec(`INSERT INTO notes (id, host_post_id, after_comment_id, kind, ext_version, created_at, updated_at)
+			VALUES (?, ?, ?, 'link', ?, ?, ?)`, id, host, after, ext, at, at); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO note_sources (note_id, group_id, post_id) VALUES (?, ?, ?)`, id, groupID, other); err != nil {
@@ -268,12 +273,14 @@ func linkNote(tx *sql.Tx, groupID, host, other, id, at int64) error {
 
 // noteVersion is the version of what a note is written from: the sum of
 // its source threads' versions, which goes up whenever any of them changes.
-// (Sources in other groups, from M4, count as 0 here; their changes reach
-// the note through the cross-group refresh.)
+// A source in a sister group isn't in this file (ids are unique across
+// groups, so it simply doesn't join); its version is carried in the note's
+// ext_version, which the worker's sister sweep raises (MarkSisterStale).
+// store.NoteVersion must compute the same thing.
 func noteVersion(tx *sql.Tx, noteID int64) (int64, error) {
 	var v int64
-	err := tx.QueryRow(`SELECT COALESCE(SUM(p.thread_version), 0) FROM note_sources s JOIN posts p ON p.id = s.post_id
-		WHERE s.note_id = ?`, noteID).Scan(&v)
+	err := tx.QueryRow(`SELECT COALESCE((SELECT SUM(p.thread_version) FROM note_sources s JOIN posts p ON p.id = s.post_id
+		WHERE s.note_id = ?1), 0) + COALESCE((SELECT ext_version FROM notes WHERE id = ?1), 0)`, noteID).Scan(&v)
 	return v, err
 }
 
@@ -335,19 +342,31 @@ type SetCheck struct {
 	PostID  int64
 	Version int64
 	Links   []CheckLink
-	Entries []int64 // FAQ entries that already cover this post's question
-	Sources []int64 // outside pages about the same thing
+	Entries []int64       // FAQ entries that already cover this post's question
+	Sources []int64       // outside pages about the same thing
+	Sisters []SisterMatch // posts in sister groups about the same thing (M4)
 	At      int64
 }
 
 func (c *SetCheck) Apply(a *Applier) (any, error) {
-	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
+	plans, err := sisterPlans(a, c.GroupID, c.Sisters)
+	if err != nil {
+		return nil, err
+	}
+	var kept []sisterPlan
+	var title string
+	var created, threadVersion int64
+	err = a.Group(c.GroupID, func(tx *sql.Tx) error {
 		var current int64
-		if err := tx.QueryRow(`SELECT version FROM posts WHERE id = ?`, c.PostID).Scan(&current); err != nil {
+		if err := tx.QueryRow(`SELECT version, thread_version, title, created_at FROM posts WHERE id = ?`, c.PostID).
+			Scan(&current, &threadVersion, &title, &created); err != nil {
 			return notFoundGone(err)
 		}
 		ok, err := finishJob(tx, c.JobID, c.Worker, c.Version, current, c.At)
 		if err != nil || !ok {
+			return err
+		}
+		if kept, err = sisterHere(tx, c.PostID, plans, c.At); err != nil {
 			return err
 		}
 		for _, l := range c.Links {
@@ -379,6 +398,14 @@ func (c *SetCheck) Apply(a *Applier) (any, error) {
 		}
 		return nil
 	})
+	// On a replay after a crash, this group's part may already be done, and
+	// then kept is empty and the sister groups' parts are skipped too, even
+	// if the crash came between them. That loses at most a few links on the
+	// other side, which the next check of that group's posts finds again.
+	if err != nil || len(kept) == 0 {
+		return nil, err
+	}
+	return nil, sisterThere(a, c.GroupID, c.PostID, title, created, threadVersion, kept, c.At)
 }
 
 // SetNote is a note job's result: new text, or "no meaningful change",

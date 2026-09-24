@@ -181,7 +181,20 @@ func (s *Server) ask(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.Meter.Count("search")
 		ctx, cancel := context.WithTimeout(r.Context(), askTimeout)
-		cards, err := s.AI.Ask(ctx, ai.AskRequest{GroupIDs: []int64{c.g.ID}, Question: q, Prev: prev})
+		// This group, plus its sister groups whose posts may be cited here
+		// (plan section 2: "Ask can search the public posts of sister
+		// groups and label those citations with the group's name").
+		groups := []int64{c.g.ID}
+		sisters := map[int64]*store.Group{}
+		if pairs, err := s.Store.Sisters(c.g.ID); err == nil {
+			for _, p := range pairs {
+				if g, ok := s.sisterCitable(c, p.Other); ok {
+					groups = append(groups, g.ID)
+					sisters[g.ID] = g
+				}
+			}
+		}
+		cards, err := s.AI.Ask(ctx, ai.AskRequest{GroupIDs: groups, Question: q, Prev: prev})
 		cancel()
 		switch {
 		case errors.Is(err, ai.ErrNoWorker):
@@ -200,10 +213,13 @@ func (s *Server) ask(w http.ResponseWriter, r *http.Request) {
 				// The worker was told which groups to search; the cards are
 				// checked again here against this reader, on the way out
 				// (plan section 3, privacy rule 2).
-				if card.GroupID != c.g.ID {
-					continue
+				var v cardView
+				var ok bool
+				if g := sisters[card.GroupID]; g != nil {
+					v, ok = s.checkSisterCard(c, g, card)
+				} else if card.GroupID == c.g.ID {
+					v, ok = s.checkCard(c, card)
 				}
-				v, ok := s.checkCard(c, card)
 				if !ok {
 					continue
 				}
@@ -242,6 +258,31 @@ func (s *Server) checkCard(c *greq, card ai.Card) (cardView, bool) {
 		return cardView{}, false
 	}
 	return cardView{URL: fmt.Sprintf("/p/%d", p.ID), Title: p.Title, Date: p.CreatedAt, Statement: card.Statement}, true
+}
+
+// checkSisterCard re-checks a card citing a sister group: only its
+// visible posts and active FAQ entries, which (being citable at all) are
+// public. Its link goes to the sister group's own address, and its label
+// names the group.
+func (s *Server) checkSisterCard(c *greq, g *store.Group, card ai.Card) (cardView, bool) {
+	label := "In the " + g.Name + " group"
+	switch {
+	case card.EntryID != 0:
+		e, err := s.Store.Entry(g.ID, card.EntryID)
+		if err != nil || e == nil || e.Status != "active" {
+			return cardView{}, false
+		}
+		return cardView{URL: s.groupURL(g, c.rt.primary, fmt.Sprintf("/faq/e/%d", e.ID)), Title: e.Question,
+			Label: g.Name + " FAQ", Date: e.UpdatedAt, Statement: card.Statement}, true
+	case card.PostID != 0:
+		p, err := s.Store.Post(g.ID, card.PostID)
+		if err != nil || p == nil || p.Status != "visible" {
+			return cardView{}, false
+		}
+		return cardView{URL: s.groupURL(g, c.rt.primary, fmt.Sprintf("/p/%d", p.ID)), Title: p.Title, Label: label,
+			Date: p.CreatedAt, Statement: card.Statement}, true
+	}
+	return cardView{}, false // outside pages are cited from the group that has them
 }
 
 // askFeedback saves a search someone marked "not what I was looking for".

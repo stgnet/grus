@@ -42,45 +42,6 @@ type Image struct {
 	Bytes  int
 }
 
-// JoinGroup adds a member. In an open group they're active at once; in an
-// approval group they wait for a mod (M4 adds the queue).
-type JoinGroup struct {
-	GroupID int64
-	UserID  int64
-	Answers string
-	At      int64
-}
-
-func (c *JoinGroup) Apply(a *Applier) (any, error) {
-	var status string
-	err := a.Group(c.GroupID, func(tx *sql.Tx) error {
-		var existing string
-		err := tx.QueryRow(`SELECT status FROM memberships WHERE user_id = ?`, c.UserID).Scan(&existing)
-		if err == nil {
-			if existing == "banned" {
-				return Invalid("you can't join this group")
-			}
-			status = existing
-			return nil // already a member (or already waiting)
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		var policy string
-		if err := tx.QueryRow(`SELECT join_policy FROM settings WHERE id = 1`).Scan(&policy); err != nil {
-			return err
-		}
-		status = "active"
-		if policy != "open" {
-			status = "pending"
-		}
-		_, err = tx.Exec(`INSERT INTO memberships (user_id, role, status, join_answers, created_at) VALUES (?, 'member', ?, ?, ?)`,
-			c.UserID, status, c.Answers, c.At)
-		return err
-	})
-	return status, err
-}
-
 // requireMember fails unless userID is an active member.
 func requireMember(tx *sql.Tx, userID int64) error {
 	var status string
@@ -141,6 +102,9 @@ func (c *CreatePost) Apply(a *Applier) (any, error) {
 	}
 	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
 		if err := requireMember(tx, c.UserID); err != nil {
+			return err
+		}
+		if err := anonymousAllowed(tx, c.Anonymous); err != nil {
 			return err
 		}
 		_, err := tx.Exec(`INSERT INTO posts (id, user_id, is_anonymous, title, body, status, created_at, last_activity_at)
@@ -237,6 +201,9 @@ func (c *CreateComment) Apply(a *Applier) (any, error) {
 	}
 	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
 		if err := requireMember(tx, c.UserID); err != nil {
+			return err
+		}
+		if err := anonymousAllowed(tx, c.Anonymous); err != nil {
 			return err
 		}
 		var status string
@@ -345,7 +312,8 @@ func (c *SoftDelete) Apply(a *Applier) (any, error) {
 	if c.ByMod {
 		status, keep = "removed", ModRemoveKeep
 	}
-	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
+	var sisters []sisterRef
+	err := a.Group(c.GroupID, func(tx *sql.Tx) error {
 		table, err := itemTable(c.Kind)
 		if err != nil {
 			return err
@@ -373,11 +341,21 @@ func (c *SoftDelete) Apply(a *Applier) (any, error) {
 				return err
 			}
 		}
+		if c.Kind == "post" {
+			if sisters, err = sisterRefs(tx, c.ID); err != nil {
+				return err
+			}
+		}
 		if c.ByMod {
 			return modLog(tx, c.By, "remove", c.Kind, c.ID, c.Reason, c.At)
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	// Notes in sister groups written from this post stop showing too.
+	return nil, showSisterNotes(a, c.GroupID, c.ID, sisters, false)
 }
 
 // Restore undoes a SoftDelete (mods only), any time before the purge.
@@ -390,7 +368,8 @@ type Restore struct {
 }
 
 func (c *Restore) Apply(a *Applier) (any, error) {
-	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
+	var sisters []sisterRef
+	err := a.Group(c.GroupID, func(tx *sql.Tx) error {
 		table, err := itemTable(c.Kind)
 		if err != nil {
 			return err
@@ -423,8 +402,17 @@ func (c *Restore) Apply(a *Applier) (any, error) {
 				return err
 			}
 		}
+		if c.Kind == "post" {
+			if sisters, err = sisterRefs(tx, c.ID); err != nil {
+				return err
+			}
+		}
 		return modLog(tx, c.By, "restore", c.Kind, c.ID, "", c.At)
 	})
+	if err != nil {
+		return nil, err
+	}
+	return nil, showSisterNotes(a, c.GroupID, c.ID, sisters, true)
 }
 
 // threadOf is the post a post or comment belongs to.

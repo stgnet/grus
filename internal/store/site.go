@@ -28,6 +28,9 @@ type Group struct {
 	Name      string
 	Status    string
 	CreatedAt int64
+	// Copies of the group's own settings (see the groups table).
+	Visibility string
+	AIEnabled  bool
 }
 
 // Domain is a row of the domains table.
@@ -75,11 +78,11 @@ func (s *Store) Domains() ([]Domain, error) {
 	return out, rows.Err()
 }
 
-const groupCols = `id, slug, COALESCE(main_host, ''), name, status, created_at`
+const groupCols = `id, slug, COALESCE(main_host, ''), name, status, created_at, visibility, ai_enabled`
 
 func scanGroup(row interface{ Scan(...any) error }) (*Group, error) {
 	var g Group
-	err := row.Scan(&g.ID, &g.Slug, &g.MainHost, &g.Name, &g.Status, &g.CreatedAt)
+	err := row.Scan(&g.ID, &g.Slug, &g.MainHost, &g.Name, &g.Status, &g.CreatedAt, &g.Visibility, &g.AIEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

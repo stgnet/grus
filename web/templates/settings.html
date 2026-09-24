@@ -1,12 +1,63 @@
-{{define "content"}}{{$s := .Data.Settings}}
+{{define "content"}}{{$d := .Data}}{{$s := $d.Settings}}
 <h1>Group settings</h1>
+{{if $d.Saved}}<p class="notice">Saved.</p>{{end}}
 <form method="post" action="/settings" class="stack">
   <label>Name <input name="name" value="{{$s.Name}}" maxlength="100" required></label>
   <label>Description <textarea name="description" rows="3" maxlength="2000">{{$s.Description}}</textarea></label>
   <label>Rules, one per line <textarea name="rules" rows="6" maxlength="5000">{{$s.Rules}}</textarea></label>
+
+  <h2>Who can read and join</h2>
+  <label>Visibility
+    <select name="visibility">
+      <option value="public" {{if eq $s.Visibility "public"}}selected{{end}}>Public: anyone can read, signed in or not</option>
+      <option value="private" {{if eq $s.Visibility "private"}}selected{{end}}>Private: anyone can see the name, description and rules; posts are for members</option>
+      <option value="hidden" {{if eq $s.Visibility "hidden"}}selected{{end}}>Hidden: doesn't appear anywhere; joining is by invite link only</option>
+    </select>
+  </label>
+  <label>Joining
+    <select name="join_policy">
+      <option value="open" {{if eq $s.JoinPolicy "open"}}selected{{end}}>Open: one tap to join</option>
+      <option value="approval" {{if eq $s.JoinPolicy "approval"}}selected{{end}}>Approval: answer the questions below; a moderator lets them in</option>
+      <option value="invite" {{if eq $s.JoinPolicy "invite"}}selected{{end}}>Invite only: with an invite link</option>
+    </select>
+  </label>
+  <label>Questions for people asking to join <textarea name="join_questions" rows="3" maxlength="2000" placeholder="Do you own a Travato? Which year?">{{$s.JoinQuestions}}</textarea></label>
+  <p class="muted">Invite links work under any setting. Make them on the <a href="/mod/members">Members</a> page.</p>
+  {{if ne $s.Visibility "public"}}
+  <label class="check"><input type="checkbox" name="public_faq" {{if $s.PublicFAQ}}checked{{end}}> Let anyone read the group's FAQ</label>
+  <p class="muted">A preview that shows what the group knows. The posts it links to stay members-only. (Never for a hidden group.)</p>
+  {{end}}
+
+  <h2>Posting</h2>
+  <label class="check"><input type="checkbox" name="allow_anonymous" {{if $s.AllowAnonymous}}checked{{end}}> Allow anonymous posts and comments</label>
+  <p class="muted">They show "Anonymous member". The group's moderators can still find out who wrote one when they need to, and each time they do it's recorded in the mod log.</p>
+
+  <h2>AI and search engines</h2>
   <label class="check"><input type="checkbox" name="ai_enabled" {{if $s.AIEnabled}}checked{{end}}> Use AI in this group</label>
   <p class="muted">Links between related posts, thread summaries, quick answers in search, and the FAQ. It all runs on this site's own computers; no post is sent to an outside AI service. <a href="/how-it-works">How this site works</a></p>
   <label class="check"><input type="checkbox" name="allow_indexing" {{if $s.AllowIndexing}}checked{{end}}> Let search engines list this group's posts</label>
   <button>Save</button>
+</form>
+
+<h2 id="sisters">Sister groups</h2>
+<p class="muted">Groups that share ground with this one (say, the ProMaster group for the chassis). Posts in each get notes pointing to related posts in the other, and search can answer from both. Both owners have to agree, and either can end it. Nothing from a private group is ever shown in another group.</p>
+{{range $d.Sisters}}
+<div class="card-text sister">
+  <p><strong><a href="{{.URL}}">{{.Group.Name}}</a></strong>{{if .Topics}} · <span class="muted">topics: {{.Topics}}</span>{{end}}
+  {{if eq .State "active"}}<span class="tag">sisters</span>{{else if .Incoming}}<span class="tag">asks to pair</span>{{else}}<span class="tag">waiting for them</span>{{end}}</p>
+  <div class="row">
+  {{if and (eq .State "proposed") .Incoming}}
+    <form method="post" action="/settings/sisters/accept" class="inline"><input type="hidden" name="group" value="{{.Other}}"><button>Accept</button></form>
+    <form method="post" action="/settings/sisters/decline" class="inline"><input type="hidden" name="group" value="{{.Other}}"><button class="secondary">Decline</button></form>
+  {{else}}
+    <form method="post" action="/settings/sisters/end" class="inline confirm" data-confirm="End this pairing? All links between the two groups are removed."><input type="hidden" name="group" value="{{.Other}}"><button class="link">{{if eq .State "active"}}End pairing{{else}}Withdraw{{end}}</button></form>
+  {{end}}
+  </div>
+</div>
+{{else}}<p class="muted">None yet.</p>{{end}}
+<form method="post" action="/settings/sisters/propose" class="stack">
+  <label>Propose a sister group <input name="group" placeholder="Its address, like promaster.nfb.group" required></label>
+  <label>Only these topics (optional) <input name="topics" maxlength="200" placeholder="chassis, engine, suspension"></label>
+  <button class="secondary">Propose</button>
 </form>
 {{end}}

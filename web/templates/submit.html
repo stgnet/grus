@@ -13,6 +13,8 @@
   <div id="similar" data-source="title"></div>
   <label>Text (optional) <textarea name="body" rows="8">{{.Data.Body}}</textarea></label>
   <label>Photos (up to 10) <input type="file" name="photos" accept="image/*" multiple></label>
+  {{if .Data.AllowAnon}}<label class="check"><input type="checkbox" name="anonymous" {{if .Data.Anonymous}}checked{{end}}> Post anonymously</label>
+  <p class="muted">Shown as "Anonymous member". The group's moderators can still find out who wrote it if they need to.</p>{{end}}
   <button>Post</button>
 </form>
 {{end}}

@@ -6,8 +6,10 @@
   <p class="muted">{{plural $d.MemberCount "member" "members"}} · <a href="/about">About</a></p>
   <div class="row">
     {{if $d.CanRead}}<a class="button" href="/submit">New post</a>{{end}}
-    {{if and .User (not $d.IsMember) (not $d.Pending)}}
-      <form method="post" action="/join" class="inline"><button class="secondary">Join</button></form>
+    {{if and (not $d.IsMember) (not $d.Pending)}}
+      {{if eq $d.Settings.JoinPolicy "open"}}<form method="post" action="/join" class="inline"><button class="secondary">Join</button></form>
+      {{else if eq $d.Settings.JoinPolicy "approval"}}<a class="button secondary" href="/join">Ask to join</a>
+      {{else}}<span class="muted">Joining is by invitation.</span>{{end}}
     {{end}}
     {{if $d.Pending}}<span class="muted">Your request to join is waiting for a moderator.</span>{{end}}
   </div>
@@ -19,7 +21,7 @@
   <a href="/?sort=active" {{if eq $d.Sort "active"}}class="on"{{end}}>Active</a>
   <a href="/?sort=new" {{if eq $d.Sort "new"}}class="on"{{end}}>New</a>
   <a href="/faq">FAQ</a>
-  {{if $d.CanMod}}<a href="/mod/sources">Sources</a>{{end}}
+  {{if $d.CanMod}}<a href="/mod/members">Members{{if $d.Requests}} ({{$d.Requests}}){{end}}</a> <a href="/mod/sources">Sources</a>{{end}}
 </nav>
 {{if $d.FAQEntries}}<a class="card pinned-faq" href="/faq"><span class="card-text"><strong><span class="tag">pinned</span> Group FAQ</strong><span class="meta">{{plural $d.FAQEntries "entry" "entries"}}, built from the group's discussions · Browse by topic</span></span></a>{{end}}
 {{if $d.Posts}}

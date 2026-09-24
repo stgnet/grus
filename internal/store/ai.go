@@ -134,8 +134,10 @@ func (s *Store) NoteVersion(groupID, noteID int64) (int64, error) {
 		return 0, err
 	}
 	var v int64
-	err = db.QueryRow(`SELECT COALESCE(SUM(p.thread_version), 0) FROM note_sources s JOIN posts p ON p.id = s.post_id
-		WHERE s.note_id = ?`, noteID).Scan(&v)
+	// The same sum as cmd's noteVersion, including a sister-group
+	// source's version carried in ext_version.
+	err = db.QueryRow(`SELECT COALESCE((SELECT SUM(p.thread_version) FROM note_sources s JOIN posts p ON p.id = s.post_id
+		WHERE s.note_id = ?1), 0) + COALESCE((SELECT ext_version FROM notes WHERE id = ?1), 0)`, noteID).Scan(&v)
 	return v, err
 }
 

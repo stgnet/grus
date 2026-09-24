@@ -75,6 +75,11 @@ type faqData struct {
 	Groups      []rootGroupCard // the root FAQ's "what groups are there"
 	Suggestions int             // locked entries with a rewrite waiting (mods)
 	Empty       bool
+	Sisters     []faqSister // sister groups' FAQs ("for chassis issues, see the ProMaster FAQ")
+}
+
+type faqSister struct {
+	Name, URL, Topics string
 }
 
 // faqPage is the FAQ: the topic tree with its entries.
@@ -124,6 +129,14 @@ func (s *Server) faqPage(w http.ResponseWriter, r *http.Request) {
 		if d.Groups, err = s.rootGroups(r, c); err != nil {
 			s.serverError(w, r, err)
 			return
+		}
+	} else if pairs, err := s.Store.Sisters(c.g.ID); err == nil {
+		// Only sisters whose FAQ everyone can read: the same rule as
+		// notes, so a public FAQ never points into a private group.
+		for _, p := range pairs {
+			if g, ok := s.sisterCitable(c, p.Other); ok {
+				d.Sisters = append(d.Sisters, faqSister{Name: g.Name, URL: s.groupURL(g, c.rt.primary, "/faq"), Topics: p.Topics})
+			}
 		}
 	}
 	title := "FAQ"
@@ -257,6 +270,11 @@ func (s *Server) entryData(c *greq, e *store.Entry) (*entryData, error) {
 		}
 	}
 	d.MorePages = len(d.Posts)+d.Hidden >= 3
+	if !c.canRead(nil) {
+		// The public preview of a private group's FAQ: the entry, not the
+		// members' comments on it.
+		return d, nil
+	}
 	comments, err := s.Store.EntryComments(c.g.ID, e.ID)
 	if err != nil {
 		return nil, err

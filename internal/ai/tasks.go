@@ -66,9 +66,10 @@ func (e *Engine) Digest(ctx context.Context, groupID, postID int64) (string, err
 // Candidate is another post, a FAQ entry, or an outside page offered to
 // the match step.
 type Candidate struct {
-	ID   int64
-	Kind string // post | faq | page
-	Text string // title, date, and digest or opening
+	ID    int64
+	Kind  string // post | faq | page | sister
+	Group int64  // for a sister-group post: its group
+	Text  string // title, date, and digest or opening
 }
 
 // Match picks which candidates are about the same thing as the post.
@@ -102,12 +103,13 @@ func (e *Engine) Match(ctx context.Context, post string, cands []Candidate) ([]C
 
 // Note writes (or refreshes) the note on host that points at other.
 // It returns changed=false when the model sees nothing new to say.
-func (e *Engine) Note(ctx context.Context, groupID, host, other int64, current string) (text string, changed bool, err error) {
+// otherGroup is the group other is in: groupID, or a sister group.
+func (e *Engine) Note(ctx context.Context, groupID, host, otherGroup, other int64, current string) (text string, changed bool, err error) {
 	hostText, hp, err := e.Store.ThreadText(groupID, host, noteHostLen)
 	if err != nil || hp == nil {
 		return "", false, err
 	}
-	otherText, op, err := e.Store.ThreadText(groupID, other, noteOtherLen)
+	otherText, op, err := e.Store.ThreadText(otherGroup, other, noteOtherLen)
 	if err != nil || op == nil {
 		return "", false, err
 	}

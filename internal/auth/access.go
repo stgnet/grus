@@ -95,3 +95,21 @@ func CanReadFAQ(v Viewer, visibility string, publicFAQ bool) bool {
 	}
 	return visibility == "private" && publicFAQ && v.Status != "banned"
 }
+
+// CanCite: may a note (or a search card) shown in one group be written
+// from a post in another group? The note's text is made from the other
+// post, so it may only appear where everyone who can read it could also
+// read the post it came from (plan section 2, "The visibility rule"):
+//
+//	shown in \ from  public   private   hidden
+//	public           yes      no        no
+//	private          yes      no        no
+//	hidden           yes      no        no
+//
+// So only the source group's visibility matters: a public group's posts
+// can be cited anywhere, and nothing else can be cited outside its own
+// group. (Two private groups could share with readers who belong to both,
+// but then a note would differ per reader; not in v1.)
+func CanCite(fromVisibility string) bool {
+	return fromVisibility == "public"
+}
