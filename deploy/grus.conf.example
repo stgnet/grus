@@ -47,11 +47,12 @@ tls_cert = /etc/grus/cluster/n1.crt
 tls_key  = /etc/grus/cluster/n1.key
 
 # Mail relay for sign-in emails. Without smtp_host, emails are printed to
-# the log instead (fine for a laptop, useless in production).
-smtp_host = smtp.example.com
-smtp_port = 587
-smtp_user = login@nfb.group
-smtp_pass = change-me
+# the log instead (fine for a laptop, useless in production): until the
+# relay is set, find the first sign-in link with `journalctl -u grus`.
+# smtp_host = smtp.example.com
+# smtp_port = 587
+# smtp_user = login@nfb.group
+# smtp_pass = change-me
 mail_from = login@nfb.group
 
 # Accounts with these emails become site operators when they sign in.
@@ -61,7 +62,7 @@ operator = scott@stg.net
 # go to the nodes listed here (their cluster addresses). Without a worker,
 # search shows plain results and nothing is summarized or linked; the site
 # works the same otherwise.
-worker = studio.example.net:7946
+# worker = studio.example.net:7946
 # Quick answers per member per day (0 = the default, 20).
 # ask_daily_limit = 20
 # Hour (UTC, 0-23) the nightly FAQ batch is queued.
