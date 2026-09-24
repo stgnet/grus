@@ -22,7 +22,8 @@ type thread struct {
 
 type commentView struct {
 	store.Comment
-	Author  string
+	Author    string
+	AuthorURL string // their public profile; "" when anonymous
 	Images  []store.Image
 	CanEdit bool
 	NewerID int64 // a later comment replaced this one's advice
@@ -48,6 +49,7 @@ type voteView struct {
 type PostView struct {
 	Post       store.Post
 	Author     string
+	AuthorURL  string // their public profile; "" when anonymous
 	Images     []store.Image
 	Threads    []thread
 	CanEdit    bool
@@ -208,7 +210,8 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &PostView{Post: *p, Author: authorOf(names, p.UserID, p.Anonymous)}
+	d := &PostView{Post: *p, Author: authorOf(names, p.UserID, p.Anonymous),
+		AuthorURL: s.profileURL(c.rt.primary, names, p.UserID, p.Anonymous)}
 	d.CanEdit = c.u != nil && p.UserID == c.u.ID
 	if d.CanEdit && p.Anonymous {
 		d.Author += " (you)" // only the author sees this; everyone else sees just "Anonymous member"
@@ -241,6 +244,7 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 	}
 	view := func(cm store.Comment) commentView {
 		v := commentView{Comment: cm, Author: authorOf(names, cm.UserID, cm.Anonymous),
+			AuthorURL: s.profileURL(c.rt.primary, names, cm.UserID, cm.Anonymous),
 			Images: byComment[cm.ID], CanEdit: c.u != nil && cm.UserID == c.u.ID}
 		if v.CanEdit && cm.Anonymous {
 			v.Author += " (you)"

@@ -66,5 +66,9 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 func (s *Server) groupLogin(w http.ResponseWriter, r *http.Request) {
 	rt := routeOf(r)
 	back := s.groupURL(rt.group, rt.primary, "/")
+	if ownDomain(rt) {
+		// Back through /bounce, which hands this domain its own session.
+		back = s.primaryURL(rt.primary, "/bounce?to="+queryEscape(back))
+	}
 	http.Redirect(w, r, s.primaryURL(rt.primary, "/login?next="+queryEscape(back)), http.StatusSeeOther)
 }

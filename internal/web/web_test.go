@@ -1,6 +1,7 @@
 package web
 
 import (
+	"net"
 	"bytes"
 	"net/http"
 	"net/http/httptest"
@@ -77,10 +78,48 @@ func must(t *testing.T, lg cluster.Log, c cmd.Command) {
 // Domain scoping, which the tests check separately).
 type browser struct {
 	site    *testSite
-	cookies map[string]*http.Cookie
+	cookies map[string]*http.Cookie // for nfb.group and its subdomains
+	// Cookies for a group's own domain (by host): a real browser keeps
+	// them apart from the primary's, and so must this one for the bounce.
+	other map[string]map[string]*http.Cookie
 }
 
-func (s *testSite) browser() *browser { return &browser{site: s, cookies: map[string]*http.Cookie{}} }
+func (s *testSite) browser() *browser {
+	return &browser{site: s, cookies: map[string]*http.Cookie{}, other: map[string]map[string]*http.Cookie{}}
+}
+
+// jar is the set of cookies this browser sends to host.
+func (b *browser) jar(host string) map[string]*http.Cookie {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if host == "nfb.group" || strings.HasSuffix(host, ".nfb.group") {
+		return b.cookies
+	}
+	if b.other[host] == nil {
+		b.other[host] = map[string]*http.Cookie{}
+	}
+	return b.other[host]
+}
+
+// send adds this browser's cookies for r's host, and keep stores the ones
+// a response sets.
+func (b *browser) send(r *http.Request) {
+	for _, c := range b.jar(r.Host) {
+		r.AddCookie(c)
+	}
+}
+
+func (b *browser) keep(r *http.Request, w *httptest.ResponseRecorder) {
+	jar := b.jar(r.Host)
+	for _, c := range w.Result().Cookies() {
+		if c.MaxAge < 0 {
+			delete(jar, c.Name)
+		} else {
+			jar[c.Name] = c
+		}
+	}
+}
 
 func (b *browser) do(method, rawURL string, form url.Values) *httptest.ResponseRecorder {
 	b.site.t.Helper()
@@ -94,18 +133,10 @@ func (b *browser) do(method, rawURL string, form url.Values) *httptest.ResponseR
 	if form != nil {
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
-	for _, c := range b.cookies {
-		r.AddCookie(c)
-	}
+	b.send(r)
 	w := httptest.NewRecorder()
 	b.site.h.ServeHTTP(w, r)
-	for _, c := range w.Result().Cookies() {
-		if c.MaxAge < 0 {
-			delete(b.cookies, c.Name)
-		} else {
-			b.cookies[c.Name] = c
-		}
-	}
+	b.keep(r, w)
 	return w
 }
 
@@ -362,5 +393,52 @@ func TestPassOn(t *testing.T) {
 	s.srv.PassOn = func(http.ResponseWriter, *http.Request, int64) bool { return false }
 	if code := b.do("GET", "https://travato.nfb.group/", nil).Code; code != 200 {
 		t.Fatalf("fallback: %d", code)
+	}
+}
+
+// TestOwnDomainSignIn gives the group its own domain and checks the
+// bounce: a signed-in member arriving there is signed in on it after two
+// redirects, a signed-out visitor is bounced once and then left alone, and
+// /bounce only ever sends a code to a group's own domain.
+func TestOwnDomainSignIn(t *testing.T) {
+	s := newSite(t)
+	D := "https://travato-owners.com"
+	must(t, s.log, &cmd.SetGroupHost{GroupID: 42, Host: "travato-owners.com", At: 1})
+	// The old address now redirects to the new one.
+	expect(t, s.browser().do("GET", "https://travato.nfb.group/about", nil), 301, D+"/about")
+
+	alice := s.signedIn("alice@example.com", "alice")
+	w := alice.do("GET", D+"/about", nil)
+	expect(t, w, 303, "https://nfb.group/bounce?to="+url.QueryEscape(D+"/about"))
+	w = alice.do("GET", w.Header().Get("Location"), nil)
+	if w.Code != 303 || !strings.HasPrefix(w.Header().Get("Location"), D+"/_bounce?code=") {
+		t.Fatalf("bounce: %d %s", w.Code, w.Header().Get("Location"))
+	}
+	back := w.Header().Get("Location")
+	expect(t, alice.do("GET", back, nil), 303, "/about")
+	if p := alice.do("GET", D+"/about", nil).Body.String(); !strings.Contains(p, ">alice<") {
+		t.Fatalf("not signed in on the group's domain:\n%s", p)
+	}
+	// The code worked once.
+	other := s.browser()
+	expect(t, other.do("GET", back, nil), 303, "/about")
+	if other.jar("travato-owners.com")[sessionCookie] != nil {
+		t.Fatal("a used bounce code signed someone in")
+	}
+
+	// Signed out: bounced once, straight back, then served.
+	anon := s.browser()
+	w = anon.do("GET", D+"/", nil)
+	expect(t, w, 303, "")
+	expect(t, anon.do("GET", w.Header().Get("Location"), nil), 303, D+"/")
+	expect(t, anon.do("GET", D+"/", nil), 200, "")
+
+	// /bounce won't hand a code to anywhere but a group's own domain.
+	expect(t, alice.do("GET", "https://nfb.group/bounce?to="+url.QueryEscape("https://evil.example/x"), nil), 303, "/")
+	expect(t, alice.do("GET", "https://nfb.group/bounce?to="+url.QueryEscape("https://travato.nfb.group/"), nil), 303, "/")
+
+	// A domain under the primary, or already in use, is refused.
+	if _, err := s.log.Apply(&cmd.SetGroupHost{GroupID: 42, Host: "x.nfb.group", At: 2}); !cmd.IsInput(err) {
+		t.Fatalf("domain under the primary: %v", err)
 	}
 }

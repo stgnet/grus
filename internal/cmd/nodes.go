@@ -73,11 +73,14 @@ func (c *RemoveNode) Apply(a *Applier) (any, error) {
 			if n == 0 {
 				return Invalid("no node %s to take its groups", c.Replacement)
 			}
-			// Groups whose only voter was this node.
+			// Groups whose only voter was this node. The replacement is
+			// marked bootstrap: if it has the group's log, that changes
+			// nothing, and if it hasn't, starting the log afresh is the
+			// only way the group can carry on.
 			if _, err := tx.Exec(`INSERT INTO group_hosts (group_id, node_id, voter, bootstrap, created_at)
-				SELECT h.group_id, ?1, 1, 0, ?3 FROM group_hosts h WHERE h.node_id = ?2 AND h.voter = 1
+				SELECT h.group_id, ?1, 1, 1, ?3 FROM group_hosts h WHERE h.node_id = ?2 AND h.voter = 1
 				  AND NOT EXISTS (SELECT 1 FROM group_hosts o WHERE o.group_id = h.group_id AND o.voter = 1 AND o.node_id != ?2)
-				ON CONFLICT (group_id, node_id) DO UPDATE SET voter = 1`, c.Replacement, c.ID, c.At); err != nil {
+				ON CONFLICT (group_id, node_id) DO UPDATE SET voter = 1, bootstrap = 1`, c.Replacement, c.ID, c.At); err != nil {
 				return err
 			}
 		}

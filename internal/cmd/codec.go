@@ -104,6 +104,10 @@ var registry = map[string]func() Command{
 	"MarkEmailed":    func() Command { return new(MarkEmailed) },
 	"SetNotifyPrefs": func() Command { return new(SetNotifyPrefs) },
 	"DigestSent":     func() Command { return new(DigestSent) },
+	"SetProfile":     func() Command { return new(SetProfile) },
+	"SetGroupHost":   func() Command { return new(SetGroupHost) },
+	"StartBounce":    func() Command { return new(StartBounce) },
+	"FinishBounce":   func() Command { return new(FinishBounce) },
 
 	// M7: one log per file
 	"OutboxDone":      func() Command { return new(OutboxDone) },

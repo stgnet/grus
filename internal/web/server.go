@@ -112,10 +112,15 @@ func New(s *Server) (*Server, error) {
 	h.HandleFunc("POST /admin/groups", s.adminCreateGroup)
 	h.HandleFunc("POST /admin/domains", s.adminDomain)
 	h.HandleFunc("POST /admin/aliases", s.adminAlias)
+	h.HandleFunc("POST /admin/grouphost", s.adminGroupHost)
+	h.HandleFunc("GET /bounce", s.bounce)
 	h.HandleFunc("POST /admin/suspend", s.adminSuspend)
 	h.HandleFunc("GET /notifications", s.notificationsPage)
 	h.HandleFunc("GET /profile", s.profile)
 	h.HandleFunc("POST /profile", s.profileSave)
+	h.HandleFunc("POST /profile/about", s.profileAbout)
+	h.HandleFunc("GET /u/{handle}", s.userPage)
+	h.HandleFunc("GET /u/{handle}/photo", s.userPhoto)
 	h.HandleFunc("GET /how-it-works", s.howItWorks)
 	// The root FAQ: the same pages as a group's, over the reserved root
 	// group file, edited by operators.
@@ -219,6 +224,7 @@ func New(s *Server) (*Server, error) {
 	g.HandleFunc("GET /img/{hash}", s.serveImage)
 	g.HandleFunc("GET /img/{hash}/t", s.serveImage)
 	g.HandleFunc("GET /login", s.groupLogin)
+	g.HandleFunc("GET /_bounce", s.bounceBack)
 	g.HandleFunc("POST /logout", s.logout)
 	g.Handle("GET /static/", staticHandler)
 	g.HandleFunc("/", s.notFound)
@@ -269,6 +275,10 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	case siteHome:
 		s.homeMux.ServeHTTP(w, withRoute(r, rt))
 	case siteGroup:
+		if s.needsBounce(r, rt) {
+			s.startBounce(w, r, rt)
+			return
+		}
 		s.groupMux.ServeHTTP(w, withRoute(r, rt))
 	default:
 		s.render(w, withRoute(r, rt), http.StatusNotFound, "notfound", &page{Title: "No such group"})

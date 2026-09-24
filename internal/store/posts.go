@@ -237,6 +237,20 @@ func (s *Store) ImageUses(groupID int64, hash string) ([]Image, error) {
 // photos to nodes that are missing them.
 func (s *Store) BlobHashes() (map[string]bool, error) {
 	out := map[string]bool{}
+	// Profile photos (site.db), which every node keeps.
+	rows, err := s.Site().Query(`SELECT DISTINCT photo_key FROM users WHERE photo_key IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out[h] = true
+	}
+	rows.Close()
 	ids, err := s.GroupFileIDs()
 	if err != nil {
 		return nil, err

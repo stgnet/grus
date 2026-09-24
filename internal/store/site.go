@@ -20,7 +20,8 @@ type User struct {
 	CreatedAt      int64
 	NotifyEmail    bool   // notifications are also emailed (M6)
 	Digest         string // off | daily
-	DigestSentAt   int64
+	Bio            string // M7: the public profile
+	Photo          string // blob hash of the profile photo, or ""
 }
 
 // Group is a row of the site's group list. Settings live in the group's own
@@ -144,12 +145,12 @@ func (s *Store) HostAlias(host string) (groupID int64, found bool, err error) {
 }
 
 const userCols = `id, COALESCE(handle, ''), COALESCE(email, ''), is_operator, suspended_until, created_at,
-	notify_email, digest, digest_sent_at`
+	notify_email, digest, COALESCE(bio, ''), COALESCE(photo_key, '')`
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.Handle, &u.Email, &u.IsOperator, &u.SuspendedUntil, &u.CreatedAt,
-		&u.NotifyEmail, &u.Digest, &u.DigestSentAt)
+		&u.NotifyEmail, &u.Digest, &u.Bio, &u.Photo)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -162,6 +163,18 @@ func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 // UserByID looks up a live (not deleted) account.
 func (s *Store) UserByID(id int64) (*User, error) {
 	return scanUser(s.Site().QueryRow(`SELECT `+userCols+` FROM users WHERE id = ? AND deleted_at IS NULL`, id))
+}
+
+// UserByHandle looks up a live account by its handle, ignoring case.
+func (s *Store) UserByHandle(handle string) (*User, error) {
+	return scanUser(s.Site().QueryRow(`SELECT `+userCols+` FROM users
+		WHERE handle = ? COLLATE NOCASE AND deleted_at IS NULL`, handle))
+}
+
+// UserByBlob finds a live account whose profile photo is hash.
+func (s *Store) UserByBlob(hash string) (*User, error) {
+	return scanUser(s.Site().QueryRow(`SELECT `+userCols+` FROM users
+		WHERE photo_key = ? AND deleted_at IS NULL LIMIT 1`, hash))
 }
 
 // UserBySession returns the account a session token (hashed) belongs to, if

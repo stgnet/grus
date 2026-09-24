@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"database/sql"
+	"strings"
+	"unicode/utf8"
 )
 
 // Engagement (plan section 2): "helpful" votes for the Top sort, following
@@ -244,5 +246,41 @@ func (c *DigestSent) Apply(a *Applier) (any, error) {
 	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`UPDATE memberships SET digest_sent_at = ? WHERE user_id = ?`, c.At, c.UserID)
 		return err
+	})
+}
+
+// SetProfile sets the public side of an account (M7): a short bio and a
+// photo, shown on /u/<handle>. Neither says which groups the person is in,
+// so a profile never undoes anonymity. Photo is a blob hash; ClearPhoto
+// removes it; an empty Photo without ClearPhoto keeps the one there is.
+type SetProfile struct {
+	UserID     int64
+	Bio        string
+	Photo      string
+	ClearPhoto bool
+	At         int64
+}
+
+// MaxBio is how long a bio may be: a few lines, not a page.
+const MaxBio = 500
+
+func (c *SetProfile) Apply(a *Applier) (any, error) {
+	bio := strings.TrimSpace(c.Bio)
+	if utf8.RuneCountInString(bio) > MaxBio {
+		return nil, Invalid("a bio can be %d characters at most", MaxBio)
+	}
+	return nil, a.Site(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE users SET bio = ? WHERE id = ?`, bio, c.UserID); err != nil {
+			return err
+		}
+		switch {
+		case c.ClearPhoto:
+			_, err := tx.Exec(`UPDATE users SET photo_key = NULL WHERE id = ?`, c.UserID)
+			return err
+		case c.Photo != "":
+			_, err := tx.Exec(`UPDATE users SET photo_key = ? WHERE id = ?`, c.Photo, c.UserID)
+			return err
+		}
+		return nil
 	})
 }

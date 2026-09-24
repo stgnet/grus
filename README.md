@@ -8,15 +8,17 @@ or more servers, with one passwordless login for all of them.
 Grus is a single Go binary with SQLite files and a Raft-replicated command
 log. No database server, no JavaScript framework, no third-party anything.
 
-**Status: milestone M6.** Sign-in, groups, replication, posts and photos,
+**Status: milestone M7.** Sign-in, groups, replication, posts and photos,
 the archive import, search with quick answers, link notes, each group's
 FAQ, thread summaries, topics and outside sources, private and hidden
-groups, join approval and invites, anonymous posting, sister groups, and
+groups, join approval and invites, anonymous posting, sister groups,
 moderation (the automatic check, reports, member votes, the mod queue and
 log, bans, roles, lock and pin, held first posts, new-account limits),
-"helpful" votes and the Top sort, following posts, notifications, and
-optional notification email and a daily digest work. Running across
-several servers arrives in M7.
+"helpful" votes and the Top sort, following posts, notifications, optional
+notification email and a daily digest, public profiles, and a group's own
+domain with sign-in carried over all work. Since M7 the site runs across
+several servers: each group has its own replicated log and lives on the
+nodes it's placed on, and any node answers for any group.
 
 ## What's here in M0
 
@@ -25,9 +27,10 @@ several servers arrives in M7.
   and the group list, and one `groups/<id>/group.db` per group. Soft delete,
   revisions and the daily purge are in the schema from the start.
 - Every write is a command (`internal/cmd`) replicated through Raft
-  (`hashicorp/raft`) over mutual TLS with a private cluster CA. The starting
-  setup is one VPS as the only voter plus the Studio as a non-voting full
-  copy.
+  (`hashicorp/raft`) over mutual TLS with a private cluster CA. Since M7
+  each file has its own log (site.db's, and one per group), so a node holds
+  only the groups placed on it. The starting setup is one VPS as the only
+  voter plus the Studio as a non-voting full copy.
 - Routing by Host header: the primary domain, `<slug>.<primary>`, custom
   domains, single-host aliases, and alternate domains that redirect every
   old link. The primary can be changed live.
@@ -75,7 +78,7 @@ Create a group on the admin page and it's live at
 ```
 cmd/grus/           the binary: serve, ca, backup, recover
 internal/cmd/       every write, as a command struct + Apply (the only code that writes SQL)
-internal/cluster/   the Log interface; Raft over mutual TLS; snapshots; recover
+internal/cluster/   the Log interface; one Raft log per file over mutual TLS; the node map; recover
 internal/store/     SQLite files, schemas and migrations, read queries
 internal/web/       host routing, pages, sign-in, admin, certificates
 internal/auth/      tokens and codes, send limits, the read-access rule
@@ -90,7 +93,7 @@ docs/               operations runbook, DNS records for mail
 ## Docs
 
 - [docs/operations.md](docs/operations.md): setting up the VPS and the Studio,
-  backups, and recovering from a lost VPS.
+  backups, recovering from a lost VPS, and adding more nodes.
 - [docs/dns.md](docs/dns.md): DNS for the primary domain, including SPF,
   DKIM and DMARC so sign-in emails reach the inbox.
 

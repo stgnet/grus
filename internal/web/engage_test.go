@@ -138,3 +138,47 @@ func TestNotificationEmailAndDigest(t *testing.T) {
 		t.Fatal("two digests in a day")
 	}
 }
+
+// TestProfile covers the public profile: bio and photo set on the settings
+// page, shown at /u/<handle>, linked from a named post but not from an
+// anonymous one, and never listing groups.
+func TestProfile(t *testing.T) {
+	s := newSite(t)
+	G := "https://travato.nfb.group"
+	alice := s.signedIn("alice@example.com", "alice")
+	resp := alice.upload("https://nfb.group/profile/about", map[string]string{"bio": "Travato 59K owner.\n\nBased in Ohio."},
+		map[string][][]byte{"photo": {testJPEG(t)}})
+	expect(t, resp, 303, "/profile?saved=1")
+	page := s.browser().do("GET", "https://nfb.group/u/alice", nil).Body.String()
+	if !strings.Contains(page, "<p>Travato 59K owner.</p>") || !strings.Contains(page, "<p>Based in Ohio.</p>") ||
+		!strings.Contains(page, `src="/u/alice/photo"`) {
+		t.Fatalf("profile page:\n%s", page)
+	}
+	if strings.Contains(page, "Travato Owners") {
+		t.Fatal("the profile lists a group")
+	}
+	if ph := s.browser().do("GET", "https://nfb.group/u/alice/photo", nil); ph.Code != 200 || ph.Header().Get("Content-Type") != "image/jpeg" {
+		t.Fatalf("photo: %d", ph.Code)
+	}
+	expect(t, s.browser().do("GET", "https://nfb.group/u/nobody", nil), 404, "")
+	// Too long a bio is refused.
+	long := strings.Repeat("x", cmd.MaxBio+1)
+	if code := alice.upload("https://nfb.group/profile/about", map[string]string{"bio": long}, nil).Code; code != 400 {
+		t.Fatalf("long bio: %d", code)
+	}
+
+	named := alice.upload(G+"/submit", map[string]string{"title": "Named post"}, nil).Header().Get("Location")
+	if p := s.browser().do("GET", G+named, nil).Body.String(); !strings.Contains(p, `href="https://nfb.group/u/alice"`) {
+		t.Fatalf("no profile link on a named post:\n%s", p)
+	}
+	owner := s.signedIn("owner@example.com", "owner")
+	s.makeOwner("owner")
+	expect(t, owner.do("POST", G+"/settings", url.Values{"allow_anonymous": {"on"}}), 303, "/settings?saved=1")
+	anon := alice.upload(G+"/submit", map[string]string{"title": "Anon post", "anonymous": "on"}, nil).Header().Get("Location")
+	if p := s.browser().do("GET", G+anon, nil).Body.String(); strings.Contains(p, "/u/alice") {
+		t.Fatal("an anonymous post links to its author's profile")
+	}
+	// Removing the photo.
+	alice.upload("https://nfb.group/profile/about", map[string]string{"bio": "x", "remove_photo": "on"}, nil)
+	expect(t, s.browser().do("GET", "https://nfb.group/u/alice/photo", nil), 404, "")
+}

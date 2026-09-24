@@ -123,9 +123,14 @@ and carry on. `recover` is for when the voters are gone.
 4. Update `mail_from` in grus.conf and restart, and keep renewing the old
    domain for as long as links to it are out there.
 
-Sessions on the old domain don't carry over yet (people sign in again once);
-the invisible cross-domain bounce is planned with custom-domain sign-in in
-M7.
+Sessions on the old domain don't carry over (people sign in again once).
+
+A group can also have its own domain (the admin page's "A group's own
+domain"): point the domain's DNS at the nodes, set it, and the group's
+`<slug>.<primary>` address redirects there. Sign-in still happens on the
+primary. A member arriving on the group's domain is bounced through the
+primary once, invisibly, and comes back signed in there too (a one-time
+code, good for a minute, traded for a session on that domain).
 
 ## 7. The model (AI)
 
@@ -283,3 +288,12 @@ page view or within a minute otherwise.
 A node that's gone for good is taken out of the map with
 `cmd.RemoveNode` (with a replacement for any group it was the only voter
 of); the logs' leaders then drop it from their membership.
+
+### An off-site mirror
+
+The Studio's copy is live but it's in the same house as the NAS. For a
+copy somewhere else, run another full node: a cheap VPS in another region
+with `full = true` and a `join` line. It holds every group as a non-voter,
+so it never slows writes down, and it's a ready source for `recover` if the
+house and the VPS are both lost. Run `grus backup` there too (to its own
+disk) if you want dated copies off-site as well.

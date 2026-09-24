@@ -1,0 +1,10 @@
+{{define "content"}}
+<div class="profile-card">
+  {{if .Data.PhotoURL}}<img class="avatar" src="{{.Data.PhotoURL}}" alt="" width="96" height="96">{{end}}
+  <div>
+    <h1>{{.Data.Handle}}</h1>
+    <p class="muted">Member since {{date .Data.Since}}</p>
+  </div>
+</div>
+{{range .Data.Bio}}<p>{{.}}</p>{{else}}<p class="muted">No bio yet.</p>{{end}}
+{{end}}

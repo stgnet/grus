@@ -388,6 +388,16 @@ func Recover(o Options, st *store.Store) error {
 		if err != nil {
 			return err
 		}
+		if has, err := raft.HasExistingState(bolt, bolt, snaps); err != nil || !has {
+			// A log this node had joined but not yet received anything
+			// from: nothing to keep. If it takes the group over, it starts
+			// the log afresh (RemoveNode makes it a bootstrap voter).
+			bolt.Close()
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		// RecoverCluster needs a transport only to encode addresses; an
 		// in-memory one means recover doesn't need the cluster port.
 		_, trans := raft.NewInmemTransport(raft.ServerAddress(o.Advertise))

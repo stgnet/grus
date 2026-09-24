@@ -205,6 +205,19 @@ CREATE TABLE group_hosts (
   PRIMARY KEY (group_id, node_id)
 );
 `,
+	// 6: M7 sign-in on a group's own domain. The session cookie for the
+	// primary covers every <slug>.<primary>, but a browser won't send it to
+	// a different domain, so a signed-in visitor there is bounced through
+	// the primary once, which hands back a one-time code for a session on
+	// that domain.
+	`
+CREATE TABLE bounces (
+  code_hash  TEXT PRIMARY KEY,  -- the code's hash; the code itself is only in the redirect
+  user_id    INTEGER NOT NULL,
+  host       TEXT NOT NULL,     -- the domain it's good for
+  expires_at INTEGER NOT NULL
+);
+`,
 }
 
 var groupMigrations = []string{

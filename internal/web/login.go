@@ -45,6 +45,8 @@ func (s *Server) user(r *http.Request) *store.User {
 
 // setSession sets the session cookie on the primary domain, which covers
 // every <slug>.<primary> group: one sign-in, every group, no redirects.
+// (With domain "", the cookie is for this host only: a group's own
+// domain, see bounce.go.)
 func (s *Server) setSession(w http.ResponseWriter, primary, raw string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
@@ -309,7 +311,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.clearCookie(w, sessionCookie, rt.primary)
+	s.clearCookie(w, sessionCookie, sessionDomain(rt))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 

@@ -14,4 +14,13 @@
   </label>
   <button>Save</button>
 </form>
+<form method="post" action="/profile/about" enctype="multipart/form-data" class="stack">
+  <h2>About you</h2>
+  <p class="muted">Shown on <a href="/u/{{.User.Handle}}">your public profile</a>. It doesn't list your groups or posts.</p>
+  {{if .User.Photo}}<img class="avatar" src="/u/{{.User.Handle}}/photo" alt="Your photo" width="96" height="96">
+  <label class="check"><input type="checkbox" name="remove_photo"> Remove my photo</label>{{end}}
+  <label>Photo <input type="file" name="photo" accept="image/*"></label>
+  <label>Bio <textarea name="bio" rows="4" maxlength="500">{{.User.Bio}}</textarea></label>
+  <button>Save</button>
+</form>
 {{end}}

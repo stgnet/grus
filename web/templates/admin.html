@@ -33,6 +33,14 @@
   <button>Add alias</button>
 </form>
 
+<h2>A group's own domain</h2>
+<form method="post" action="/admin/grouphost" class="stack">
+  <label>Group (address name) <input name="group" value="{{index .Data.Form "group"}}" required></label>
+  <label>Domain (empty to go back to its address under the primary) <input name="host" value="{{index .Data.Form "domain"}}"></label>
+  <p class="muted">Point the domain's DNS at the nodes first. Sign-in still happens on the primary; members are signed in on the group's domain automatically.</p>
+  <button>Set domain</button>
+</form>
+
 <h2>Accounts</h2>
 <form method="post" action="/admin/suspend" class="stack">
   <label>Suspend an account everywhere (its handle or email) <input name="who" value="{{index .Data.Form "who"}}" required></label>

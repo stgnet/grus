@@ -108,3 +108,7 @@ button.helpful { background: none; color: var(--accent); border: 1px solid var(-
 .bell-list li { border-bottom: 1px solid var(--line); padding: .5rem 0; list-style: none; }
 .bell-list li.unread { font-weight: 600; }
 .bell-list { padding: 0; }
+/* M7: profiles */
+.profile-card { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
+.profile-card h1 { margin: 0; }
+img.avatar { border-radius: 50%; object-fit: cover; width: 96px; height: 96px; }

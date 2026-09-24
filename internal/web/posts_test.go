@@ -33,11 +33,10 @@ func (b *browser) upload(rawURL string, fields map[string]string, files map[stri
 	mw.Close()
 	r := httptest.NewRequest("POST", rawURL, &buf)
 	r.Header.Set("Content-Type", mw.FormDataContentType())
-	for _, c := range b.cookies {
-		r.AddCookie(c)
-	}
+	b.send(r)
 	w := httptest.NewRecorder()
 	b.site.h.ServeHTTP(w, r)
+	b.keep(r, w)
 	return w
 }
 

@@ -3,7 +3,7 @@
 <article class="post">
   {{template "status" (dict "I" $p "K" "post" "Own" $d.CanEdit "D" $d "V" $d.Votes)}}
   <h1>{{$p.Title}}</h1>
-  <p class="meta">{{$d.Author}} · {{date $p.CreatedAt}}{{if $p.EditedAt}} · edited{{end}}{{if and $p.Locked (ne $p.Origin "archive")}} · locked{{end}}{{if $p.Pinned}} · pinned{{end}}</p>
+  <p class="meta">{{if $d.AuthorURL}}<a href="{{$d.AuthorURL}}">{{$d.Author}}</a>{{else}}{{$d.Author}}{{end}} · {{date $p.CreatedAt}}{{if $p.EditedAt}} · edited{{end}}{{if and $p.Locked (ne $p.Origin "archive")}} · locked{{end}}{{if $p.Pinned}} · pinned{{end}}</p>
   {{if $d.Topics}}<p class="topics">{{range $d.Topics}}<a class="chip" href="/faq/t/{{.ID}}">{{.Title}}</a> {{end}}</p>{{end}}
   {{if eq $p.Origin "archive"}}<p class="notice">From the Facebook group archive. Names have been removed.{{if $p.OriginURL}} <a href="{{$p.OriginURL}}" rel="nofollow noopener">View the original</a>{{end}} · <a href="/p/{{$p.ID}}/removal">Request removal</a></p>{{end}}
   {{if $p.Body}}<div class="body">{{text $p.Body}}</div>{{end}}
@@ -244,7 +244,7 @@
 {{define "comment"}}{{$c := .C}}{{$d := .D}}
 <div class="comment" id="c{{$c.ID}}">
   {{template "status" (dict "I" $c.Comment "K" "comment" "Own" $c.CanEdit "D" $d "V" $c.Votes)}}
-  <p class="meta">{{$c.Author}} · {{date $c.CreatedAt}}{{if $c.EditedAt}} · edited{{end}}</p>
+  <p class="meta">{{if $c.AuthorURL}}<a href="{{$c.AuthorURL}}">{{$c.Author}}</a>{{else}}{{$c.Author}}{{end}} · {{date $c.CreatedAt}}{{if $c.EditedAt}} · edited{{end}}</p>
   {{if $c.NewerID}}<p class="superseded" data-generated="auto"><a href="#c{{$c.NewerID}}">Newer information below</a></p>{{end}}
   {{/* A flagged comment is folded for everyone but its author until the
        vote or a mod settles it: readable on a click, not in your face. */}}
