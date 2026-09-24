@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1>Sign in</h1>
+<p>Enter your email. We'll send a link that signs you in, and a code in case you open the email on another device. There's no password.</p>
+<form method="post" action="/login" class="stack">
+  <input type="hidden" name="next" value="{{.Data.Next}}">
+  <label>Email <input type="email" name="email" value="{{.Data.Email}}" autocomplete="email" required autofocus></label>
+  <button>Email me a sign-in link</button>
+</form>
+{{end}}

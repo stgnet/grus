@@ -1,0 +1,19 @@
+# The Studio in the starting setup: a live, full copy of everything, as a
+# non-voting member. It serves no web traffic in M0 (no http_addr or
+# https_addr), and the VPS's leader adds it to the cluster by itself (the
+# VPS's "peer" line), so it has no bootstrap and no peers here.
+
+node_id  = studio
+node_num = 2
+# On the Studio's own disk, not the NAS: SQLite needs local-disk locking.
+# The NAS gets the daily backups (deploy/grus-backup.sh).
+data_dir = /usr/local/var/grus
+
+primary_domain = nfb.group
+
+cluster_addr = :7946
+advertise    = studio.example.net:7946
+
+tls_ca   = /etc/grus/cluster/ca.crt
+tls_cert = /etc/grus/cluster/studio.crt
+tls_key  = /etc/grus/cluster/studio.key

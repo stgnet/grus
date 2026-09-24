@@ -1,0 +1,28 @@
+# systemd unit for a grus node. Installed by deploy/install-service.sh.
+[Unit]
+Description=Grus groups server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Runs as its own user, which owns the data directory. Rather than start as
+# root and drop privileges after binding :80 and :443, systemd grants just
+# the one capability needed to bind low ports.
+User=grus
+Group=grus
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ExecStart=/usr/local/bin/grus serve -config /etc/grus/grus.conf
+Restart=on-failure
+RestartSec=2
+# Give Raft and SQLite time to close cleanly.
+TimeoutStopSec=20
+
+# Hardening: the process can write only its data directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/grus
+
+[Install]
+WantedBy=multi-user.target

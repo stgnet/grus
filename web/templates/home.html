@@ -1,0 +1,18 @@
+{{define "content"}}
+<h1>Groups for people who share an interest</h1>
+<p class="lead">Picture posts and discussion, organized so the good answers don't scroll away.
+Read without an account; sign in with just your email to join in.</p>
+{{if not .User}}<p><a class="button" href="{{.LoginURL}}">Sign in</a></p>{{end}}
+<h2>Groups</h2>
+{{if .Data}}
+<ul class="cards">
+{{range .Data}}
+  <li><a href="{{.URL}}"><strong>{{.Name}}</strong></a>
+    {{if ne .Visibility "public"}}<span class="tag">{{.Visibility}}</span>{{end}}
+    {{if .Description}}<p>{{.Description}}</p>{{end}}</li>
+{{end}}
+</ul>
+{{else}}
+<p class="muted">No groups yet.</p>
+{{end}}
+{{end}}

@@ -1,0 +1,39 @@
+{{define "content"}}
+<h1>Admin</h1>
+
+<h2>Groups</h2>
+<table>
+  <tr><th>Name</th><th>Address</th><th>Created</th></tr>
+  {{range .Data.Groups}}<tr><td>{{.Name}}</td><td><a href="{{.URL}}">{{.URL}}</a></td><td>{{.CreatedAt}}</td></tr>{{end}}
+</table>
+<form method="post" action="/admin/groups" class="stack">
+  <h3>New group</h3>
+  <label>Address name (the part before the domain) <input name="slug" value="{{index .Data.Form "slug"}}" required></label>
+  <label>Name <input name="name" value="{{index .Data.Form "name"}}" required></label>
+  <label>Description <textarea name="description" rows="2">{{index .Data.Form "description"}}</textarea></label>
+  <button>Create group</button>
+</form>
+
+<h2>Domains</h2>
+<ul>{{range .Data.Domains}}<li>{{.Name}} <span class="tag">{{.Role}}</span></li>{{end}}</ul>
+<form method="post" action="/admin/domains" class="stack">
+  <label>Domain <input name="domain" value="{{index .Data.Form "domain"}}" required></label>
+  <div class="row">
+    <button name="action" value="alternate">Add as alternate</button>
+    <button name="action" value="primary">Make primary</button>
+  </div>
+  <p class="muted">Making a domain primary moves every group's address to it; the old primary becomes an alternate that redirects. Set up its DNS first (docs/dns.md).</p>
+</form>
+
+<h2>Host aliases</h2>
+<form method="post" action="/admin/aliases" class="stack">
+  <label>Host <input name="host" value="{{index .Data.Form "host"}}" required></label>
+  <label>Redirects to group (address name; empty for the home page) <input name="group" value="{{index .Data.Form "group"}}"></label>
+  <button>Add alias</button>
+</form>
+
+{{if .Data.Cluster}}
+<h2>Cluster</h2>
+<table>{{range $k, $v := .Data.Cluster}}<tr><th>{{$k}}</th><td><code>{{$v}}</code></td></tr>{{end}}</table>
+{{end}}
+{{end}}

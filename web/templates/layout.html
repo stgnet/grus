@@ -1,0 +1,27 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="{{if .Group}}/{{else}}{{.HomeURL}}{{end}}">{{if .Group}}{{.Group.Name}}{{else}}Home{{end}}</a>
+  <nav>
+    {{if .User}}
+      {{if .User.Handle}}<span class="me">{{.User.Handle}}</span>{{else}}<a href="{{.HomeURL}}welcome">Choose a handle</a>{{end}}
+      {{if .User.IsOperator}}<a href="{{.HomeURL}}admin">Admin</a>{{end}}
+      <form method="post" action="/logout" class="inline"><button class="link">Sign out</button></form>
+    {{else if .LoginURL}}
+      <a href="{{.LoginURL}}">Sign in</a>
+    {{end}}
+  </nav>
+</header>
+<main>
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+{{template "content" .}}
+</main>
+</body>
+</html>{{end}}

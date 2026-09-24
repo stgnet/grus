@@ -1,0 +1,10 @@
+{{define "content"}}
+<h1>Welcome</h1>
+<p>Pick a handle. It's the name other members see on your posts. Your email is never shown to anyone.</p>
+<form method="post" action="/welcome" class="stack">
+  <input type="hidden" name="next" value="{{.Data.Next}}">
+  <label>Handle <input name="handle" value="{{.Data.Handle}}" pattern="[a-z0-9_]{3,20}" maxlength="20" autocapitalize="none" required autofocus></label>
+  <p class="muted">3 to 20 characters: lowercase letters, numbers and _.</p>
+  <button>Continue</button>
+</form>
+{{end}}

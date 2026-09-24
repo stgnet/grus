@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1>Check your email</h1>
+<p>We sent you a sign-in link. Tap it on any device, or type the 6-digit code from the email here.</p>
+<form method="post" action="/code" class="stack">
+  <label>Code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required autofocus></label>
+  <button>Sign in</button>
+</form>
+<p class="muted">Nothing arrived? Check spam, or <a href="/login">send another</a>.</p>
+{{end}}

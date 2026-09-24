@@ -1,0 +1,14 @@
+{{define "content"}}
+<h1>{{.Data.Settings.Name}}</h1>
+{{if .Data.Settings.Description}}<p class="lead">{{.Data.Settings.Description}}</p>{{end}}
+{{if .Data.Rules}}
+<h2>Rules</h2>
+<ol>{{range .Data.Rules}}<li>{{.}}</li>{{end}}</ol>
+{{end}}
+{{if .Data.CanRead}}
+<p class="muted">No posts yet.</p>
+{{else}}
+<p>This group is private. Its posts are for members.</p>
+{{if not .User}}<p><a class="button" href="{{.LoginURL}}">Sign in</a></p>{{end}}
+{{end}}
+{{end}}

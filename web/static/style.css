@@ -1,0 +1,35 @@
+/* One small, mobile-first stylesheet. No fonts or frameworks from anywhere
+   else: nothing loads from a third party, for privacy and speed. */
+:root { --fg: #1d1f21; --muted: #666; --line: #ddd; --accent: #1d5fa8; --bg: #fff; --err: #a8261d; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e6e6e6; --muted: #9a9a9a; --line: #333; --accent: #6fa8e8; --bg: #141516; --err: #f07a70; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 17px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); }
+a { color: var(--accent); }
+main { max-width: 42rem; margin: 0 auto; padding: 1rem; }
+.top { display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+  padding: .6rem 1rem; border-bottom: 1px solid var(--line); }
+.top nav { display: flex; gap: 1rem; align-items: center; }
+.brand { font-weight: 600; text-decoration: none; color: var(--fg); }
+.me { color: var(--muted); }
+h1 { font-size: 1.6rem; line-height: 1.25; }
+.lead { font-size: 1.1rem; }
+.muted { color: var(--muted); }
+.error { color: var(--err); font-weight: 500; }
+.tag { font-size: .8rem; color: var(--muted); border: 1px solid var(--line); border-radius: 1rem; padding: 0 .5rem; }
+.cards { list-style: none; padding: 0; }
+.cards li { border: 1px solid var(--line); border-radius: .5rem; padding: .8rem 1rem; margin: .6rem 0; }
+.cards p { margin: .3rem 0 0; }
+.stack { display: flex; flex-direction: column; gap: .8rem; margin: 1rem 0 2rem; }
+.stack label { display: flex; flex-direction: column; gap: .25rem; }
+.row { display: flex; gap: .6rem; flex-wrap: wrap; }
+input, textarea { font: inherit; padding: .5rem .6rem; border: 1px solid var(--line); border-radius: .35rem;
+  background: var(--bg); color: var(--fg); }
+button, .button { font: inherit; padding: .5rem 1rem; border: 0; border-radius: .35rem; background: var(--accent);
+  color: #fff; cursor: pointer; text-decoration: none; display: inline-block; }
+button.link { background: none; color: var(--accent); padding: 0; text-decoration: underline; }
+form.inline { display: inline; }
+table { border-collapse: collapse; width: 100%; font-size: .95rem; }
+th, td { text-align: left; padding: .3rem .4rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+code { font-size: .85rem; word-break: break-all; }

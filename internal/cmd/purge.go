@@ -1,0 +1,88 @@
+package cmd
+
+import "database/sql"
+
+// Purge hard-deletes everything whose retention has run out (plan section 6,
+// "Deleting: hidden now, purged later"). The leader submits one a day with
+// Before set to the current time; because Before is in the command, every
+// node deletes exactly the same rows.
+//
+// Anything under legal_hold is kept until the hold is lifted.
+//
+// Not yet: photo blobs (arrive in M1) and the erasure list's bookkeeping.
+type Purge struct {
+	Before int64
+}
+
+func (c *Purge) Apply(a *Applier) (any, error) {
+	// site.db: spent sign-ins, expired sessions, and the personal details of
+	// accounts deleted longer ago than the grace period. The account row
+	// stays (posts point at it and show "[deleted]"); what identifies the
+	// person is removed.
+	err := a.Site(func(tx *sql.Tx) error {
+		for _, q := range []string{
+			`DELETE FROM login_tokens WHERE expires_at < ?1`,
+			`DELETE FROM sessions WHERE expires_at < ?1`,
+			`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE purge_after < ?1)`,
+			`UPDATE users SET email = NULL, handle = NULL, phone = NULL, photo_key = NULL, bio = NULL,
+			        purge_after = NULL
+			 WHERE purge_after < ?1`,
+		} {
+			if _, err := tx.Exec(q, c.Before); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Each group's file. The list comes from site.db, which is in the same
+	// state on every node at this point in the log.
+	rows, err := a.Store.Site().Query(`SELECT id FROM groups ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	var groups []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		groups = append(groups, id)
+	}
+	rows.Close()
+
+	for _, id := range groups {
+		err := a.Group(id, func(tx *sql.Tx) error {
+			for _, q := range []string{
+				// Comments that expired, and comments on posts that expired,
+				// unless held.
+				`DELETE FROM comments WHERE legal_hold = 0 AND (purge_after < ?1 OR post_id IN
+				   (SELECT id FROM posts WHERE purge_after < ?1 AND legal_hold = 0))`,
+				// Expired posts, unless held or still holding a held comment.
+				`DELETE FROM posts WHERE purge_after < ?1 AND legal_hold = 0
+				   AND NOT EXISTS (SELECT 1 FROM comments WHERE comments.post_id = posts.id)`,
+				// Old versions: expired ones, unless their item is held; and any
+				// whose item is gone.
+				`DELETE FROM revisions WHERE
+				   (purge_after < ?1
+				     AND NOT (kind = 'post' AND ref_id IN (SELECT id FROM posts WHERE legal_hold = 1))
+				     AND NOT (kind = 'comment' AND ref_id IN (SELECT id FROM comments WHERE legal_hold = 1)))
+				   OR (kind = 'post' AND ref_id NOT IN (SELECT id FROM posts))
+				   OR (kind = 'comment' AND ref_id NOT IN (SELECT id FROM comments))`,
+			} {
+				if _, err := tx.Exec(q, c.Before); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
