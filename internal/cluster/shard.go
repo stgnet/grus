@@ -25,7 +25,9 @@ type shard struct {
 	trans *raft.NetworkTransport
 	bolt  *raftboltdb.BoltStore
 
-	relayMu sync.Mutex // one outbox relay at a time (see relay)
+	relayMu sync.Mutex    // one outbox relay at a time (see relay)
+	down    chan struct{} // closed by shutdown
+	once    sync.Once
 }
 
 // shardDir is where one log's Raft files live: raft/site, raft/g42.
@@ -99,7 +101,7 @@ func (n *Node) openShard(l cmd.LogID, boot []raft.Server) (*shard, error) {
 		bolt.Close()
 		return nil, err
 	}
-	s := &shard{log: l, dir: dir, raft: r, trans: trans, bolt: bolt}
+	s := &shard{log: l, dir: dir, raft: r, trans: trans, bolt: bolt, down: make(chan struct{})}
 	if len(boot) > 0 {
 		has, err := raft.HasExistingState(bolt, bolt, snaps)
 		if err == nil && !has {
@@ -114,6 +116,7 @@ func (n *Node) openShard(l cmd.LogID, boot []raft.Server) (*shard, error) {
 }
 
 func (s *shard) shutdown() error {
+	s.once.Do(func() { close(s.down) })
 	err := s.raft.Shutdown().Error()
 	return errors.Join(err, s.trans.Close(), s.bolt.Close())
 }
@@ -151,7 +154,17 @@ func (s *shard) applyHere(c cmd.Command) (any, uint64, error) {
 		return nil, 0, err
 	}
 	f := s.raft.Apply(data, 10*time.Second)
-	if err := f.Error(); err != nil {
+	// Wait for the result, or for this log to shut down. Raft's own
+	// shutdown can leave a command that was queued at that very moment
+	// without an answer forever, and a caller shouldn't hang on that.
+	done := make(chan error, 1)
+	go func() { done <- f.Error() }()
+	select {
+	case err = <-done:
+	case <-s.down:
+		return nil, 0, errShutdown
+	}
+	if err != nil {
 		if errors.Is(err, raft.ErrNotLeader) || errors.Is(err, raft.ErrLeadershipLost) {
 			return nil, 0, ErrNotLeader
 		}
@@ -160,6 +173,9 @@ func (s *shard) applyHere(c cmd.Command) (any, uint64, error) {
 	res := f.Response().(result)
 	return res.value, f.Index(), res.err
 }
+
+// errShutdown is the answer to a command caught by this node shutting down.
+var errShutdown = errors.New("this node is shutting down")
 
 // waitApplied waits until this node has applied the log up to index.
 func (s *shard) waitApplied(index uint64, timeout time.Duration) {

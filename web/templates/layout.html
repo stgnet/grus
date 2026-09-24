@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1d5fa8">
 <title>{{.Title}}</title>
 {{if .NoIndex}}<meta name="robots" content="noindex">{{end}}
 <link rel="stylesheet" href="/static/style.css">
@@ -14,7 +15,7 @@
   <nav>
     {{if .Group}}<a href="{{.HomeURL}}">All groups</a>{{end}}
     {{if .User}}
-      <a href="{{.HomeURL}}notifications">Notifications{{if .Unread}} ({{.Unread}}){{end}}</a>
+      <a href="{{.HomeURL}}notifications" aria-label="Notifications{{if .Unread}}, {{.Unread}} unread{{end}}">Notifications{{if .Unread}} ({{.Unread}}){{end}}</a>
       {{if .User.Handle}}<a class="me" href="{{.HomeURL}}profile">{{.User.Handle}}</a>{{else}}<a href="{{.HomeURL}}welcome">Choose a handle</a>{{end}}
       {{if .User.IsOperator}}<a href="{{.HomeURL}}admin">Admin</a>{{end}}
       <form method="post" action="/logout" class="inline"><button class="link">Sign out</button></form>

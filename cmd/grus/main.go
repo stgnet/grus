@@ -8,6 +8,7 @@
 //	grus recover -config ...                    make this node every log's only voter (disaster runbook)
 //	grus import-archive -config ... -group <slug> <file>   load a knowledge base as archive threads
 //	grus bench-llm -model <name> <archive.json>            measure a model on real threads
+//	grus loadtest -url https://<group address> [-c 10] [-d 30s]   read public pages hard, report timings
 //
 // See docs/operations.md for how they fit together.
 package main
@@ -60,6 +61,8 @@ func main() {
 		err = importArchive(os.Args[2:])
 	case "bench-llm":
 		err = benchLLM(os.Args[2:])
+	case "loadtest":
+		err = loadtest(os.Args[2:])
 	case "version":
 		fmt.Println("grus", version)
 	default:
@@ -79,6 +82,7 @@ func usage() {
   grus recover -config <file>
   grus import-archive -config <file> -group <slug> [-n] <archive.json>
   grus bench-llm -model <name> [-url ...] [-n 20] [-questions q.json] <archive.json>
+  grus loadtest -url https://<group address> [-c 10] [-d 30s] [-paths /a,/b]
   grus version`)
 	os.Exit(2)
 }

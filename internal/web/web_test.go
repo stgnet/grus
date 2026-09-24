@@ -1,14 +1,16 @@
 package web
 
 import (
-	"net"
 	"bytes"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stgnet/grus/internal/auth"
@@ -345,6 +347,27 @@ func TestAdminIsOperatorOnly(t *testing.T) {
 	}
 	// Bad input shows an error, not a crash.
 	expect(t, op.do("POST", "https://nfb.group/admin/groups", url.Values{"slug": {"www"}, "name": {"W"}}), 400, "")
+
+	// The node map: register two nodes, place the group on the small one,
+	// see it listed, take it off again; then remove a node.
+	must(t, s.log, &cmd.RegisterNode{ID: "n1", Addr: "vps1:7946", Voter: true, At: 1})
+	must(t, s.log, &cmd.RegisterNode{ID: "small", Addr: "vps2:7946", At: 1})
+	expect(t, member.do("POST", "https://nfb.group/admin/place", url.Values{"group": {"promaster"}, "node": {"small"}}), 404, "")
+	expect(t, op.do("POST", "https://nfb.group/admin/place", url.Values{"group": {"promaster"}, "node": {"small"}, "action": {"place"}}), 303, "/admin")
+	page := op.do("GET", "https://nfb.group/admin", nil).Body.String()
+	if !strings.Contains(page, "<td>small</td>") || !strings.Contains(page, "<td>promaster</td>") {
+		t.Fatalf("node map on the admin page:\n%s", page)
+	}
+	expect(t, op.do("POST", "https://nfb.group/admin/place", url.Values{"group": {"promaster"}, "node": {"small"}, "action": {"remove"}}), 303, "/admin")
+	if strings.Contains(op.do("GET", "https://nfb.group/admin", nil).Body.String(), "<td>promaster</td>") {
+		t.Fatal("still placed after taking it off")
+	}
+	// A group's last voter can't be taken off.
+	expect(t, op.do("POST", "https://nfb.group/admin/place", url.Values{"group": {"promaster"}, "node": {"n1"}, "action": {"remove"}}), 400, "")
+	expect(t, op.do("POST", "https://nfb.group/admin/nodes/remove", url.Values{"node": {"small"}}), 303, "/admin")
+	if strings.Contains(op.do("GET", "https://nfb.group/admin", nil).Body.String(), "<td>small</td>") {
+		t.Fatal("removed node still listed")
+	}
 }
 
 func TestPrivateAndHiddenGroups(t *testing.T) {
@@ -440,5 +463,83 @@ func TestOwnDomainSignIn(t *testing.T) {
 	// A domain under the primary, or already in use, is refused.
 	if _, err := s.log.Apply(&cmd.SetGroupHost{GroupID: 42, Host: "x.nfb.group", At: 2}); !cmd.IsInput(err) {
 		t.Fatalf("domain under the primary: %v", err)
+	}
+}
+
+// TestRenderCache checks the public-page cache: a signed-out visitor's
+// second view of a page comes from memory, any write to the group (or to
+// site.db) makes the next view fresh, and signed-in visitors and private
+// groups never touch it.
+func TestRenderCache(t *testing.T) {
+	s := newSite(t)
+	G := "https://travato.nfb.group"
+	anon := s.browser()
+	first := anon.do("GET", G+"/", nil).Body.String()
+	if second := anon.do("GET", G+"/", nil).Body.String(); second != first || s.srv.cache.hits.Load() != 1 {
+		t.Fatalf("second view not from the cache (hits %d)", s.srv.cache.hits.Load())
+	}
+	alice := s.signedIn("alice@example.com", "alice")
+	alice.upload(G+"/submit", map[string]string{"title": "Fresh post"}, nil)
+	if !strings.Contains(anon.do("GET", G+"/", nil).Body.String(), "Fresh post") {
+		t.Fatal("a cached page outlived a write")
+	}
+	hits := s.srv.cache.hits.Load()
+	if !strings.Contains(alice.do("GET", G+"/", nil).Body.String(), "Fresh post") || s.srv.cache.hits.Load() != hits {
+		t.Fatal("a signed-in view came from the cache")
+	}
+}
+
+// TestConcurrentLoad is a small load test of the web layer in CI: many
+// visitors at once, reading (signed out, through the render cache, and
+// signed in) while others post and comment. Nothing may fail, and under
+// the race detector nothing may race.
+func TestConcurrentLoad(t *testing.T) {
+	s := newSite(t)
+	G := "https://travato.nfb.group"
+	var writers []*browser
+	for i := 0; i < 4; i++ {
+		writers = append(writers, s.signedIn(fmt.Sprintf("w%d@example.com", i), fmt.Sprintf("writer%d", i)))
+	}
+	first := writers[0].upload(G+"/submit", map[string]string{"title": "Load test thread"}, nil).Header().Get("Location")
+	var wg sync.WaitGroup
+	fail := make(chan string, 100)
+	for i, w := range writers {
+		wg.Add(1)
+		go func(i int, w *browser) {
+			defer wg.Done()
+			for j := 0; j < 5; j++ {
+				if c := w.upload(G+"/submit", map[string]string{"title": fmt.Sprintf("Post %d-%d", i, j)}, nil).Code; c != 303 {
+					fail <- fmt.Sprintf("post: %d", c)
+				}
+				if c := w.upload(G+first+"/comment", map[string]string{"body": fmt.Sprintf("Comment %d-%d", i, j)}, nil).Code; c != 303 {
+					fail <- fmt.Sprintf("comment: %d", c)
+				}
+			}
+		}(i, w)
+	}
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			b := s.browser()
+			if i%3 == 0 {
+				b = writers[i%len(writers)]
+			}
+			for j := 0; j < 20; j++ {
+				for _, p := range []string{"/", first, "/faq", "/about"} {
+					if c := b.do("GET", G+p, nil).Code; c != 200 {
+						fail <- fmt.Sprintf("GET %s: %d", p, c)
+					}
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(fail)
+	for f := range fail {
+		t.Error(f)
+	}
+	if !strings.Contains(s.browser().do("GET", G+first, nil).Body.String(), "Comment 3-4") {
+		t.Fatal("a comment written under load is missing")
 	}
 }

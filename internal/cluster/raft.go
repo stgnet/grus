@@ -57,6 +57,7 @@ type Node struct {
 	mux    *muxListener
 	rpc    *subListener
 	rpcMux *http.ServeMux
+	rpcSrv *http.Server
 	client *Client
 
 	mu     sync.Mutex
@@ -219,7 +220,13 @@ func (n *Node) Shutdown() error {
 	default:
 	}
 	close(n.done)
+	// Stop answering other nodes first, including on connections already
+	// open: a request arriving mid-shutdown would find the logs going away
+	// under it.
+	n.rpcSrv.Close()
 	n.wg.Wait()
+	n.placeMu.Lock() // no placeShards may start a log after this
+	defer n.placeMu.Unlock()
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	var errs []error

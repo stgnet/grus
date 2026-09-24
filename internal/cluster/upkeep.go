@@ -146,6 +146,11 @@ func (n *Node) forget() bool {
 func (n *Node) placeShards() {
 	n.placeMu.Lock()
 	defer n.placeMu.Unlock()
+	select {
+	case <-n.done:
+		return // shutting down: start nothing new
+	default:
+	}
 	mine, err := n.st.HostedBy(n.o.ID)
 	if err != nil {
 		return

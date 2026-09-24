@@ -97,9 +97,8 @@ func (n *Node) serveRPC() {
 		}
 		json.NewEncoder(w).Encode(applyReply{Value: v, Index: index})
 	})
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	// The listener closes with the node's port, which ends this Serve.
-	go srv.Serve(n.rpc)
+	n.rpcSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go n.rpcSrv.Serve(n.rpc)
 }
 
 // RPC is the node's internal API, for other packages to add endpoints to.

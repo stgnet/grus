@@ -338,3 +338,50 @@ func (s *Store) MemberCount(groupID int64) (int, error) {
 	err = db.QueryRow(`SELECT COUNT(*) FROM memberships WHERE status = 'active'`).Scan(&n)
 	return n, err
 }
+
+// GroupBlobHashes lists the photos one group's posts and comments use, for
+// the group export.
+func (s *Store) GroupBlobHashes(groupID int64) ([]string, error) {
+	db, err := s.Group(groupID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`SELECT DISTINCT blob_hash FROM images ORDER BY blob_hash`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// GroupUserIDs lists every account a group's file mentions: members,
+// authors of posts and comments. The export pairs them with handles.
+func (s *Store) GroupUserIDs(groupID int64) ([]int64, error) {
+	db, err := s.Group(groupID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`SELECT user_id FROM memberships UNION SELECT user_id FROM posts WHERE user_id IS NOT NULL
+		UNION SELECT user_id FROM comments WHERE user_id IS NOT NULL ORDER BY 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

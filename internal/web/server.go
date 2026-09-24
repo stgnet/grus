@@ -72,6 +72,7 @@ type Server struct {
 	fragments *template.Template // pieces of pages the scripts fetch
 	asks      askCounter
 	newPosts  hourCounter    // new accounts: posts and comments this hour
+	cache     pageCache      // public pages as signed-out visitors see them (cache.go)
 	homeMux   *http.ServeMux // the bare primary domain: sign-in, home, admin
 	groupMux  *http.ServeMux // any group's host
 }
@@ -113,6 +114,8 @@ func New(s *Server) (*Server, error) {
 	h.HandleFunc("POST /admin/domains", s.adminDomain)
 	h.HandleFunc("POST /admin/aliases", s.adminAlias)
 	h.HandleFunc("POST /admin/grouphost", s.adminGroupHost)
+	h.HandleFunc("POST /admin/place", s.adminPlace)
+	h.HandleFunc("POST /admin/nodes/remove", s.adminRemoveNode)
 	h.HandleFunc("GET /bounce", s.bounce)
 	h.HandleFunc("POST /admin/suspend", s.adminSuspend)
 	h.HandleFunc("GET /notifications", s.notificationsPage)
@@ -193,6 +196,7 @@ func New(s *Server) (*Server, error) {
 	g.HandleFunc("GET /similar", s.similar)
 	g.HandleFunc("GET /settings", s.settingsForm)
 	g.HandleFunc("POST /settings", s.settingsSave)
+	g.HandleFunc("GET /settings/export", s.groupExport)
 	g.HandleFunc("GET /how-it-works", s.howItWorks)
 	// M3: the FAQ, topics, outside sources, and thread arrangement.
 	g.HandleFunc("GET /faq", s.faqPage)
@@ -277,6 +281,10 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	case siteGroup:
 		if s.needsBounce(r, rt) {
 			s.startBounce(w, r, rt)
+			return
+		}
+		if s.cacheable(r, rt) {
+			s.serveCached(w, withRoute(r, rt), rt, s.groupMux)
 			return
 		}
 		s.groupMux.ServeHTTP(w, withRoute(r, rt))

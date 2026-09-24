@@ -16,6 +16,7 @@ import (
 type adminData struct {
 	Groups  []adminGroup
 	Domains []store.Domain
+	Nodes   []adminNode // the node map (M7); empty on a single node with none registered
 	Cluster map[string]string
 	Form    map[string]string // values to refill after an error
 
@@ -28,6 +29,12 @@ type adminData struct {
 type adminGroup struct {
 	store.Group
 	URL string
+}
+
+// adminNode is one row of the node map: a node and the groups on it.
+type adminNode struct {
+	store.Node
+	Groups []string // slugs, "(voter)" marked
 }
 
 // statser is implemented by the Raft node (not by the local test log).
@@ -70,9 +77,13 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, u *store.Us
 		all := st.Stats()
 		// A few lines worth glancing at, not Raft's whole dump.
 		d.Cluster = map[string]string{}
-		for _, k := range []string{"state", "term", "commit_index", "applied_index", "last_snapshot_index", "latest_configuration"} {
+		for _, k := range []string{"node", "logs", "state", "term", "commit_index", "applied_index", "last_snapshot_index", "latest_configuration"} {
 			d.Cluster[k] = all[k]
 		}
+	}
+	if err := s.adminNodes(&d, groups); err != nil {
+		s.serverError(w, r, err)
+		return
 	}
 	if err := s.adminAI(&d); err != nil {
 		s.serverError(w, r, err)
@@ -229,6 +240,84 @@ func (s *Server) adminAlias(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.Log.Apply(&cmd.AddHostAlias{Host: host, GroupID: gid, At: s.Now().Unix()}); err != nil {
 		s.adminFail(w, r, u, err, form)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+// adminNodes fills in the node map: each node, and the groups placed on it.
+func (s *Server) adminNodes(d *adminData, groups []store.Group) error {
+	nodes, err := s.Store.Nodes()
+	if err != nil {
+		return err
+	}
+	hosts, err := s.Store.GroupHosts(0)
+	if err != nil {
+		return err
+	}
+	slugs := map[int64]string{}
+	for _, g := range groups {
+		slugs[g.ID] = g.Slug
+	}
+	on := map[string][]string{}
+	for _, h := range hosts {
+		name := slugs[h.GroupID]
+		if name == "" {
+			continue
+		}
+		if h.Voter {
+			name += " (voter)"
+		}
+		on[h.NodeID] = append(on[h.NodeID], name)
+	}
+	for _, n := range nodes {
+		d.Nodes = append(d.Nodes, adminNode{Node: n, Groups: on[n.ID]})
+	}
+	return nil
+}
+
+// adminPlace puts a group on a node, or takes it off (plan section 8,
+// "Who holds what"). The node copies the group from its leader, or deletes
+// its copy, by itself.
+func (s *Server) adminPlace(w http.ResponseWriter, r *http.Request) {
+	u := s.operator(w, r)
+	if u == nil {
+		return
+	}
+	slug := strings.ToLower(strings.TrimSpace(r.FormValue("group")))
+	node := strings.TrimSpace(r.FormValue("node"))
+	form := map[string]string{"place_group": slug, "place_node": node}
+	g, err := s.Store.GroupBySlug(slug)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if g == nil {
+		s.adminFail(w, r, u, errors.New("no group "+slug), form)
+		return
+	}
+	var c cmd.Command = &cmd.PlaceGroup{GroupID: g.ID, NodeID: node, Voter: r.FormValue("voter") == "on", At: s.Now().Unix()}
+	if r.FormValue("action") == "remove" {
+		c = &cmd.UnplaceGroup{GroupID: g.ID, NodeID: node, At: s.Now().Unix()}
+	}
+	if _, err := s.Log.Apply(c); err != nil {
+		s.adminFail(w, r, u, err, form)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+// adminRemoveNode takes a node that's gone for good out of the map. Any
+// group it was the only voter of goes to the replacement.
+func (s *Server) adminRemoveNode(w http.ResponseWriter, r *http.Request) {
+	u := s.operator(w, r)
+	if u == nil {
+		return
+	}
+	node := strings.TrimSpace(r.FormValue("node"))
+	repl := strings.TrimSpace(r.FormValue("replacement"))
+	if _, err := s.Log.Apply(&cmd.RemoveNode{ID: node, Replacement: repl, At: s.Now().Unix()}); err != nil {
+		s.adminFail(w, r, u, err, map[string]string{"remove_node": node, "replacement": repl})
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)

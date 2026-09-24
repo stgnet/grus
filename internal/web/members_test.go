@@ -1,8 +1,15 @@
 package web
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"database/sql"
 	"fmt"
+	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -161,5 +168,68 @@ func TestSisterNoteOnPost(t *testing.T) {
 	// The About page still lists it: a private group's name is public.
 	if !strings.Contains(s.browser().do("GET", G+"/about", nil).Body.String(), "ProMaster") {
 		t.Fatal("sister not on the About page")
+	}
+}
+
+// TestGroupExport downloads a group as its owner and checks the file:
+// the database with the posts, handles without emails, and the photos.
+// Nobody but an owner can download it.
+func TestGroupExport(t *testing.T) {
+	s := newSite(t)
+	G := "https://travato.nfb.group"
+	owner := s.signedIn("owner@example.com", "owner")
+	s.makeOwner("owner")
+	alice := s.signedIn("alice@example.com", "alice")
+	alice.upload(G+"/submit", map[string]string{"title": "Solar setup"}, map[string][][]byte{"photos": {testJPEG(t)}})
+	expect(t, alice.do("GET", G+"/settings/export", nil), 404, "")
+
+	w := owner.do("GET", G+"/settings/export", nil)
+	if w.Code != 200 || !strings.Contains(w.Header().Get("Content-Disposition"), "travato-") {
+		t.Fatalf("export: %d %v", w.Code, w.Header())
+	}
+	gz, err := gzip.NewReader(w.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(gz)
+	files := map[string][]byte{}
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(tr)
+		files[h.Name] = b
+	}
+	if len(files["README.txt"]) == 0 || !bytes.HasPrefix(files["group.db"], []byte("SQLite format 3")) {
+		t.Fatalf("export holds %d files; README %d bytes, group.db %q", len(files), len(files["README.txt"]), files["group.db"][:16])
+	}
+	hj := string(files["handles.json"])
+	if !strings.Contains(hj, `"alice"`) || strings.Contains(hj, "@example.com") {
+		t.Fatalf("handles.json: %s", hj)
+	}
+	photos := 0
+	for name := range files {
+		if strings.HasPrefix(name, "photos/") {
+			photos++
+		}
+	}
+	if photos != 1 {
+		t.Fatalf("%d photos in the export, want 1", photos)
+	}
+	// The database really has the post in it.
+	p := filepath.Join(t.TempDir(), "g.db")
+	os.WriteFile(p, files["group.db"], 0o600)
+	db, err := sql.Open("sqlite", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if db.QueryRow(`SELECT COUNT(*) FROM posts WHERE title = 'Solar setup'`).Scan(&n); n != 1 {
+		t.Fatal("the post isn't in the exported database")
 	}
 }

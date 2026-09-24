@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -406,4 +408,134 @@ func TestPlacementAndFailover(t *testing.T) {
 		_, err := nodes["d"].Apply(&cmd.CreateGroup{GroupID: 12, Slug: "ekko", Name: "Ekko", At: 5})
 		return err == nil || errors.Is(err, cmd.ErrSlugTaken)
 	})
+}
+
+// TestWritesSurviveLeaderKill is the "kill nodes during a load test" drill
+// (plan, M7): three voters take a steady stream of posts to one group,
+// through all three nodes at once, and the group's leader is killed partway
+// through. Writes must carry on through the other two, and every write
+// that was acknowledged, before or after the kill, must be on both
+// survivors: an acknowledged write is never lost.
+func TestWritesSurviveLeaderKill(t *testing.T) {
+	caDir := testCA(t, "a", "b", "c")
+	ids := []string{"a", "b", "c"}
+	nodes := map[string]*Node{}
+	stores := map[string]*store.Store{}
+	var addrA string
+	for _, id := range ids {
+		addr := freeAddr(t)
+		o := opts(t, caDir, id, id, addr)
+		o.Voter = true
+		if id == "a" {
+			o.Bootstrap, addrA = true, addr
+		} else {
+			o.Join = []string{addrA}
+		}
+		stores[id] = openStore(t, t.TempDir())
+		nodes[id] = startNode(t, o, stores[id])
+	}
+	defer func() {
+		for _, n := range nodes {
+			n.Shutdown()
+		}
+	}()
+	const gid, owner = 21, 7
+	if _, err := nodes["a"].Apply(&cmd.CreateGroup{GroupID: gid, Slug: "travato", Name: "Travato", OwnerID: owner, At: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		st := stores[id]
+		waitFor(t, id+" to have the group's owner", func() bool {
+			m, _ := st.Membership(gid, owner)
+			return m != nil
+		})
+	}
+
+	var (
+		mu     sync.Mutex
+		acked  []int64
+		dead   = map[string]bool{}
+		nextID atomic.Int64
+		after  atomic.Int64 // writes acknowledged after the kill
+		killed atomic.Bool
+		stop   = make(chan struct{})
+		wg     sync.WaitGroup
+	)
+	nextID.Store(1000)
+	for _, id := range ids {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				mu.Lock()
+				gone := dead[id]
+				mu.Unlock()
+				if gone {
+					return
+				}
+				pid := nextID.Add(1)
+				_, err := nodes[id].Apply(&cmd.CreatePost{GroupID: gid, PostID: pid, UserID: owner, Title: fmt.Sprint("post ", pid), At: 2})
+				if err != nil {
+					continue // not acknowledged: it may or may not have landed
+				}
+				mu.Lock()
+				acked = append(acked, pid)
+				mu.Unlock()
+				if killed.Load() {
+					after.Add(1)
+				}
+			}
+		}(id)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	var victim string
+	waitFor(t, "a group leader", func() bool {
+		for _, id := range ids {
+			if nodes[id].Leads(gid) {
+				victim = id
+				return true
+			}
+		}
+		return false
+	})
+	mu.Lock()
+	dead[victim] = true
+	mu.Unlock()
+	nodes[victim].Shutdown()
+	killed.Store(true)
+	waitFor(t, "writes to resume after the kill", func() bool { return after.Load() >= 20 })
+	close(stop)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(acked) < 40 {
+		t.Fatalf("only %d writes acknowledged", len(acked))
+	}
+	for _, id := range ids {
+		if id == victim {
+			continue
+		}
+		st := stores[id]
+		waitFor(t, id+" to have every acknowledged write", func() bool {
+			db, err := st.Group(gid)
+			if err != nil {
+				return false
+			}
+			for _, pid := range acked {
+				var n int
+				if db.QueryRow(`SELECT COUNT(*) FROM posts WHERE id = ?`, pid).Scan(&n); n != 1 {
+					return false
+				}
+			}
+			return true
+		})
+	}
+	t.Logf("%d writes acknowledged, %d after killing %s", len(acked), after.Load(), victim)
 }

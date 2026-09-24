@@ -268,9 +268,8 @@ it has caught up. New groups are placed on the first three voters (by
 node id); a group with three voters survives losing any one of them.
 
 A small VPS that holds only a few groups: neither `voter` nor `full`, and
-a `join` line. It holds nothing until groups are placed on it. For now
-placement is a command (`cmd.PlaceGroup`, `cmd.UnplaceGroup`); the admin
-page gets buttons for it in M8. A node a group is placed on copies it from
+a `join` line. It holds nothing until groups are placed on it, from the
+admin page's Nodes section ("Place a group", optionally as a voter). A node a group is placed on copies it from
 the group's leader (a snapshot, then the stream), and a node it's taken
 off deletes its copy.
 
@@ -285,8 +284,8 @@ Photos follow their groups: the node that receives one pushes it to the
 other nodes holding the group, and a node fetches any it's missing, on a
 page view or within a minute otherwise.
 
-A node that's gone for good is taken out of the map with
-`cmd.RemoveNode` (with a replacement for any group it was the only voter
+A node that's gone for good is taken out of the map on the admin page
+("Remove a node", with a replacement for any group it was the only voter
 of); the logs' leaders then drop it from their membership.
 
 ### An off-site mirror
@@ -297,3 +296,23 @@ with `full = true` and a `join` line. It holds every group as a non-voter,
 so it never slows writes down, and it's a ready source for `recover` if the
 house and the VPS are both lost. Run `grus backup` there too (to its own
 disk) if you want dated copies off-site as well.
+
+## 13. Before opening a group: load test
+
+`grus loadtest -url https://travato.nfb.group -c 20 -d 60s` reads the
+group's public pages (its front page, FAQ, and every post the front page
+links to) as 20 signed-out visitors at once, and reports pages a second
+and how long pages took. It only reads. Run it from another machine, and
+try stopping a node partway through: the other nodes should carry on,
+with a blip while a new leader is elected.
+
+Signed-out views of a public group come from the render cache: each page
+is rendered once and kept until the group or site.db changes, so a busy
+public thread costs one render per change, not one per view.
+
+## 14. Group export
+
+A group's owner can download everything the group is from the bottom of
+its settings page: its database file (posts, comments and their history,
+the FAQ, members, the mod log), a list of handles for the accounts it
+mentions (no emails), and every photo, as one `.tar.gz`.

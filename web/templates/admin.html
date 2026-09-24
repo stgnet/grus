@@ -63,6 +63,35 @@ Job queue: {{.Data.QueueDue}} ready to run, {{.Data.QueueLater}} waiting for thr
 <p class="muted">No AI activity recorded in the last two weeks.</p>
 {{end}}
 
+<h2>Nodes</h2>
+{{if .Data.Nodes}}
+<div class="scroll-x"><table>
+  <tr><th>Node</th><th>Address</th><th>Role</th><th>Groups</th></tr>
+  {{range .Data.Nodes}}<tr><td>{{.ID}}</td><td><code>{{.Addr}}</code></td>
+    <td>{{if .Voter}}voter{{end}}{{if .Full}} full copy{{end}}{{if not (or .Voter .Full)}}holds what's placed on it{{end}}</td>
+    <td>{{if .Full}}every group{{else}}{{range $i, $g := .Groups}}{{if $i}}, {{end}}{{$g}}{{else}}none{{end}}{{end}}</td></tr>{{end}}
+</table></div>
+<form method="post" action="/admin/place" class="stack">
+  <h3>Place a group</h3>
+  <label>Group (address name) <input name="group" value="{{index .Data.Form "place_group"}}" required></label>
+  <label>Node <input name="node" value="{{index .Data.Form "place_node"}}" required></label>
+  <label class="check"><input type="checkbox" name="voter"> As a voter (a VPS that should keep the group going if another fails)</label>
+  <div class="row">
+    <button name="action" value="place">Place on node</button>
+    <button name="action" value="remove" class="secondary">Take off node</button>
+  </div>
+  <p class="muted">The node copies the group from its current nodes and serves it from then on; taken off, it deletes its copy. A group's last voter can't be taken off.</p>
+</form>
+<form method="post" action="/admin/nodes/remove" class="stack">
+  <h3>Remove a node that's gone for good</h3>
+  <label>Node <input name="node" value="{{index .Data.Form "remove_node"}}" required></label>
+  <label>Gives its groups (those it was the only voter of) to <input name="replacement" value="{{index .Data.Form "replacement"}}"></label>
+  <button class="danger">Remove node</button>
+</form>
+{{else}}
+<p class="muted">No nodes registered: this is a single node, or a test.</p>
+{{end}}
+
 {{if .Data.Cluster}}
 <h2>Cluster</h2>
 <table>{{range $k, $v := .Data.Cluster}}<tr><th>{{$k}}</th><td><code>{{$v}}</code></td></tr>{{end}}</table>

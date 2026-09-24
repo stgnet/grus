@@ -112,3 +112,31 @@ button.helpful { background: none; color: var(--accent); border: 1px solid var(-
 .profile-card { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
 .profile-card h1 { margin: 0; }
 img.avatar { border-radius: 50%; object-fit: cover; width: 96px; height: 96px; }
+/* M8: mobile polish. Most visits are phones in a campground, so these
+   make the small screen the easy case rather than an afterthought. */
+img { max-width: 100%; height: auto; }
+.scroll-x { overflow-x: auto; }
+body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+@media (max-width: 600px) {
+  /* The header wraps rather than pushing the page sideways. */
+  .top { flex-wrap: wrap; gap: .4rem .8rem; padding: .5rem .8rem; }
+  .top nav { flex-wrap: wrap; gap: .3rem .9rem; font-size: .95rem; }
+  main { padding: .8rem; }
+  h1 { font-size: 1.35rem; }
+  /* Wide tables (admin, members) scroll inside themselves. */
+  table { display: block; overflow-x: auto; }
+  /* Deep reply chains keep some width to read in. */
+  .replies { margin-left: .4rem; padding-left: .5rem; }
+  .card .thumb { width: 72px; height: 72px; }
+  .photos { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+  .photos img { height: 110px; }
+  .tabs { overflow-x: auto; white-space: nowrap; }
+}
+@media (pointer: coarse) {
+  /* Fingers, not mouse pointers: 44px is the smallest target people hit
+     reliably. Text links inside sentences are left alone. */
+  button, .button, select { min-height: 44px; }
+  button.link { min-height: 0; padding: .4rem 0; }
+  .actions a, .actions button, .tabs a, .top nav a { padding: .45rem 0; display: inline-block; }
+  label.check input { width: 1.3rem; height: 1.3rem; }
+}

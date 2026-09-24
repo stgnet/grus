@@ -24,12 +24,12 @@ type commentView struct {
 	store.Comment
 	Author    string
 	AuthorURL string // their public profile; "" when anonymous
-	Images  []store.Image
-	CanEdit bool
-	NewerID int64 // a later comment replaced this one's advice
-	Votes   *voteView
-	Helped  bool // this viewer marked it helpful
-	CanHelp bool // members, on others' shown comments
+	Images    []store.Image
+	CanEdit   bool
+	NewerID   int64 // a later comment replaced this one's advice
+	Votes     *voteView
+	Helped    bool // this viewer marked it helpful
+	CanHelp   bool // members, on others' shown comments
 }
 
 // voteView is the Keep / Hide vote on a flagged item (plan section 6,
@@ -245,7 +245,7 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 	view := func(cm store.Comment) commentView {
 		v := commentView{Comment: cm, Author: authorOf(names, cm.UserID, cm.Anonymous),
 			AuthorURL: s.profileURL(c.rt.primary, names, cm.UserID, cm.Anonymous),
-			Images: byComment[cm.ID], CanEdit: c.u != nil && cm.UserID == c.u.ID}
+			Images:    byComment[cm.ID], CanEdit: c.u != nil && cm.UserID == c.u.ID}
 		if v.CanEdit && cm.Anonymous {
 			v.Author += " (you)"
 		}
