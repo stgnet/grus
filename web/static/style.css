@@ -90,3 +90,12 @@ select { font: inherit; padding: .4rem; border: 1px solid var(--line); border-ra
 footer { max-width: 42rem; margin: 2rem auto; padding: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
 .prose h2 { font-size: 1.2rem; margin-top: 1.5rem; }
 a.button.secondary { background: none; color: var(--accent); border: 1px solid var(--accent); }
+/* M5: moderation */
+button.danger { background: var(--err); }
+.inline-tools { display: inline-block; }
+.inline-tools summary { cursor: pointer; color: var(--accent); font-size: .9rem; }
+.notice.status p { margin: .2rem 0; }
+.votes { align-items: center; margin: .4rem 0; }
+.votes button { padding: .2rem .7rem; }
+details.flagged summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+.queue-item { border: 1px solid var(--line); border-radius: .5rem; padding: .6rem .9rem; margin: .6rem 0; }

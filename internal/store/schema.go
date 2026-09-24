@@ -587,4 +587,51 @@ CREATE INDEX sister_links_other ON sister_links(other_group, other_post);
 -- here; a worker sweep raises it when the other thread changes.
 ALTER TABLE notes ADD COLUMN ext_version INTEGER NOT NULL DEFAULT 0;
 `,
+	// 6: M5 moderation: the AI check's flags, member votes and reports,
+	// and the examples the check learns each group's standards from.
+	`
+-- Why an item is flagged or hidden, for the mod queue: by the AI check
+-- ('auto'), a member's report ('report'), or a member vote ('vote').
+-- ai_cleared = members or a mod said "keep"; the AI doesn't flag it again.
+ALTER TABLE posts    ADD COLUMN flagged_by    TEXT;
+ALTER TABLE posts    ADD COLUMN flag_category TEXT;
+ALTER TABLE posts    ADD COLUMN flag_reason   TEXT;
+ALTER TABLE posts    ADD COLUMN ai_cleared    INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE comments ADD COLUMN flagged_by    TEXT;
+ALTER TABLE comments ADD COLUMN flag_category TEXT;
+ALTER TABLE comments ADD COLUMN flag_reason   TEXT;
+ALTER TABLE comments ADD COLUMN ai_cleared    INTEGER NOT NULL DEFAULT 0;
+
+-- A member's report of a post or comment. One per member per item.
+CREATE TABLE reports (
+  kind        TEXT NOT NULL CHECK (kind IN ('post', 'comment')),
+  item_id     INTEGER NOT NULL,
+  user_id     INTEGER NOT NULL,
+  reason      TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  resolved_at INTEGER,
+  PRIMARY KEY (kind, item_id, user_id)
+);
+CREATE INDEX reports_open ON reports(resolved_at, created_at);
+
+-- Keep / Hide votes on flagged items. Only flagged items get votes.
+CREATE TABLE flag_votes (
+  kind       TEXT NOT NULL,
+  item_id    INTEGER NOT NULL,
+  user_id    INTEGER NOT NULL,
+  vote       TEXT NOT NULL CHECK (vote IN ('keep', 'hide')),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (kind, item_id, user_id)
+);
+
+-- Mods' decisions that overrode (or went beyond) the AI check, as short
+-- anonymous excerpts. The newest ~20 go into each check as examples of
+-- what this group accepts. No author ids: the text and the decision only.
+CREATE TABLE mod_examples (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  text       TEXT NOT NULL,
+  decision   TEXT NOT NULL CHECK (decision IN ('keep', 'hide')),
+  created_at INTEGER NOT NULL
+);
+`,
 }

@@ -69,6 +69,10 @@ func (s *Server) submitPost(w http.ResponseWriter, r *http.Request) {
 	}
 	d := submitData{Title: strings.TrimSpace(r.FormValue("title")), Body: strings.TrimSpace(r.FormValue("body")),
 		AllowAnon: c.st.AllowAnonymous, Anonymous: r.FormValue("anonymous") == "on"}
+	if msg := s.newAccountLimit(c, d.Title+" "+d.Body); msg != "" {
+		s.render(w, r, http.StatusBadRequest, "submit", c.errPage("New post", msg, d))
+		return
+	}
 	var files []*multipart.FileHeader
 	if r.MultipartForm != nil {
 		files = r.MultipartForm.File["photos"]
@@ -207,6 +211,12 @@ func (s *Server) editPost(w http.ResponseWriter, r *http.Request) {
 	}
 	d := editData{Action: fmt.Sprintf("/p/%d/edit", p.ID), Back: fmt.Sprintf("/p/%d", p.ID), IsPost: true,
 		Title: strings.TrimSpace(r.FormValue("title")), Body: strings.TrimSpace(r.FormValue("body"))}
+	// Editing is held to the new-account limits too, or a link could go in
+	// by editing it into an existing post.
+	if msg := s.newAccountLimit(c, d.Title+" "+d.Body); msg != "" {
+		s.render(w, r, http.StatusBadRequest, "edit", c.errPage("Edit post", msg, d))
+		return
+	}
 	_, err := s.Log.Apply(&cmd.EditPost{GroupID: c.g.ID, PostID: p.ID, EditorID: c.u.ID, Title: d.Title, Body: d.Body, At: s.Now().Unix()})
 	if s.commandFailed(w, r, c, err, "edit", d) {
 		return
@@ -297,6 +307,10 @@ func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusBadRequest, "message", c.page("Too large", message{Title: "Too large", Text: "That photo was too large."}))
 		return
 	}
+	if msg := s.newAccountLimit(c, r.FormValue("body")); msg != "" {
+		s.render(w, r, http.StatusBadRequest, "message", c.page("Can't comment", message{Title: "Can't comment", Text: msg}))
+		return
+	}
 	var image *cmd.Image
 	if r.MultipartForm != nil && len(r.MultipartForm.File["photo"]) > 0 {
 		imgs, err := s.storePhotos(r.MultipartForm.File["photo"][:1])
@@ -383,6 +397,10 @@ func (s *Server) editComment(w http.ResponseWriter, r *http.Request) {
 	}
 	d := editData{Action: fmt.Sprintf("/c/%d/edit", cm.ID), Back: fmt.Sprintf("/p/%d#c%d", cm.PostID, cm.ID),
 		Body: strings.TrimSpace(r.FormValue("body"))}
+	if msg := s.newAccountLimit(c, d.Body); msg != "" {
+		s.render(w, r, http.StatusBadRequest, "edit", c.errPage("Edit comment", msg, d))
+		return
+	}
 	_, err := s.Log.Apply(&cmd.EditComment{GroupID: c.g.ID, CommentID: cm.ID, EditorID: c.u.ID, Body: d.Body, At: s.Now().Unix()})
 	if s.commandFailed(w, r, c, err, "edit", d) {
 		return

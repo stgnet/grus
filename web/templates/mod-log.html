@@ -1,0 +1,13 @@
+{{define "content"}}{{$d := .Data}}
+<h1>Mod log</h1>
+<p class="muted">Every moderation action in this group, newest first. "auto" is the automatic check.</p>
+{{if $d.Entries}}
+<table>
+<tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr>
+{{range $d.Entries}}
+<tr><td>{{date .At}}</td><td>{{.Actor}}</td><td>{{.Action}} {{if .URL}}<a href="{{.URL}}">{{.TargetType}}</a>{{else if ne .TargetType "user"}}{{.TargetType}}{{end}}</td><td>{{.Reason}}</td></tr>
+{{end}}
+</table>
+{{if $d.NextPage}}<p><a href="/mod/log?page={{$d.NextPage}}">Older</a></p>{{end}}
+{{else}}<p class="muted">Nothing yet.</p>{{end}}
+{{end}}

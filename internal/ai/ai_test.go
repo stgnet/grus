@@ -61,6 +61,16 @@ func (f *fakeLLM) Call(ctx context.Context, req Request, out any) (Usage, error)
 		answer = `{"merge": [{"keep": 1, "drop": 2}], "rename": [{"n": 3, "title": "Tires and wheels"}]}`
 	case strings.Contains(req.System, sourceTask):
 		answer = `{"title": "Fan bulletin", "summary": "The bulletin says the fridge fan was revised in 2021."}`
+	case strings.Contains(req.System, moderateTask):
+		// Tests put these words in an item to get each verdict.
+		switch {
+		case strings.Contains(req.Prompt, "BUY CHEAP"):
+			answer = `{"verdict": "violation", "category": "spam", "reason": "An ad for pills."}`
+		case strings.Contains(req.Prompt, "you idiot"):
+			answer = `{"verdict": "borderline", "category": "mean", "reason": "Calls another member an idiot."}`
+		default:
+			answer = `{"verdict": "clear", "category": "", "reason": ""}`
+		}
 	case strings.Contains(req.System, topicsTask):
 		answer = `{"topics": [1]}`
 	case strings.Contains(req.System, pickTask):

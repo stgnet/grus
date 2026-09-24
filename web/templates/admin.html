@@ -33,6 +33,14 @@
   <button>Add alias</button>
 </form>
 
+<h2>Accounts</h2>
+<form method="post" action="/admin/suspend" class="stack">
+  <label>Suspend an account everywhere (its handle or email) <input name="who" value="{{index .Data.Form "who"}}" required></label>
+  <label>For <select name="days"><option value="7">1 week</option><option value="30">30 days</option><option value="0">until lifted</option><option value="-1">lift a suspension</option></select></label>
+  <button class="danger">Apply</button>
+  <p class="muted">A suspended account is signed out and can't sign in. Its posts stay; each group's mods decide about those. Bans in a single group are on that group's Members page.</p>
+</form>
+
 <h2>AI</h2>
 <p>Quick answers in search are {{if .Data.SearchUp}}<strong>available</strong>{{else}}<strong>not available</strong> (no worker is answering){{end}}.
 Job queue: {{.Data.QueueDue}} ready to run, {{.Data.QueueLater}} waiting for threads to settle.</p>

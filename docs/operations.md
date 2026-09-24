@@ -189,6 +189,31 @@ group's visibility takes effect at once. Every 15 minutes the worker
 checks whether threads that sister notes were written from have changed,
 and queues those notes to be rewritten.
 
+## 10. Moderation
+
+Every new or edited post and comment gets an automatic check by the model,
+with the group's rules and its mods' last 20 decisions as examples. "clear"
+does nothing; "borderline" flags the item; "violation" hides it until a
+mod decides. Photos aren't sent to the check yet. When no worker is
+running, items go up unchecked and the checks run when one returns.
+
+A flagged item stays readable (comments are folded) and members vote Keep
+or Hide. Only members of 30 days or more who have something shown in the
+group can vote, and not the author or someone replying to them in that
+thread. The group's "votes to settle" setting (default 5) decides: that
+many Hide votes, more than Keep, hides it; that many Keep votes clears it
+for good. A member's report flags an item the same way.
+
+Mods work from `/mod/queue` (held, hidden, flagged and reported items) and
+`/mod/log` (every action, the check's included as "auto"). Owners change
+roles and mods ban members on `/mod/members`; owners can't be banned and
+only owners can ban a mod. The operator can suspend an account everywhere
+from `/admin`, which signs it out at once on every node.
+
+Accounts under three days old, or with nothing shown in the group yet,
+can't post links and can post five times an hour. Those limits are counted
+in memory on the node serving the request, like the daily question limit.
+
 ## Retention
 
 The leader submits a `Purge` command once a day. It removes expired sign-in

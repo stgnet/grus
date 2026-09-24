@@ -27,8 +27,9 @@ type Settings struct {
 
 // Membership is one user's standing in one group.
 type Membership struct {
-	Role   string // owner | mod | member
-	Status string // active | pending | banned
+	Role        string // owner | mod | member
+	Status      string // active | pending | banned
+	BannedUntil int64  // 0 = permanent (when banned)
 }
 
 // GroupSettings reads a group's settings.
@@ -59,7 +60,7 @@ func (s *Store) Membership(groupID, userID int64) (*Membership, error) {
 		return nil, err
 	}
 	var m Membership
-	err = db.QueryRow(`SELECT role, status FROM memberships WHERE user_id = ?`, userID).Scan(&m.Role, &m.Status)
+	err = db.QueryRow(`SELECT role, status, banned_until FROM memberships WHERE user_id = ?`, userID).Scan(&m.Role, &m.Status, &m.BannedUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

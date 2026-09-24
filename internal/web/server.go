@@ -55,6 +55,7 @@ type Server struct {
 	pages     map[string]*template.Template
 	fragments *template.Template // pieces of pages the scripts fetch
 	asks      askCounter
+	newPosts  hourCounter    // new accounts: posts and comments this hour
 	homeMux   *http.ServeMux // the bare primary domain: sign-in, home, admin
 	groupMux  *http.ServeMux // any group's host
 }
@@ -95,6 +96,7 @@ func New(s *Server) (*Server, error) {
 	h.HandleFunc("POST /admin/groups", s.adminCreateGroup)
 	h.HandleFunc("POST /admin/domains", s.adminDomain)
 	h.HandleFunc("POST /admin/aliases", s.adminAlias)
+	h.HandleFunc("POST /admin/suspend", s.adminSuspend)
 	h.HandleFunc("GET /how-it-works", s.howItWorks)
 	// The root FAQ: the same pages as a group's, over the reserved root
 	// group file, edited by operators.
@@ -131,6 +133,17 @@ func New(s *Server) (*Server, error) {
 	g.HandleFunc("GET /c/{id}/reveal", s.revealForm)
 	g.HandleFunc("POST /c/{id}/reveal", s.reveal)
 	g.HandleFunc("POST /p/{id}/unsister", s.unlinkSister)
+	g.HandleFunc("GET /mod/queue", s.modQueue)
+	g.HandleFunc("POST /mod/queue/{action}", s.modQueueAction)
+	g.HandleFunc("GET /mod/log", s.modLogPage)
+	g.HandleFunc("POST /mod/member/{action}", s.memberAction)
+	g.HandleFunc("POST /p/{id}/{flag}", s.postFlag)
+	g.HandleFunc("GET /p/{id}/report", s.reportForm)
+	g.HandleFunc("POST /p/{id}/report", s.report)
+	g.HandleFunc("GET /c/{id}/report", s.reportForm)
+	g.HandleFunc("POST /c/{id}/report", s.report)
+	g.HandleFunc("POST /p/{id}/vote", s.vote)
+	g.HandleFunc("POST /c/{id}/vote", s.vote)
 	g.HandleFunc("GET /submit", s.submitForm)
 	g.HandleFunc("POST /submit", s.submitPost)
 	g.HandleFunc("GET /p/{id}", s.postPage)

@@ -1,9 +1,9 @@
 {{define "content"}}
 {{$d := .Data}}{{$p := $d.Post}}
 <article class="post">
-  {{template "status" $p}}
+  {{template "status" (dict "I" $p "K" "post" "Own" $d.CanEdit "D" $d "V" $d.Votes)}}
   <h1>{{$p.Title}}</h1>
-  <p class="meta">{{$d.Author}} · {{date $p.CreatedAt}}{{if $p.EditedAt}} · edited{{end}}{{if and $p.Locked (ne $p.Origin "archive")}} · locked{{end}}</p>
+  <p class="meta">{{$d.Author}} · {{date $p.CreatedAt}}{{if $p.EditedAt}} · edited{{end}}{{if and $p.Locked (ne $p.Origin "archive")}} · locked{{end}}{{if $p.Pinned}} · pinned{{end}}</p>
   {{if $d.Topics}}<p class="topics">{{range $d.Topics}}<a class="chip" href="/faq/t/{{.ID}}">{{.Title}}</a> {{end}}</p>{{end}}
   {{if eq $p.Origin "archive"}}<p class="notice">From the Facebook group archive. Names have been removed.{{if $p.OriginURL}} <a href="{{$p.OriginURL}}" rel="nofollow noopener">View the original</a>{{end}} · <a href="/p/{{$p.ID}}/removal">Request removal</a></p>{{end}}
   {{if $p.Body}}<div class="body">{{text $p.Body}}</div>{{end}}
@@ -21,7 +21,7 @@
 
 {{range $d.Updates}}
 <article class="post update" id="u{{.Post.ID}}">
-  {{template "status" .Post}}
+  {{template "status" (dict "I" .Post "K" "post" "Own" .CanEdit "D" $d "V" .Votes)}}
   <h2><span class="tag">Update</span> {{.Post.Title}}</h2>
   <p class="meta">{{date .Post.CreatedAt}}{{if .Post.EditedAt}} · edited{{end}}</p>
   {{if .Post.Body}}<div class="body">{{text .Post.Body}}</div>{{end}}
@@ -121,7 +121,34 @@
 {{end}}
 {{end}}
 
-{{define "status"}}{{if ne .Status "visible"}}<p class="notice">{{if eq .Status "removed"}}Removed by a moderator{{if .RemovedReason}}: {{.RemovedReason}}{{end}}.{{else if eq .Status "deleted"}}Deleted by its author.{{else if eq .Status "flagged"}}Flagged as possibly breaking the group's rules.{{else}}Waiting for a moderator.{{end}}</p>{{end}}{{end}}
+{{/* status: why an item isn't simply visible, told to each reader as
+     they need it. The author of a hidden item is told it's hidden and why
+     it waits; mods see the AI check's or the reporter's reason; members
+     see Keep / Hide on flagged items. I is a store.Post or store.Comment,
+     K its kind, Own whether the viewer wrote it, V its votes. */}}
+{{define "status"}}{{$i := .I}}{{$d := .D}}{{if ne $i.Status "visible"}}
+<div class="notice status">
+  <p>{{if eq $i.Status "removed"}}Removed by a moderator{{if $i.RemovedReason}}: {{$i.RemovedReason}}{{end}}.
+  {{else if eq $i.Status "deleted"}}Deleted by its author.
+  {{else if eq $i.Status "flagged"}}Flagged as possibly breaking the group's rules.
+  {{else if eq $i.Status "held"}}{{if .Own}}Only you and the moderators can see this until a moderator lets it through. A new member's first post is looked at by a moderator first.{{else}}Waiting for a moderator: a new member's first post.{{end}}
+  {{else if eq $i.Status "auto_hidden"}}{{if .Own}}Hidden from others while moderators review this.{{else}}Hidden automatically until a moderator reviews it.{{end}}
+  {{end}}</p>
+  {{if and $d.CanMod $i.Flag.By (ne $i.Status "removed") (ne $i.Status "deleted")}}<p class="muted">{{if eq $i.Flag.By "auto"}}Automatic check{{else if eq $i.Flag.By "report"}}Reported{{else if eq $i.Flag.By "vote"}}Members' vote{{else}}{{$i.Flag.By}}{{end}}{{if $i.Flag.Category}}: {{$i.Flag.Category}}{{end}}{{if $i.Flag.Reason}} ({{$i.Flag.Reason}}){{end}}</p>{{end}}
+  {{with .V}}
+  <form method="post" action="/{{if eq .Kind "post"}}p{{else}}c{{end}}/{{.ID}}/vote" class="row votes">
+    <span>Should it stay?</span>
+    {{if .CanVote}}
+    <button name="vote" value="keep" class="{{if ne .Mine "keep"}}secondary{{end}}">Keep ({{.Keeps}})</button>
+    <button name="vote" value="hide" class="{{if ne .Mine "hide"}}secondary{{end}}">Hide ({{.Hides}})</button>
+    {{else}}<span class="muted">Keep {{.Keeps}} · Hide {{.Hides}}</span>{{end}}
+  </form>
+  {{end}}
+  {{if and $d.CanMod (or (eq $i.Status "flagged") (eq $i.Status "held") (eq $i.Status "auto_hidden"))}}
+  <form method="post" action="/mod/queue/approve" class="inline"><input type="hidden" name="kind" value="{{.K}}"><input type="hidden" name="id" value="{{$i.ID}}"><button class="secondary">Let it stand</button></form>
+  {{end}}
+</div>
+{{end}}{{end}}
 
 {{define "photos"}}{{if .}}<div class="photos">{{range .}}<a href="/img/{{.Hash}}"><img src="/img/{{.Hash}}/t" alt="" loading="lazy" width="{{.Width}}" height="{{.Height}}"></a>{{end}}</div>{{end}}{{end}}
 
@@ -133,9 +160,16 @@
     {{if or (eq $p.Status "removed") (eq $p.Status "deleted")}}
       <form method="post" action="/p/{{$p.ID}}/restore" class="inline"><button class="link">Restore</button></form>
     {{else}}
-      <form method="post" action="/p/{{$p.ID}}/delete" class="inline confirm" data-confirm="Remove this post?"><input type="hidden" name="reason" value=""><button class="link">Remove</button></form>
+      <details class="inline-tools"><summary>Remove</summary>
+        <form method="post" action="/p/{{$p.ID}}/delete" class="row"><input name="reason" placeholder="Reason (shown on the post)" maxlength="300" aria-label="Reason"><button class="danger">Remove</button></form>
+      </details>
     {{end}}
   {{end}}
+  {{if $d.CanMod}}
+    <form method="post" action="/p/{{$p.ID}}/lock" class="inline"><input type="hidden" name="on" value="{{if $p.Locked}}0{{else}}1{{end}}"><button class="link">{{if $p.Locked}}Unlock{{else}}Lock{{end}}</button></form>
+    {{if not $p.ContinuesID}}<form method="post" action="/p/{{$p.ID}}/pin" class="inline"><input type="hidden" name="on" value="{{if $p.Pinned}}0{{else}}1{{end}}"><button class="link">{{if $p.Pinned}}Unpin{{else}}Pin{{end}}</button></form>{{end}}
+  {{end}}
+  {{if and $d.IsMember (not $v.CanEdit) (not $d.CanMod) (or (eq $p.Status "visible") (eq $p.Status "flagged"))}}<a href="/p/{{$p.ID}}/report">Report</a>{{end}}
   {{if and $p.Anonymous $d.CanMod (not $v.CanEdit)}}<a href="/p/{{$p.ID}}/reveal">Who wrote this?</a>{{end}}
   {{if and $p.ContinuesID (or $v.CanEdit $d.CanMod)}}
     <form method="post" action="/p/{{$p.ID}}/moveout" class="inline"><button class="link">Move back out</button></form>
@@ -207,11 +241,15 @@
 
 {{define "comment"}}{{$c := .C}}{{$d := .D}}
 <div class="comment" id="c{{$c.ID}}">
-  {{if ne $c.Status "visible"}}<p class="notice">{{if eq $c.Status "removed"}}Removed by a moderator.{{else if eq $c.Status "deleted"}}Deleted by its author.{{else if eq $c.Status "flagged"}}Flagged.{{else}}Waiting for a moderator.{{end}}</p>{{end}}
+  {{template "status" (dict "I" $c.Comment "K" "comment" "Own" $c.CanEdit "D" $d "V" $c.Votes)}}
   <p class="meta">{{$c.Author}} · {{date $c.CreatedAt}}{{if $c.EditedAt}} · edited{{end}}</p>
   {{if $c.NewerID}}<p class="superseded" data-generated="auto"><a href="#c{{$c.NewerID}}">Newer information below</a></p>{{end}}
+  {{/* A flagged comment is folded for everyone but its author until the
+       vote or a mod settles it: readable on a click, not in your face. */}}
+  {{if and (eq $c.Status "flagged") (not $c.CanEdit)}}<details class="flagged"><summary>Show the comment</summary>{{end}}
   <div class="body">{{text $c.Body}}</div>
   {{range $c.Images}}<a href="/img/{{.Hash}}"><img class="inline-photo" src="/img/{{.Hash}}/t" alt="" loading="lazy"></a>{{end}}
+  {{if and (eq $c.Status "flagged") (not $c.CanEdit)}}</details>{{end}}
   <div class="actions">
     {{if $c.CanEdit}}<a href="/c/{{$c.ID}}/edit">Edit</a>
       <form method="post" action="/c/{{$c.ID}}/delete" class="inline confirm" data-confirm="Delete this comment?"><button class="link">Delete</button></form>{{end}}
@@ -219,10 +257,13 @@
       {{if or (eq $c.Status "removed") (eq $c.Status "deleted")}}
         <form method="post" action="/c/{{$c.ID}}/restore" class="inline"><button class="link">Restore</button></form>
       {{else}}
-        <form method="post" action="/c/{{$c.ID}}/delete" class="inline confirm" data-confirm="Remove this comment?"><button class="link">Remove</button></form>
+        <details class="inline-tools"><summary>Remove</summary>
+          <form method="post" action="/c/{{$c.ID}}/delete" class="row"><input name="reason" placeholder="Reason (shown in place of it)" maxlength="300" aria-label="Reason"><button class="danger">Remove</button></form>
+        </details>
       {{end}}
       {{if $c.Anonymous}}<a href="/c/{{$c.ID}}/reveal">Who wrote this?</a>{{end}}
     {{end}}
+    {{if and $d.IsMember (not $c.CanEdit) (not $d.CanMod) (eq $c.Status "visible")}}<a href="/c/{{$c.ID}}/report">Report</a>{{end}}
   </div>
 </div>
 {{end}}

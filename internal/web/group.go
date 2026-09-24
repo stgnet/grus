@@ -109,6 +109,7 @@ type feedData struct {
 	Newcomer    bool // not a member: "New here? Start with the FAQ"
 	CanMod      bool
 	Requests    int // for mods: people asking to join
+	Queue       int // for mods: flagged, reported and held items
 }
 
 type postCard struct {
@@ -139,6 +140,8 @@ func (s *Server) groupHome(w http.ResponseWriter, r *http.Request) {
 	if d.CanMod {
 		reqs, _ := s.Store.JoinRequests(c.g.ID)
 		d.Requests = len(reqs)
+		queue, _ := s.Store.ModQueue(c.g.ID)
+		d.Queue = len(queue)
 	}
 	if auth.CanReadFAQ(c.v, c.st.Visibility, c.st.PublicFAQ) {
 		d.FAQEntries, _ = s.Store.EntryCount(c.g.ID)

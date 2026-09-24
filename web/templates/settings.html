@@ -32,6 +32,12 @@
   <label class="check"><input type="checkbox" name="allow_anonymous" {{if $s.AllowAnonymous}}checked{{end}}> Allow anonymous posts and comments</label>
   <p class="muted">They show "Anonymous member". The group's moderators can still find out who wrote one when they need to, and each time they do it's recorded in the mod log.</p>
 
+  <h2>Moderation</h2>
+  <label class="check"><input type="checkbox" name="hold_first_post" {{if $s.HoldFirstPost}}checked{{end}}> Hold a new member's first post for a moderator</label>
+  <p class="muted">It shows in the <a href="/mod/queue">mod queue</a>, and to its author, until a moderator lets it through. After that their posts go up at once.</p>
+  <label>Votes to settle a flagged post <input name="vote_threshold" type="number" min="1" max="50" value="{{$s.VoteThreshold}}"></label>
+  <p class="muted">When a post is flagged (by a report or the automatic check), members who've been here 30 days vote Keep or Hide. This many Hide votes, more than Keep, hides it until a moderator decides; this many Keep votes clears it for good.</p>
+
   <h2>AI and search engines</h2>
   <label class="check"><input type="checkbox" name="ai_enabled" {{if $s.AIEnabled}}checked{{end}}> Use AI in this group</label>
   <p class="muted">Links between related posts, thread summaries, quick answers in search, and the FAQ. It all runs on this site's own computers; no post is sent to an outside AI service. <a href="/how-it-works">How this site works</a></p>

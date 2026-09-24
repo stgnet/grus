@@ -42,7 +42,8 @@ type Image struct {
 	Bytes  int
 }
 
-// requireMember fails unless userID is an active member.
+// requireMember fails unless userID is an active member. (A ban ends
+// membership; when a temporary ban runs out, they can join again.)
 func requireMember(tx *sql.Tx, userID int64) error {
 	var status string
 	err := tx.QueryRow(`SELECT status FROM memberships WHERE user_id = ?`, userID).Scan(&status)
@@ -87,7 +88,6 @@ type CreatePost struct {
 	Body      string
 	Anonymous bool
 	Images    []Image
-	Status    string // "" = visible; "held" when the group holds first posts (M5)
 	At        int64
 }
 
@@ -96,18 +96,18 @@ func (c *CreatePost) Apply(a *Applier) (any, error) {
 		return nil, Invalid("a post needs a title (up to %d characters), text up to %d, and at most %d photos",
 			MaxTitleLen, MaxBodyLen, MaxImagesPerPost)
 	}
-	status := c.Status
-	if status == "" {
-		status = "visible"
-	}
 	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
 		if err := requireMember(tx, c.UserID); err != nil {
+			return err
+		}
+		status, err := firstPostStatus(tx, c.UserID)
+		if err != nil {
 			return err
 		}
 		if err := anonymousAllowed(tx, c.Anonymous); err != nil {
 			return err
 		}
-		_, err := tx.Exec(`INSERT INTO posts (id, user_id, is_anonymous, title, body, status, created_at, last_activity_at)
+		_, err = tx.Exec(`INSERT INTO posts (id, user_id, is_anonymous, title, body, status, created_at, last_activity_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, c.PostID, c.UserID, c.Anonymous, c.Title, c.Body, status, c.At, c.At)
 		if err != nil {
 			return err
@@ -128,6 +128,26 @@ func (c *CreatePost) Apply(a *Applier) (any, error) {
 		}
 		return ftsPut(tx, "post", c.PostID, c.PostID, c.Title, c.Body)
 	})
+}
+
+// firstPostStatus is "held" for a newcomer's first post in a group that
+// holds them (plan section 6, "hold new members' first post"): someone who
+// has nothing shown in the group yet, and isn't one of its mods. It's
+// decided here, from the group's own data, so every node agrees.
+func firstPostStatus(tx *sql.Tx, userID int64) (string, error) {
+	var hold bool
+	if err := tx.QueryRow(`SELECT hold_first_post FROM settings WHERE id = 1`).Scan(&hold); err != nil || !hold {
+		return "visible", err
+	}
+	var role string
+	var shown int
+	tx.QueryRow(`SELECT role FROM memberships WHERE user_id = ?`, userID).Scan(&role)
+	tx.QueryRow(`SELECT (SELECT COUNT(*) FROM posts WHERE user_id = ?1 AND status IN ('visible', 'flagged'))
+		+ (SELECT COUNT(*) FROM comments WHERE user_id = ?1 AND status IN ('visible', 'flagged'))`, userID).Scan(&shown)
+	if shown > 0 || role == "owner" || role == "mod" {
+		return "visible", nil
+	}
+	return "held", nil
 }
 
 // EditPost changes a post's title and text, keeping the old version.
@@ -250,6 +270,10 @@ func (c *CreateComment) Apply(a *Applier) (any, error) {
 		if err := threadChanged(tx, c.GroupID, c.PostID, c.At); err != nil {
 			return err
 		}
+		// The moderation check (M5), a few seconds after it's saved.
+		if err := schedule(tx, JobCheckComment, c.CommentID, 1, c.At, c.At); err != nil {
+			return err
+		}
 		return ftsPut(tx, "comment", c.CommentID, c.PostID, "", c.Body)
 	})
 }
@@ -280,7 +304,12 @@ func (c *EditComment) Apply(a *Applier) (any, error) {
 		if err := saveRevision(tx, "comment", c.CommentID, nil, body, c.EditorID, c.At); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`UPDATE comments SET body = ?, edited_at = ?, version = version + 1 WHERE id = ?`, c.Body, c.At, c.CommentID); err != nil {
+		var v int64
+		if err := tx.QueryRow(`UPDATE comments SET body = ?, edited_at = ?, version = version + 1 WHERE id = ? RETURNING version`,
+			c.Body, c.At, c.CommentID).Scan(&v); err != nil {
+			return err
+		}
+		if err := schedule(tx, JobCheckComment, c.CommentID, v, c.At, c.At); err != nil {
 			return err
 		}
 		if err := threadChanged(tx, c.GroupID, postID, c.At); err != nil {
@@ -347,6 +376,18 @@ func (c *SoftDelete) Apply(a *Applier) (any, error) {
 			}
 		}
 		if c.ByMod {
+			// A mod removing something is an example for the AI check of
+			// what this group doesn't accept, and settles any reports.
+			it, err := loadItem(tx, c.Kind, c.ID)
+			if err != nil {
+				return err
+			}
+			if err := resolveReports(tx, it, c.At); err != nil {
+				return err
+			}
+			if err := modExample(tx, it, "hide", c.At); err != nil {
+				return err
+			}
 			return modLog(tx, c.By, "remove", c.Kind, c.ID, c.Reason, c.At)
 		}
 		return nil

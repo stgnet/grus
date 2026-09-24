@@ -49,13 +49,17 @@ func (c *JoinGroup) Apply(a *Applier) (any, error) {
 	var status string
 	err := a.Group(c.GroupID, func(tx *sql.Tx) error {
 		var existing string
-		err := tx.QueryRow(`SELECT status FROM memberships WHERE user_id = ?`, c.UserID).Scan(&existing)
+		var bannedUntil int64
+		err := tx.QueryRow(`SELECT status, banned_until FROM memberships WHERE user_id = ?`, c.UserID).Scan(&existing, &bannedUntil)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		have := err == nil
 		if existing == "banned" {
-			return Invalid("you can't join this group")
+			if bannedUntil == 0 || bannedUntil > c.At {
+				return Invalid("you can't join this group")
+			}
+			existing = "" // a temporary ban that has run out: join as anyone would
 		}
 		if existing == "active" {
 			status = existing
@@ -91,7 +95,8 @@ func (c *JoinGroup) Apply(a *Applier) (any, error) {
 			status = "pending"
 		}
 		if have {
-			_, err = tx.Exec(`UPDATE memberships SET status = ? WHERE user_id = ?`, status, c.UserID)
+			_, err = tx.Exec(`UPDATE memberships SET status = ?1, banned_until = 0,
+				join_answers = CASE WHEN ?2 = '' THEN join_answers ELSE ?2 END WHERE user_id = ?3`, status, answers, c.UserID)
 			return err
 		}
 		_, err = tx.Exec(`INSERT INTO memberships (user_id, role, status, join_answers, created_at) VALUES (?, 'member', ?, ?, ?)`,

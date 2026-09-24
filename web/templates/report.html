@@ -1,0 +1,15 @@
+{{define "content"}}{{$d := .Data}}
+{{if $d.Done}}
+<h1>Reported</h1>
+<p>Thanks. It's now marked as flagged, so members can vote on whether it stays, and the group's moderators will look at it.</p>
+<p><a href="/p/{{$d.PostID}}{{if eq $d.Kind "comment"}}#c{{$d.ID}}{{end}}">Back to the post</a></p>
+{{else}}
+<h1>Report this {{$d.Kind}}</h1>
+<form method="post" class="stack">
+  <label>What's wrong with it? <textarea name="reason" rows="3" maxlength="500" required></textarea></label>
+  <p class="muted">Only the group's moderators see your report and who sent it.</p>
+  <button>Report</button>
+</form>
+<p><a href="/p/{{$d.PostID}}{{if eq $d.Kind "comment"}}#c{{$d.ID}}{{end}}">Cancel</a></p>
+{{end}}
+{{end}}

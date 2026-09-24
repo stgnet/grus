@@ -61,6 +61,23 @@ func (s *testSite) signedIn(email, handle string) *browser {
 	token, _ := s.mailed()
 	b.do("POST", "https://nfb.group/link/"+token, url.Values{})
 	b.do("POST", "https://nfb.group/welcome", url.Values{"handle": {handle}})
+	// Test accounts are a month old, so the new-account limits (links,
+	// posts per hour) only apply where a test asks for them (newcomer).
+	if _, err := s.st.Site().Exec(`UPDATE users SET created_at = created_at - 30*86400 WHERE email = ?`, email); err != nil {
+		s.t.Fatal(err)
+	}
+	return b
+}
+
+// newcomer signs in an account made just now, which the new-account
+// limits apply to.
+func (s *testSite) newcomer(email, handle string) *browser {
+	s.t.Helper()
+	b := s.browser()
+	b.do("POST", "https://nfb.group/login", url.Values{"email": {email}})
+	token, _ := s.mailed()
+	b.do("POST", "https://nfb.group/link/"+token, url.Values{})
+	b.do("POST", "https://nfb.group/welcome", url.Values{"handle": {handle}})
 	return b
 }
 
@@ -72,7 +89,10 @@ func TestPostCommentEditDelete(t *testing.T) {
 	bob := s.signedIn("bob@example.com", "bob")
 	G := "https://travato.nfb.group"
 
-	// Posting in an open group joins you; the photo is stored and served.
+	// Posting in an open group joins you. (A first post can't carry a
+	// link, by the new-account limits, so alice says hello first.)
+	expect(t, alice.upload(G+"/submit", map[string]string{"title": "Hello from a new owner"}, nil), 303, "")
+	// The photo is stored and served.
 	w := alice.upload(G+"/submit", map[string]string{"title": "Fridge fan rattle", "body": "Mine rattles at 40 mph. https://example.com/fan"},
 		map[string][][]byte{"photos": {testJPEG(t)}})
 	expect(t, w, 303, "")
@@ -111,7 +131,7 @@ func TestPostCommentEditDelete(t *testing.T) {
 		t.Fatalf("reply to a reply has parent %d, want the top comment %d", parent, top)
 	}
 	var count int
-	db.QueryRow(`SELECT comment_count FROM posts`).Scan(&count)
+	db.QueryRow(`SELECT comment_count FROM posts WHERE id = ?`, idOf(loc)).Scan(&count)
 	if count != 3 {
 		t.Fatalf("comment_count %d, want 3", count)
 	}
@@ -141,7 +161,7 @@ func TestPostCommentEditDelete(t *testing.T) {
 		t.Fatal("deleted post still in the search index")
 	}
 	var purge int64
-	db.QueryRow(`SELECT purge_after - deleted_at FROM posts`).Scan(&purge)
+	db.QueryRow(`SELECT purge_after - deleted_at FROM posts WHERE id = ?`, idOf(loc)).Scan(&purge)
 	if purge != cmd.AuthorDeleteKeep {
 		t.Fatalf("purge window %d, want %d", purge, cmd.AuthorDeleteKeep)
 	}

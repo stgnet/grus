@@ -345,7 +345,11 @@ type SetCheck struct {
 	Entries []int64       // FAQ entries that already cover this post's question
 	Sources []int64       // outside pages about the same thing
 	Sisters []SisterMatch // posts in sister groups about the same thing (M4)
-	At      int64
+	// M5: the moderation verdict (see applyVerdict).
+	Verdict  string
+	Category string
+	Reason   string
+	At       int64
 }
 
 func (c *SetCheck) Apply(a *Applier) (any, error) {
@@ -354,17 +358,25 @@ func (c *SetCheck) Apply(a *Applier) (any, error) {
 		return nil, err
 	}
 	var kept []sisterPlan
+	var hidden []sisterRef
 	var title string
 	var created, threadVersion int64
 	err = a.Group(c.GroupID, func(tx *sql.Tx) error {
 		var current int64
-		if err := tx.QueryRow(`SELECT version, thread_version, title, created_at FROM posts WHERE id = ?`, c.PostID).
-			Scan(&current, &threadVersion, &title, &created); err != nil {
+		var status string
+		if err := tx.QueryRow(`SELECT version, thread_version, title, created_at, status FROM posts WHERE id = ?`, c.PostID).
+			Scan(&current, &threadVersion, &title, &created, &status); err != nil {
 			return notFoundGone(err)
 		}
 		ok, err := finishJob(tx, c.JobID, c.Worker, c.Version, current, c.At)
 		if err != nil || !ok {
 			return err
+		}
+		if hidden, err = applyVerdict(tx, c.GroupID, "post", c.PostID, c.Verdict, c.Category, c.Reason, c.At); err != nil {
+			return err
+		}
+		if len(hidden) > 0 || c.Verdict == VerdictViolation || !shown(status) {
+			return nil // hidden or held: no links to it (yet)
 		}
 		if kept, err = sisterHere(tx, c.PostID, plans, c.At); err != nil {
 			return err
@@ -402,6 +414,9 @@ func (c *SetCheck) Apply(a *Applier) (any, error) {
 	// then kept is empty and the sister groups' parts are skipped too, even
 	// if the crash came between them. That loses at most a few links on the
 	// other side, which the next check of that group's posts finds again.
+	if err == nil && len(hidden) > 0 {
+		err = showSisterNotes(a, c.GroupID, c.PostID, hidden, false)
+	}
 	if err != nil || len(kept) == 0 {
 		return nil, err
 	}

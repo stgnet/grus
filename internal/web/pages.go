@@ -19,6 +19,11 @@ func (s *Server) viewer(u *store.User, groupID int64) (auth.Viewer, error) {
 	}
 	if m != nil {
 		v.Role, v.Status = m.Role, m.Status
+		// A temporary ban that has run out: they're simply not a member
+		// any more, and can join again (JoinGroup agrees).
+		if m.Status == "banned" && m.BannedUntil != 0 && m.BannedUntil <= s.Now().Unix() {
+			v.Role, v.Status = "", ""
+		}
 	}
 	return v, nil
 }

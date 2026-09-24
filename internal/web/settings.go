@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/stgnet/grus/internal/auth"
@@ -65,8 +66,14 @@ func (s *Server) settingsSave(w http.ResponseWriter, r *http.Request) {
 			set[k] = strings.TrimSpace(r.PostFormValue(k))
 		}
 	}
-	for _, k := range []string{"ai_enabled", "allow_indexing", "allow_anonymous", "public_faq"} {
+	// Checkboxes: an unticked box isn't sent at all, so absent means off.
+	for _, k := range []string{"ai_enabled", "allow_indexing", "allow_anonymous", "public_faq", "hold_first_post"} {
 		set[k] = r.FormValue(k) == "on"
+	}
+	if v, sent := r.PostForm["vote_threshold"]; sent {
+		// float64, as a number arrives in JSON; the command checks the range.
+		n, _ := strconv.ParseFloat(v[0], 64)
+		set["vote_threshold"] = n
 	}
 	// A public group has no separate FAQ setting (its FAQ is public like
 	// everything else), so the box isn't on the form; leave it alone, and

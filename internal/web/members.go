@@ -155,6 +155,8 @@ type modMembersData struct {
 	Requests []requestView
 	Invites  []inviteView
 	NewURL   string // the invite just made, to copy
+	Members  []memberView
+	CanRoles bool // owners change roles
 }
 
 // modMembers is the mods' page for join requests and invite links.
@@ -191,6 +193,21 @@ func (s *Server) membersData(c *greq) (*modMembersData, error) {
 	for _, r := range reqs {
 		d.Requests = append(d.Requests, requestView{JoinRequest: r, Handle: names[r.UserID]})
 	}
+	members, err := s.Store.Members(c.g.ID, 500)
+	if err != nil {
+		return nil, err
+	}
+	ids = ids[:0]
+	for _, m := range members {
+		ids = append(ids, m.UserID)
+	}
+	if names, err = s.Store.Handles(ids); err != nil {
+		return nil, err
+	}
+	for _, m := range members {
+		d.Members = append(d.Members, memberView{Member: m, Handle: authorOf(names, m.UserID, false)})
+	}
+	d.CanRoles = auth.CanManage(c.v)
 	invites, err := s.Store.Invites(c.g.ID, s.Now().Unix())
 	if err != nil {
 		return nil, err

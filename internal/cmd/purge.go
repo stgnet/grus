@@ -96,7 +96,8 @@ func (c *Purge) Apply(a *Applier) (any, error) {
 				`DELETE FROM notes WHERE host_post_id NOT IN (SELECT id FROM posts)
 				   OR (kind = 'link' AND id NOT IN (SELECT note_id FROM note_sources))`,
 				`DELETE FROM jobs WHERE (kind IN ('check', 'digest', 'summary', 'faq_new') AND ref_id NOT IN (SELECT id FROM posts))
-				   OR (kind = 'note' AND ref_id NOT IN (SELECT id FROM notes))`,
+				   OR (kind = 'note' AND ref_id NOT IN (SELECT id FROM notes))
+				   OR (kind = 'check_comment' AND ref_id NOT IN (SELECT id FROM comments))`,
 				// M3: the FAQ's links to posts that are gone, topic tags,
 				// nudges, and outside pages shown on them; and comments on
 				// FAQ entries past their retention.
@@ -105,6 +106,11 @@ func (c *Purge) Apply(a *Applier) (any, error) {
 				`DELETE FROM nudges WHERE post_id NOT IN (SELECT id FROM posts)`,
 				`DELETE FROM source_links WHERE post_id != 0 AND post_id NOT IN (SELECT id FROM posts)`,
 				`DELETE FROM sister_links WHERE post_id NOT IN (SELECT id FROM posts)`,
+				// M5: reports and votes on items that are gone.
+				`DELETE FROM reports WHERE (kind = 'post' AND item_id NOT IN (SELECT id FROM posts))
+				   OR (kind = 'comment' AND item_id NOT IN (SELECT id FROM comments))`,
+				`DELETE FROM flag_votes WHERE (kind = 'post' AND item_id NOT IN (SELECT id FROM posts))
+				   OR (kind = 'comment' AND item_id NOT IN (SELECT id FROM comments))`,
 				`DELETE FROM faq_comments WHERE purge_after < ?1`,
 				`UPDATE posts SET continues_post_id = NULL, continued_at = NULL
 				   WHERE continues_post_id IS NOT NULL AND continues_post_id NOT IN (SELECT id FROM posts)`,

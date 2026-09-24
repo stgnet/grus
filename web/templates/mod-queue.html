@@ -1,0 +1,20 @@
+{{define "content"}}{{$d := .Data}}
+<h1>Mod queue</h1>
+<p class="muted">Everything waiting on a moderator, oldest first: held first posts, items the automatic check hid, and anything flagged or reported.
+{{if $d.Requests}} There {{if eq $d.Requests 1}}is 1 person{{else}}are {{$d.Requests}} people{{end}} <a href="/mod/members">asking to join</a>.{{end}}</p>
+{{range $d.Items}}
+<div class="queue-item">
+  <p class="meta"><span class="tag">{{if eq .Status "held"}}first post{{else if eq .Status "auto_hidden"}}hidden{{else}}{{.Status}}{{end}}</span>
+    {{if eq .Kind "comment"}}Comment on{{else}}Post{{end}} <a href="{{.URL}}">{{.Title}}</a> · {{.Author}} · {{date .At}}</p>
+  {{if .Flag.By}}<p class="muted">{{if eq .Flag.By "auto"}}Automatic check{{else if eq .Flag.By "report"}}Reported{{else if eq .Flag.By "vote"}}Members' vote{{else}}{{.Flag.By}}{{end}}{{if .Flag.Category}}: {{.Flag.Category}}{{end}}{{if .Flag.Reason}} ({{.Flag.Reason}}){{end}}</p>{{end}}
+  {{if .Reports}}<p class="muted">{{plural .Reports "report" "reports"}}{{if .Reasons}}: {{.Reasons}}{{end}}</p>{{end}}
+  <div class="body">{{excerpt .Body 600}}</div>
+  <div class="row">
+    <form method="post" action="/mod/queue/approve" class="inline"><input type="hidden" name="kind" value="{{.Kind}}"><input type="hidden" name="id" value="{{.ID}}"><button>Let it stand</button></form>
+    <form method="post" action="/mod/queue/remove" class="row"><input type="hidden" name="kind" value="{{.Kind}}"><input type="hidden" name="id" value="{{.ID}}">
+      <input name="reason" placeholder="Reason (shown in its place)" maxlength="300" aria-label="Reason"><button class="danger">Remove</button></form>
+  </div>
+</div>
+{{else}}<p class="muted">Nothing waiting.</p>{{end}}
+<p class="muted">Each decision here also teaches the automatic check: the last few are shown to it as examples of what this group allows.</p>
+{{end}}

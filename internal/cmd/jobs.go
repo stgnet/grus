@@ -31,6 +31,9 @@ const (
 	JobOutline    = "faq_outline" // the weekly pass over the topic titles (ref 0)
 	JobSource     = "source"      // read an outside page and summarize it
 	JobSeed       = "seed"        // read a seed list page for its links
+
+	// M5
+	JobCheckComment = "check_comment" // the moderation check of a new or edited comment
 )
 
 // SummaryMin is how many comments a thread needs before it gets a summary

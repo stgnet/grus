@@ -26,6 +26,18 @@ type commentView struct {
 	Images  []store.Image
 	CanEdit bool
 	NewerID int64 // a later comment replaced this one's advice
+	Votes   *voteView
+}
+
+// voteView is the Keep / Hide vote on a flagged item (plan section 6,
+// "Member voting"). Members see the buttons; the server decides whether
+// their vote counts (see cmd.Vote for who may vote).
+type voteView struct {
+	Kind         string // post | comment
+	ID           int64
+	Keeps, Hides int
+	Mine         string // what this viewer voted, "" if nothing
+	CanVote      bool
 }
 
 // PostView is a post with its photos and comments: the page's main post,
@@ -38,6 +50,7 @@ type PostView struct {
 	Threads    []thread
 	CanEdit    bool
 	CanComment bool
+	Votes      *voteView
 }
 
 // noteView is a note as a related-post card. It has no author and no
@@ -190,6 +203,9 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 		d.Author += " (you)" // only the author sees this; everyone else sees just "Anonymous member"
 	}
 	d.CanComment = !p.Locked && (p.Status == "visible" || p.Status == "flagged")
+	if d.Votes, err = s.votes(c, "post", p.ID, p.UserID, p.Status); err != nil {
+		return nil, err
+	}
 
 	byComment := map[int64][]store.Image{}
 	for _, im := range images {
@@ -205,6 +221,8 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 		if v.CanEdit && cm.Anonymous {
 			v.Author += " (you)"
 		}
+		// A failed count only loses the buttons, not the page.
+		v.Votes, _ = s.votes(c, "comment", cm.ID, cm.UserID, cm.Status)
 		return v
 	}
 	readable := func(cm store.Comment) bool {
@@ -236,6 +254,20 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 	}
 	d.Threads = kept
 	return d, nil
+}
+
+// votes reads the Keep / Hide tally on a flagged item for members and
+// mods; nil when the item isn't flagged or the viewer can't take part.
+func (s *Server) votes(c *greq, kind string, id, authorID int64, status string) (*voteView, error) {
+	if status != "flagged" || c.u == nil || !(c.member() || c.mod()) {
+		return nil, nil
+	}
+	keeps, hides, mine, err := s.Store.ItemVotes(c.g.ID, kind, id, c.u.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &voteView{Kind: kind, ID: id, Keeps: keeps, Hides: hides, Mine: mine,
+		CanVote: c.member() && authorID != c.u.ID}, nil
 }
 
 // placeNotes puts the thread's link notes where each connection was made:

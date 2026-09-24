@@ -29,6 +29,16 @@ type Post struct {
 	Version        int64  // edits to the post itself
 	ThreadVersion  int64  // any change in the thread
 	ContinuesID    int64  // set when this post is an Update under that post
+	Flag           Flag   // why it's flagged or hidden (M5)
+}
+
+// Flag is why a post or comment is flagged or hidden: by the AI check
+// ("auto"), a report, or a member vote, with the check's category and
+// reason. Mods see it in the queue.
+type Flag struct {
+	By       string
+	Category string
+	Reason   string
 }
 
 // Comment is a comment as pages show it.
@@ -44,6 +54,8 @@ type Comment struct {
 	Score         int
 	CreatedAt     int64
 	EditedAt      int64
+	Version       int64
+	Flag          Flag
 }
 
 // Image is one photo on a post or comment.
@@ -60,13 +72,14 @@ const postCols = `id, COALESCE(user_id, 0), is_anonymous, title, body, status, C
 	pinned, locked, score, comment_count, created_at, COALESCE(edited_at, 0), last_activity_at, origin, COALESCE(origin_url, ''),
 	COALESCE((SELECT blob_hash FROM images WHERE images.post_id = posts.id AND comment_id IS NULL
 	          ORDER BY sort_order LIMIT 1), ''),
-	COALESCE(digest, ''), version, thread_version, COALESCE(continues_post_id, 0)`
+	COALESCE(digest, ''), version, thread_version, COALESCE(continues_post_id, 0),
+	COALESCE(flagged_by, ''), COALESCE(flag_category, ''), COALESCE(flag_reason, '')`
 
 func scanPost(row interface{ Scan(...any) error }) (*Post, error) {
 	var p Post
 	err := row.Scan(&p.ID, &p.UserID, &p.Anonymous, &p.Title, &p.Body, &p.Status, &p.RemovedReason,
 		&p.Pinned, &p.Locked, &p.Score, &p.CommentCount, &p.CreatedAt, &p.EditedAt, &p.LastActivityAt, &p.Origin, &p.OriginURL, &p.ThumbHash,
-		&p.Digest, &p.Version, &p.ThreadVersion, &p.ContinuesID)
+		&p.Digest, &p.Version, &p.ThreadVersion, &p.ContinuesID, &p.Flag.By, &p.Flag.Category, &p.Flag.Reason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -126,12 +139,13 @@ func (s *Store) Post(groupID, id int64) (*Post, error) {
 }
 
 const commentCols = `id, post_id, COALESCE(parent_id, 0), COALESCE(user_id, 0), is_anonymous, body, status,
-	COALESCE(removed_reason, ''), score, created_at, COALESCE(edited_at, 0)`
+	COALESCE(removed_reason, ''), score, created_at, COALESCE(edited_at, 0), version,
+	COALESCE(flagged_by, ''), COALESCE(flag_category, ''), COALESCE(flag_reason, '')`
 
 func scanComment(row interface{ Scan(...any) error }) (*Comment, error) {
 	var c Comment
 	err := row.Scan(&c.ID, &c.PostID, &c.ParentID, &c.UserID, &c.Anonymous, &c.Body, &c.Status,
-		&c.RemovedReason, &c.Score, &c.CreatedAt, &c.EditedAt)
+		&c.RemovedReason, &c.Score, &c.CreatedAt, &c.EditedAt, &c.Version, &c.Flag.By, &c.Flag.Category, &c.Flag.Reason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

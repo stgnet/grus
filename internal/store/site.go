@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strings"
 )
 
 // Read queries against site.db. Each returns (nil, nil) when the row doesn't
@@ -201,4 +202,11 @@ func (s *Store) Cert(name string) ([]byte, error) {
 		return nil, nil
 	}
 	return pem, err
+}
+
+// UserByName finds an account by its handle, or (for the operator's
+// tools) its email. nil if there's none.
+func (s *Store) UserByName(name string) (*User, error) {
+	name = strings.TrimPrefix(strings.TrimSpace(name), "@")
+	return scanUser(s.Site().QueryRow(`SELECT `+userCols+` FROM users WHERE (handle = ?1 COLLATE NOCASE OR email = lower(?1)) AND deleted_at IS NULL`, name))
 }

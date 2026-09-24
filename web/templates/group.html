@@ -21,7 +21,7 @@
   <a href="/?sort=active" {{if eq $d.Sort "active"}}class="on"{{end}}>Active</a>
   <a href="/?sort=new" {{if eq $d.Sort "new"}}class="on"{{end}}>New</a>
   <a href="/faq">FAQ</a>
-  {{if $d.CanMod}}<a href="/mod/members">Members{{if $d.Requests}} ({{$d.Requests}}){{end}}</a> <a href="/mod/sources">Sources</a>{{end}}
+  {{if $d.CanMod}}<a href="/mod/queue">Queue{{if $d.Queue}} ({{$d.Queue}}){{end}}</a> <a href="/mod/members">Members{{if $d.Requests}} ({{$d.Requests}}){{end}}</a> <a href="/mod/sources">Sources</a> <a href="/mod/log">Log</a>{{end}}
 </nav>
 {{if $d.FAQEntries}}<a class="card pinned-faq" href="/faq"><span class="card-text"><strong><span class="tag">pinned</span> Group FAQ</strong><span class="meta">{{plural $d.FAQEntries "entry" "entries"}}, built from the group's discussions · Browse by topic</span></span></a>{{end}}
 {{if $d.Posts}}

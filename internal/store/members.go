@@ -202,3 +202,177 @@ func (s *Store) SisterNotes(groupID int64) ([]SisterNote, error) {
 	}
 	return out, rows.Err()
 }
+
+// ModExample is a mod's decision kept as an example for the AI check.
+type ModExample struct {
+	Text     string
+	Decision string // keep | hide
+}
+
+// ModExamples lists a group's newest mod decisions.
+func (s *Store) ModExamples(groupID int64, n int) ([]ModExample, error) {
+	db, err := s.Group(groupID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`SELECT text, decision FROM mod_examples ORDER BY id DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModExample
+	for rows.Next() {
+		var x ModExample
+		if err := rows.Scan(&x.Text, &x.Decision); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+// Member is one row of a group's member list.
+type Member struct {
+	UserID      int64
+	Role        string
+	Status      string
+	BannedUntil int64
+	CreatedAt   int64
+}
+
+// Members lists a group's members (active and banned), owners and mods
+// first, then newest first.
+func (s *Store) Members(groupID int64, limit int) ([]Member, error) {
+	db, err := s.Group(groupID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`SELECT user_id, role, status, banned_until, created_at FROM memberships WHERE status != 'pending'
+		ORDER BY status = 'banned', CASE role WHEN 'owner' THEN 0 WHEN 'mod' THEN 1 ELSE 2 END, created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Member
+	for rows.Next() {
+		var m Member
+		if err := rows.Scan(&m.UserID, &m.Role, &m.Status, &m.BannedUntil, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// QueueItem is a post or comment waiting on the mods: held, hidden by the
+// AI or a vote, flagged, or reported.
+type QueueItem struct {
+	Kind    string // post | comment
+	ID      int64
+	PostID  int64
+	Title   string // the post's title
+	Body    string
+	Status  string
+	UserID  int64
+	Flag    Flag
+	Reports int
+	Reasons string // the reports' reasons, joined
+	At      int64
+}
+
+// ModQueue lists what's waiting on the mods, oldest first.
+func (s *Store) ModQueue(groupID int64) ([]QueueItem, error) {
+	db, err := s.Group(groupID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`
+		WITH open AS (SELECT kind, item_id, COUNT(*) AS n, GROUP_CONCAT(NULLIF(reason, ''), ' / ') AS reasons, MIN(created_at) AS at
+		              FROM reports WHERE resolved_at IS NULL GROUP BY kind, item_id)
+		SELECT 'post', p.id, p.id, p.title, p.body, p.status, COALESCE(p.user_id, 0),
+		       COALESCE(p.flagged_by, ''), COALESCE(p.flag_category, ''), COALESCE(p.flag_reason, ''),
+		       COALESCE(o.n, 0), COALESCE(o.reasons, ''), COALESCE(o.at, p.created_at)
+		FROM posts p LEFT JOIN open o ON o.kind = 'post' AND o.item_id = p.id
+		WHERE p.status IN ('held', 'auto_hidden', 'flagged') OR (o.n > 0 AND p.status NOT IN ('removed', 'deleted'))
+		UNION ALL
+		SELECT 'comment', c.id, c.post_id, p.title, c.body, c.status, COALESCE(c.user_id, 0),
+		       COALESCE(c.flagged_by, ''), COALESCE(c.flag_category, ''), COALESCE(c.flag_reason, ''),
+		       COALESCE(o.n, 0), COALESCE(o.reasons, ''), COALESCE(o.at, c.created_at)
+		FROM comments c JOIN posts p ON p.id = c.post_id LEFT JOIN open o ON o.kind = 'comment' AND o.item_id = c.id
+		WHERE c.status IN ('held', 'auto_hidden', 'flagged') OR (o.n > 0 AND c.status NOT IN ('removed', 'deleted'))
+		ORDER BY 13 LIMIT 200`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []QueueItem
+	for rows.Next() {
+		var q QueueItem
+		if err := rows.Scan(&q.Kind, &q.ID, &q.PostID, &q.Title, &q.Body, &q.Status, &q.UserID,
+			&q.Flag.By, &q.Flag.Category, &q.Flag.Reason, &q.Reports, &q.Reasons, &q.At); err != nil {
+			return nil, err
+		}
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
+
+// LogEntry is one mod log row. ActorID 0 = automatic (the AI check, or a
+// member vote).
+type LogEntry struct {
+	ActorID    int64
+	Action     string
+	TargetType string
+	TargetID   int64
+	Reason     string
+	At         int64
+}
+
+// ModLog lists a group's mod log, newest first.
+func (s *Store) ModLog(groupID int64, limit, offset int) ([]LogEntry, error) {
+	db, err := s.Group(groupID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`SELECT COALESCE(actor_id, 0), action, target_type, target_id, reason, created_at
+		FROM mod_log ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LogEntry
+	for rows.Next() {
+		var e LogEntry
+		if err := rows.Scan(&e.ActorID, &e.Action, &e.TargetType, &e.TargetID, &e.Reason, &e.At); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ItemVotes counts Keep and Hide votes on a flagged item, and what userID
+// voted ("" if they haven't).
+func (s *Store) ItemVotes(groupID int64, kind string, id, userID int64) (keeps, hides int, mine string, err error) {
+	db, err := s.Group(groupID)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	err = db.QueryRow(`SELECT COALESCE(SUM(vote = 'keep'), 0), COALESCE(SUM(vote = 'hide'), 0),
+		COALESCE(MAX(CASE WHEN user_id = ? THEN vote END), '') FROM flag_votes WHERE kind = ? AND item_id = ?`,
+		userID, kind, id).Scan(&keeps, &hides, &mine)
+	return
+}
+
+// HasShownContent: has userID anything shown (visible or flagged) in the
+// group? New accounts without it get the new-account limits.
+func (s *Store) HasShownContent(groupID, userID int64) (bool, error) {
+	db, err := s.Group(groupID)
+	if err != nil {
+		return false, err
+	}
+	var n int
+	err = db.QueryRow(`SELECT EXISTS (SELECT 1 FROM posts WHERE user_id = ?1 AND status IN ('visible', 'flagged'))
+		OR EXISTS (SELECT 1 FROM comments WHERE user_id = ?1 AND status IN ('visible', 'flagged'))`, userID).Scan(&n)
+	return n > 0, err
+}

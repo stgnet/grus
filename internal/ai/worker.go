@@ -162,6 +162,12 @@ func (w *Worker) RunJob(ctx context.Context, groupID int64, j store.Job) (cmd.Co
 		if err != nil {
 			return nil, err
 		}
+		// The moderation check (M5), in its own call; see moderate.go.
+		v, err := w.Engine.Moderate(ctx, groupID, postText(p), "")
+		if err != nil {
+			return nil, err
+		}
+		res.Verdict, res.Category, res.Reason = v.Verdict, v.Category, v.Reason
 		// A post rarely has more than a few true matches of each kind;
 		// more is noise.
 		for _, m := range matches {
@@ -255,6 +261,30 @@ func (w *Worker) RunJob(ctx context.Context, groupID int64, j store.Job) (cmd.Co
 		}
 		return w.stamp(res), nil
 
+	case cmd.JobCheckComment:
+		cm, err := st.Comment(groupID, j.RefID)
+		if err != nil {
+			return nil, err
+		}
+		res := &cmd.SetCommentCheck{GroupID: groupID, JobID: j.ID, Worker: w.Name, CommentID: j.RefID}
+		if cm == nil || !shown(cm.Status) {
+			if cm != nil {
+				res.Version = cm.Version
+			}
+			return w.stamp(res), nil
+		}
+		res.Version = cm.Version
+		p, err := st.Post(groupID, cm.PostID)
+		if err != nil || p == nil {
+			return nil, err
+		}
+		v, err := w.Engine.Moderate(ctx, groupID, cm.Body, postText(p))
+		if err != nil {
+			return nil, err
+		}
+		res.Verdict, res.Category, res.Reason = v.Verdict, v.Category, v.Reason
+		return w.stamp(res), nil
+
 	case cmd.JobFAQNew, cmd.JobFAQRewrite, cmd.JobOutline:
 		return w.runFAQ(ctx, groupID, j)
 
@@ -285,6 +315,8 @@ func (w *Worker) stamp(c cmd.Command) cmd.Command {
 	case *cmd.SetSource:
 		r.At = at
 	case *cmd.AddSeeds:
+		r.At = at
+	case *cmd.SetCommentCheck:
 		r.At = at
 	}
 	return c

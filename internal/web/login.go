@@ -32,7 +32,12 @@ func (s *Server) user(r *http.Request) *store.User {
 		return nil
 	}
 	u, err := s.Store.UserBySession(auth.Hash(c.Value), s.Now().Unix())
-	if err != nil {
+	if err != nil || u == nil {
+		return nil
+	}
+	// A suspended account reads as signed out everywhere (SuspendUser also
+	// ends its sessions; this covers a sign-in made during the suspension).
+	if u.SuspendedUntil > s.Now().Unix() {
 		return nil
 	}
 	return u
