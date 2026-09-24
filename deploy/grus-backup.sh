@@ -18,6 +18,15 @@ grus backup -config "$conf" -to "$dest/$today.tmp"
 # Rename only when complete, so a half-written copy never looks like a backup.
 mv "$dest/$today.tmp" "$dest/$today"
 
+# Photos are content-addressed files that never change, so one shared
+# copy serves every daily: rsync only moves new ones. --delete follows the
+# node's own photo cleanup, which only removes a photo once no post uses it,
+# including soft-deleted posts still inside their 30/90 days.
+data_dir=$(awk -F= '$1 ~ /^[ \t]*data_dir[ \t]*$/ { gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2 }' "$conf")
+if [ -d "$data_dir/blobs" ]; then
+    rsync -a --delete "$data_dir/blobs/" "$dest/blobs/"
+fi
+
 # Keep 30 dailies.
 ls -1d "$dest"/????-??-?? 2>/dev/null | sort -r | tail -n +31 | while read -r old; do
     rm -rf "$old"

@@ -245,9 +245,32 @@ CREATE TABLE mod_log (
 
 -- Full-text index: one row per visible post and comment (later FAQ entries
 -- and outside sources too), maintained in the same transaction as every
--- create, edit and status change.
+-- create, edit and status change. Its rowid is the item's own id (ids are
+-- unique across kinds), so updating or removing a row is a rowid lookup.
 CREATE VIRTUAL TABLE search_fts USING fts5(
   kind UNINDEXED, ref_id UNINDEXED, post_id UNINDEXED, title, body
 );
+`,
+	// 2: M1 photos. Each row places one blob (internal/blob) on a post, or on
+	// one comment of it. The same blob can appear in several rows.
+	`
+CREATE TABLE images (
+  id         INTEGER PRIMARY KEY,
+  post_id    INTEGER NOT NULL,
+  comment_id INTEGER,
+  user_id    INTEGER,
+  blob_hash  TEXT NOT NULL,
+  width      INTEGER NOT NULL,
+  height     INTEGER NOT NULL,
+  bytes      INTEGER NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX images_post ON images(post_id, sort_order);
+CREATE INDEX images_blob ON images(blob_hash);
+CREATE UNIQUE INDEX posts_origin    ON posts(origin_ref) WHERE origin_ref IS NOT NULL;
+CREATE UNIQUE INDEX comments_origin ON comments(origin_ref) WHERE origin_ref IS NOT NULL;
+-- An archive thread's original permalink, shown as "view the original".
+ALTER TABLE posts ADD COLUMN origin_url TEXT;
 `,
 }

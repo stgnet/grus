@@ -33,6 +33,27 @@ var (
 	ErrNotFound    = errors.New("not found")
 )
 
+// InputError is a command refused because of what someone typed or chose
+// (too long, missing, not allowed), as opposed to something failing. Pages
+// show its message to the person; anything else is a server error.
+type InputError struct{ msg string }
+
+func (e *InputError) Error() string { return e.msg }
+
+// Invalid makes an InputError.
+func Invalid(format string, args ...any) error {
+	return &InputError{msg: fmt.Sprintf(format, args...)}
+}
+
+// IsInput reports whether err is the person's to fix: an InputError or one of
+// the sentinel errors above.
+func IsInput(err error) bool {
+	var ie *InputError
+	return errors.As(err, &ie) || errors.Is(err, ErrSlugTaken) || errors.Is(err, ErrHandleTaken) ||
+		errors.Is(err, ErrLoginDead) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrGone) ||
+		errors.Is(err, ErrLocked) || errors.Is(err, ErrNotMember)
+}
+
 // ValidSlug checks a group slug: 2-32 of a-z, 0-9 and "-", not starting or
 // ending with "-", and no "--" (which is how punycode names start, and
 // looks like a typo anyway).

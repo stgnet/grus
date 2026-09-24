@@ -22,6 +22,13 @@ type Item struct {
 func (v Viewer) member() bool { return v.Role != "" && v.Status == "active" }
 func (v Viewer) mod() bool    { return v.member() && (v.Role == "owner" || v.Role == "mod") }
 
+// IsMember: an active member of this group.
+func IsMember(v Viewer) bool { return v.member() }
+
+// CanModerate: may act as a mod in this group (its owners and mods, and the
+// site operator anywhere).
+func CanModerate(v Viewer) bool { return v.Operator || v.mod() }
+
 // CanSeeGroup: does the group exist, as far as this viewer can tell?
 // Public and private groups show their name, description and rules to
 // everyone; hidden groups exist only for their members (and invite links).

@@ -1,0 +1,8 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>About {{$d.Settings.Name}}</h1>
+{{if $d.Settings.Description}}<p class="lead">{{$d.Settings.Description}}</p>{{end}}
+<p class="muted">{{plural $d.MemberCount "member" "members"}} · {{$d.Settings.Visibility}} group</p>
+{{if $d.Rules}}<h2>Rules</h2><ol>{{range $d.Rules}}<li>{{.}}</li>{{end}}</ol>{{end}}
+{{if $d.Mods}}<h2>Moderators</h2><ul>{{range $d.Mods}}<li>{{.}}</li>{{end}}</ul>{{end}}
+{{end}}

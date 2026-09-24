@@ -1,12 +1,41 @@
 {{define "content"}}
-<h1>{{.Data.Settings.Name}}</h1>
-{{if .Data.Settings.Description}}<p class="lead">{{.Data.Settings.Description}}</p>{{end}}
-{{if .Data.Rules}}
-<h2>Rules</h2>
-<ol>{{range .Data.Rules}}<li>{{.}}</li>{{end}}</ol>
+{{$d := .Data}}
+<section class="group-head">
+  <h1>{{$d.Settings.Name}}</h1>
+  {{if $d.Settings.Description}}<p class="lead">{{$d.Settings.Description}}</p>{{end}}
+  <p class="muted">{{plural $d.MemberCount "member" "members"}} · <a href="/about">About</a></p>
+  <div class="row">
+    {{if $d.CanRead}}<a class="button" href="/submit">New post</a>{{end}}
+    {{if and .User (not $d.IsMember) (not $d.Pending)}}
+      <form method="post" action="/join" class="inline"><button class="secondary">Join</button></form>
+    {{end}}
+    {{if $d.Pending}}<span class="muted">Your request to join is waiting for a moderator.</span>{{end}}
+  </div>
+</section>
+{{if $d.CanRead}}
+<nav class="tabs">
+  <a href="/?sort=active" {{if eq $d.Sort "active"}}class="on"{{end}}>Active</a>
+  <a href="/?sort=new" {{if eq $d.Sort "new"}}class="on"{{end}}>New</a>
+</nav>
+{{if $d.Posts}}
+<ul class="feed">
+{{range $d.Posts}}
+  <li>
+    <a class="card" href="/p/{{.ID}}">
+      {{if .ThumbHash}}<img class="thumb" src="/img/{{.ThumbHash}}/t" alt="" loading="lazy">{{end}}
+      <span class="card-text">
+        <strong>{{if .Pinned}}<span class="tag">pinned</span> {{end}}{{.Title}}</strong>
+        {{if .Excerpt}}<span class="excerpt">{{.Excerpt}}</span>{{end}}
+        <span class="meta">{{.Author}} · {{date .CreatedAt}} · {{plural .CommentCount "comment" "comments"}}</span>
+      </span>
+    </a>
+  </li>
 {{end}}
-{{if .Data.CanRead}}
-<p class="muted">No posts yet.</p>
+</ul>
+{{if $d.NextPage}}<p><a href="/?sort={{$d.Sort}}&amp;page={{$d.NextPage}}">Older posts</a></p>{{end}}
+{{else}}
+<p class="muted">No posts yet. Be the first.</p>
+{{end}}
 {{else}}
 <p>This group is private. Its posts are for members.</p>
 {{if not .User}}<p><a class="button" href="{{.LoginURL}}">Sign in</a></p>{{end}}

@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1>New post</h1>
+<form method="post" action="/submit" enctype="multipart/form-data" class="stack resize">
+  <label>Title <input name="title" value="{{.Data.Title}}" maxlength="300" required autofocus></label>
+  <label>Text (optional) <textarea name="body" rows="8">{{.Data.Body}}</textarea></label>
+  <label>Photos (up to 10) <input type="file" name="photos" accept="image/*" multiple></label>
+  <button>Post</button>
+</form>
+{{end}}

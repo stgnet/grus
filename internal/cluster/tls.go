@@ -11,12 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"net"
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/hashicorp/raft"
 )
 
 // Nodes talk to each other over mutual TLS on one port, across the plain
@@ -141,39 +138,3 @@ func LoadTLS(caFile, certFile, keyFile string) (*tls.Config, error) {
 		MinVersion: tls.VersionTLS13,
 	}, nil
 }
-
-// tlsStream is Raft's network layer over mutual TLS: a listener for
-// incoming connections, and a Dial for outgoing ones.
-type tlsStream struct {
-	net.Listener
-	advertise net.Addr
-	conf      *tls.Config
-}
-
-// newTLSStream listens on listen (e.g. ":7946"). advertise is the host:port
-// other nodes use to reach this one; Raft records it in the cluster
-// configuration.
-func newTLSStream(listen, advertise string, conf *tls.Config) (*tlsStream, error) {
-	ln, err := tls.Listen("tcp", listen, conf)
-	if err != nil {
-		return nil, err
-	}
-	return &tlsStream{Listener: ln, advertise: hostAddr(advertise), conf: conf}, nil
-}
-
-// Dial connects to another node. The address is host:port and the host is
-// resolved on every dial, so changing a node's DNS record is enough to move
-// it.
-func (s *tlsStream) Dial(addr raft.ServerAddress, timeout time.Duration) (net.Conn, error) {
-	d := &net.Dialer{Timeout: timeout}
-	return tls.DialWithDialer(d, "tcp", string(addr), s.conf)
-}
-
-// Addr is what Raft advertises for this node.
-func (s *tlsStream) Addr() net.Addr { return s.advertise }
-
-// hostAddr is a host:port that isn't resolved until it's dialed.
-type hostAddr string
-
-func (a hostAddr) Network() string { return "tcp" }
-func (a hostAddr) String() string  { return string(a) }

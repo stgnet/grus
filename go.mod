@@ -7,6 +7,7 @@ require (
 	github.com/hashicorp/raft v1.8.0
 	github.com/hashicorp/raft-boltdb/v2 v2.4.2
 	golang.org/x/crypto v0.57.0
+	golang.org/x/image v0.46.0
 	modernc.org/sqlite v1.59.0
 )
 

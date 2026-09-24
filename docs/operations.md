@@ -70,8 +70,13 @@ a consistent copy of every database while the server keeps running:
 
 `deploy/grus-backup.sh` writes `<dir>/YYYY-MM-DD/` and keeps 30 days. To
 restore one onto a fresh node, copy its files into the node's `data_dir`
-(`site.db`, `groups/`) before the first start. Photos (from M1) are
-content-addressed files and are backed up by copying the blob directory.
+(`site.db`, `groups/`) before the first start, and copy `<dir>/blobs/`
+to `data_dir/blobs/`. Photos are content-addressed files that never change,
+so the script keeps one shared copy of them with rsync rather than one per
+day. A node that's missing photos also fetches them from the others by
+itself within a minute.
+
+To load the Travato knowledge base, see [archive-format.md](archive-format.md).
 
 ## 5. Recovering from a lost VPS
 

@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/stgnet/grus/internal/auth"
 	"github.com/stgnet/grus/internal/store"
@@ -56,42 +55,6 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 			URL: s.groupURL(g, rt.primary, "/"), Visibility: st.Visibility})
 	}
 	s.render(w, r, http.StatusOK, "home", &page{Title: rt.primary, User: u, Data: cards})
-}
-
-type groupData struct {
-	Settings *store.Settings
-	CanRead  bool
-	Rules    []string
-}
-
-// groupHome is a group's front page. In M0 it's the group's name,
-// description and rules; posts and the feed arrive in M1.
-func (s *Server) groupHome(w http.ResponseWriter, r *http.Request) {
-	rt := routeOf(r)
-	u := s.user(r)
-	st, err := s.Store.GroupSettings(rt.group.ID)
-	if err != nil {
-		s.serverError(w, r, err)
-		return
-	}
-	v, err := s.viewer(u, rt.group.ID)
-	if err != nil {
-		s.serverError(w, r, err)
-		return
-	}
-	if st == nil || !auth.CanSeeGroup(v, st.Visibility) {
-		// Hidden groups answer exactly like groups that don't exist.
-		s.render(w, r, http.StatusNotFound, "notfound", &page{Title: "No such group", User: u})
-		return
-	}
-	var rules []string
-	for _, line := range strings.Split(st.Rules, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			rules = append(rules, line)
-		}
-	}
-	s.render(w, r, http.StatusOK, "group", &page{Title: rt.group.Name, User: u, Group: rt.group,
-		Data: groupData{Settings: st, CanRead: auth.CanRead(v, st.Visibility, nil), Rules: rules}})
 }
 
 // groupLogin sends sign-in to the primary domain, coming back here after.

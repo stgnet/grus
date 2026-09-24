@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -38,16 +39,28 @@ type Node struct {
 	boltDB *raftboltdb.BoltStore
 	peers  []config.Peer
 	done   chan struct{}
+	rpc    *subListener
+}
+
+// RPCListener is where the internal HTTP API's connections arrive (see
+// mux.go). The caller serves it with RPCHandler.
+func (n *Node) RPCListener() net.Listener { return n.rpc }
+
+// LeaderAddr is the cluster address of the current leader, or "" if there
+// is none right now.
+func (n *Node) LeaderAddr() string {
+	addr, _ := n.raft.LeaderWithID()
+	return string(addr)
 }
 
 // raftDir is where Raft keeps its log and snapshots, next to the databases.
 func raftDir(st *store.Store) string { return filepath.Join(st.Dir(), "raft") }
 
 // open builds the pieces NewRaft and RecoverCluster both need.
-func open(o Options, st *store.Store) (*raft.Config, *raftboltdb.BoltStore, *raft.FileSnapshotStore, *raft.NetworkTransport, error) {
+func open(o Options, st *store.Store) (*raft.Config, *raftboltdb.BoltStore, *raft.FileSnapshotStore, *raft.NetworkTransport, *muxListener, error) {
 	dir := raftDir(st)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	out := o.LogOutput
 	if out == nil {
@@ -72,33 +85,34 @@ func open(o Options, st *store.Store) (*raft.Config, *raftboltdb.BoltStore, *raf
 	// state (current term, vote).
 	bolt, err := raftboltdb.NewBoltStore(filepath.Join(dir, "raft.db"))
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	// Keep two snapshots: the latest, and one before it in case the latest
 	// was written badly.
 	snaps, err := raft.NewFileSnapshotStoreWithLogger(dir, 2, logger)
 	if err != nil {
 		bolt.Close()
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
-	stream, err := newTLSStream(o.Listen, o.Advertise, o.TLS)
+	mux, err := newMux(o.Listen, o.TLS)
 	if err != nil {
 		bolt.Close()
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
+	stream := newTLSStream(mux, o.Advertise, o.TLS)
 	trans := raft.NewNetworkTransportWithConfig(&raft.NetworkTransportConfig{
 		Stream:  stream,
 		MaxPool: 3,
 		Timeout: 10 * time.Second,
 		Logger:  logger,
 	})
-	return c, bolt, snaps, trans, nil
+	return c, bolt, snaps, trans, mux, nil
 }
 
 // Start joins (or, with Bootstrap, creates) the cluster and starts applying
 // the log to st.
 func Start(o Options, st *store.Store) (*Node, error) {
-	c, bolt, snaps, trans, err := open(o, st)
+	c, bolt, snaps, trans, mux, err := open(o, st)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +122,8 @@ func Start(o Options, st *store.Store) (*Node, error) {
 		bolt.Close()
 		return nil, err
 	}
-	n := &Node{raft: r, trans: trans, boltDB: bolt, peers: o.Peers, done: make(chan struct{})}
+	n := &Node{raft: r, trans: trans, boltDB: bolt, peers: o.Peers, done: make(chan struct{}),
+		rpc: &subListener{m: mux, ch: mux.rpc, addr: hostAddr(o.Advertise)}}
 
 	if o.Bootstrap {
 		// Only the very first start creates the cluster; after that the
@@ -225,7 +240,7 @@ func (n *Node) Shutdown() error {
 // Studio's data directory under the new node's id, then start the server
 // normally. See docs/operations.md.
 func Recover(o Options, st *store.Store) error {
-	c, bolt, snaps, trans, err := open(o, st)
+	c, bolt, snaps, trans, _, err := open(o, st)
 	if err != nil {
 		return err
 	}

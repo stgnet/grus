@@ -151,12 +151,17 @@ func (c *Config) set(key, val string) error {
 	return err
 }
 
+// ToolNodeNum is the id node number that operator tools use.
+const ToolNodeNum = 1023
+
 func (c *Config) check() error {
 	if c.NodeID == "" {
 		return fmt.Errorf("node_id is required")
 	}
-	if c.NodeNum < 0 || c.NodeNum > 1023 {
-		return fmt.Errorf("node_num must be 0-1023")
+	// 1023 is kept for offline tools like import-archive, which make ids
+	// while the nodes are running and must never collide with them.
+	if c.NodeNum < 0 || c.NodeNum > ToolNodeNum-1 {
+		return fmt.Errorf("node_num must be 0-%d", ToolNodeNum-1)
 	}
 	if c.PrimaryDomain == "" {
 		return fmt.Errorf("primary_domain is required")

@@ -6,6 +6,7 @@
 //	grus ca issue -dir /etc/grus/cluster <id>   make a node's certificate
 //	grus backup  -config ... -to <dir>          consistent copy of every database
 //	grus recover -config ...                    make this node the only voter (disaster runbook)
+//	grus import-archive -config ... -group <slug> <file>   load a knowledge base as archive threads
 //
 // See docs/operations.md for how they fit together.
 package main
@@ -20,9 +21,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/stgnet/grus/internal/blob"
 	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/cmd"
 	"github.com/stgnet/grus/internal/config"
@@ -50,6 +53,8 @@ func main() {
 		err = backup(os.Args[2:])
 	case "recover":
 		err = recoverCmd(os.Args[2:])
+	case "import-archive":
+		err = importArchive(os.Args[2:])
 	case "version":
 		fmt.Println("grus", version)
 	default:
@@ -67,6 +72,7 @@ func usage() {
   grus ca issue -dir <dir> <node-id>
   grus backup  -config <file> -to <dir>
   grus recover -config <file>
+  grus import-archive -config <file> -group <slug> [-n] <archive.json>
   grus version`)
 	os.Exit(2)
 }
@@ -133,8 +139,23 @@ func serve(args []string) error {
 
 	go purgeDaily(ctx, node)
 
+	// Photos live on disk beside the databases, outside the Raft log.
+	// Every node, including a copy-only Studio, serves them to the others
+	// on the cluster port and keeps its own set complete (blobs.go).
+	blobs, err := blob.Open(filepath.Join(c.DataDir, "blobs"))
+	if err != nil {
+		return err
+	}
+	client := cluster.NewClient(opts.TLS)
+	rpc := &http.Server{Handler: cluster.RPCHandler(node, st, blobs), ReadHeaderTimeout: 10 * time.Second}
+	// The listener closes with the node (it shares the cluster port with
+	// Raft), which ends this Serve; nothing to shut down separately.
+	go rpc.Serve(node.RPCListener())
+	go syncBlobs(ctx, node, st, blobs, client, c.Peers)
+	go gcBlobs(ctx, st, blobs)
+
 	if c.HTTPAddr == "" && c.HTTPSAddr == "" {
-		// The Studio in M0: a live full copy, serving nothing.
+		// The Studio: a live full copy, serving no web pages.
 		log.Printf("no http_addr or https_addr: running as a copy only")
 		<-ctx.Done()
 		return nil
@@ -149,6 +170,8 @@ func serve(args []string) error {
 		Dev:        c.Dev,
 		PortSuffix: portSuffix(c),
 		IsOperator: c.IsOperator,
+		Blobs:      blobs,
+		PushBlob:   pushBlob(node, client, blobs, c.Peers),
 	})
 	if err != nil {
 		return err

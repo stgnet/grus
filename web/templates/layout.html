@@ -5,11 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
 <link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
 </head>
 <body>
 <header class="top">
   <a class="brand" href="{{if .Group}}/{{else}}{{.HomeURL}}{{end}}">{{if .Group}}{{.Group.Name}}{{else}}Home{{end}}</a>
   <nav>
+    {{if .Group}}<a href="{{.HomeURL}}">All groups</a>{{end}}
     {{if .User}}
       {{if .User.Handle}}<span class="me">{{.User.Handle}}</span>{{else}}<a href="{{.HomeURL}}welcome">Choose a handle</a>{{end}}
       {{if .User.IsOperator}}<a href="{{.HomeURL}}admin">Admin</a>{{end}}

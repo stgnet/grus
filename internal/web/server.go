@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stgnet/grus/internal/auth"
+	"github.com/stgnet/grus/internal/blob"
 	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/ids"
 	"github.com/stgnet/grus/internal/mail"
@@ -33,6 +34,12 @@ type Server struct {
 	// is added to every URL we build, for the same reason.
 	Dev        bool
 	PortSuffix string
+
+	// Photos. PushBlob (optional) copies a newly stored photo to the other
+	// nodes before the post that uses it is written, so every photo exists
+	// in at least two places from the start.
+	Blobs    *blob.Store
+	PushBlob func(hash string)
 
 	IsOperator func(email string) bool // from the config file
 	Limiter    *auth.SendLimiter
@@ -87,6 +94,22 @@ func New(s *Server) (*Server, error) {
 	// so paths are short: travato.nfb.group/p/123.
 	g := http.NewServeMux()
 	g.HandleFunc("GET /{$}", s.groupHome)
+	g.HandleFunc("GET /about", s.groupAbout)
+	g.HandleFunc("POST /join", s.groupJoin)
+	g.HandleFunc("GET /submit", s.submitForm)
+	g.HandleFunc("POST /submit", s.submitPost)
+	g.HandleFunc("GET /p/{id}", s.postPage)
+	g.HandleFunc("GET /p/{id}/edit", s.editPostForm)
+	g.HandleFunc("POST /p/{id}/edit", s.editPost)
+	g.HandleFunc("POST /p/{id}/delete", s.deletePost)
+	g.HandleFunc("POST /p/{id}/restore", s.restorePost)
+	g.HandleFunc("POST /p/{id}/comment", s.addComment)
+	g.HandleFunc("GET /c/{id}/edit", s.editCommentForm)
+	g.HandleFunc("POST /c/{id}/edit", s.editComment)
+	g.HandleFunc("POST /c/{id}/delete", s.deleteComment)
+	g.HandleFunc("POST /c/{id}/restore", s.restoreComment)
+	g.HandleFunc("GET /img/{hash}", s.serveImage)
+	g.HandleFunc("GET /img/{hash}/t", s.serveImage)
 	g.HandleFunc("GET /login", s.groupLogin)
 	g.HandleFunc("POST /logout", s.logout)
 	g.Handle("GET /static/", staticHandler)
@@ -141,7 +164,7 @@ func (s *Server) loadPages() error {
 		if name == "layout" {
 			continue
 		}
-		t, err := template.ParseFS(webfiles.Files, "templates/layout.html", n)
+		t, err := template.New(name).Funcs(s.templateFuncs()).ParseFS(webfiles.Files, "templates/layout.html", n)
 		if err != nil {
 			return err
 		}

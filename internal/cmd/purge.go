@@ -9,7 +9,7 @@ import "database/sql"
 //
 // Anything under legal_hold is kept until the hold is lifted.
 //
-// Not yet: photo blobs (arrive in M1) and the erasure list's bookkeeping.
+// Not yet: the erasure list's bookkeeping.
 type Purge struct {
 	Before int64
 }
@@ -73,6 +73,11 @@ func (c *Purge) Apply(a *Applier) (any, error) {
 				     AND NOT (kind = 'comment' AND ref_id IN (SELECT id FROM comments WHERE legal_hold = 1)))
 				   OR (kind = 'post' AND ref_id NOT IN (SELECT id FROM posts))
 				   OR (kind = 'comment' AND ref_id NOT IN (SELECT id FROM comments))`,
+				// Photo placements on items that are gone. The blob files
+				// themselves are removed by each node's blob GC once nothing
+				// references them.
+				`DELETE FROM images WHERE post_id NOT IN (SELECT id FROM posts)
+				   OR (comment_id IS NOT NULL AND comment_id NOT IN (SELECT id FROM comments))`,
 			} {
 				if _, err := tx.Exec(q, c.Before); err != nil {
 					return err

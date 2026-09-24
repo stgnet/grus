@@ -1,0 +1,68 @@
+{{define "content"}}
+{{$d := .Data}}{{$p := $d.Post}}
+<article class="post">
+  {{if ne $p.Status "visible"}}<p class="notice">{{if eq $p.Status "removed"}}Removed by a moderator{{if $p.RemovedReason}}: {{$p.RemovedReason}}{{end}}.{{else if eq $p.Status "deleted"}}Deleted by its author.{{else if eq $p.Status "flagged"}}Flagged as possibly breaking the group's rules.{{else}}Waiting for a moderator.{{end}}</p>{{end}}
+  <h1>{{$p.Title}}</h1>
+  <p class="meta">{{$d.Author}} · {{date $p.CreatedAt}}{{if $p.EditedAt}} · edited{{end}}{{if and $p.Locked (ne $p.Origin "archive")}} · locked{{end}}</p>
+  {{if eq $p.Origin "archive"}}<p class="notice">From the Facebook group archive. Names have been removed.{{if $p.OriginURL}} <a href="{{$p.OriginURL}}" rel="nofollow noopener">View the original</a>{{end}}</p>{{end}}
+  {{if $p.Body}}<div class="body">{{text $p.Body}}</div>{{end}}
+  {{if $d.Images}}<div class="photos">{{range $d.Images}}<a href="/img/{{.Hash}}"><img src="/img/{{.Hash}}/t" alt="" loading="lazy" width="{{.Width}}" height="{{.Height}}"></a>{{end}}</div>{{end}}
+  <div class="actions">
+    {{if $d.CanEdit}}<a href="/p/{{$p.ID}}/edit">Edit</a>
+      <form method="post" action="/p/{{$p.ID}}/delete" class="inline confirm" data-confirm="Delete this post?"><button class="link">Delete</button></form>{{end}}
+    {{if and $d.CanMod (not $d.CanEdit)}}
+      {{if or (eq $p.Status "removed") (eq $p.Status "deleted")}}
+        <form method="post" action="/p/{{$p.ID}}/restore" class="inline"><button class="link">Restore</button></form>
+      {{else}}
+        <form method="post" action="/p/{{$p.ID}}/delete" class="inline confirm" data-confirm="Remove this post?"><input type="hidden" name="reason" value=""><button class="link">Remove</button></form>
+      {{end}}
+    {{end}}
+  </div>
+</article>
+
+<section class="comments">
+<h2>{{plural $p.CommentCount "comment" "comments"}}</h2>
+{{range $d.Threads}}
+  <div class="thread">
+    {{if .Readable}}{{template "comment" (dict "C" .Comment "D" $d)}}{{else}}<div class="comment gone">[comment deleted]</div>{{end}}
+    {{if .Replies}}<div class="replies">{{range .Replies}}{{template "comment" (dict "C" . "D" $d)}}{{end}}</div>{{end}}
+    {{if and $d.CanComment .Readable}}
+    <details class="reply"><summary>Reply</summary>
+      <form method="post" action="/p/{{$p.ID}}/comment" enctype="multipart/form-data" class="stack resize">
+        <input type="hidden" name="parent" value="{{.Comment.ID}}">
+        <textarea name="body" rows="3" required></textarea>
+        <button>Reply</button>
+      </form>
+    </details>
+    {{end}}
+  </div>
+{{end}}
+{{if $d.CanComment}}
+<form method="post" action="/p/{{$p.ID}}/comment" enctype="multipart/form-data" class="stack resize">
+  <label>Add a comment <textarea name="body" rows="4"></textarea></label>
+  <label class="muted">Photo (optional) <input type="file" name="photo" accept="image/*"></label>
+  <button>Comment</button>
+</form>
+{{end}}
+</section>
+{{end}}
+
+{{define "comment"}}{{$c := .C}}{{$d := .D}}
+<div class="comment" id="c{{$c.ID}}">
+  {{if ne $c.Status "visible"}}<p class="notice">{{if eq $c.Status "removed"}}Removed by a moderator.{{else if eq $c.Status "deleted"}}Deleted by its author.{{else if eq $c.Status "flagged"}}Flagged.{{else}}Waiting for a moderator.{{end}}</p>{{end}}
+  <p class="meta">{{$c.Author}} · {{date $c.CreatedAt}}{{if $c.EditedAt}} · edited{{end}}</p>
+  <div class="body">{{text $c.Body}}</div>
+  {{range $c.Images}}<a href="/img/{{.Hash}}"><img class="inline-photo" src="/img/{{.Hash}}/t" alt="" loading="lazy"></a>{{end}}
+  <div class="actions">
+    {{if $c.CanEdit}}<a href="/c/{{$c.ID}}/edit">Edit</a>
+      <form method="post" action="/c/{{$c.ID}}/delete" class="inline confirm" data-confirm="Delete this comment?"><button class="link">Delete</button></form>{{end}}
+    {{if and $d.CanMod (not $c.CanEdit)}}
+      {{if or (eq $c.Status "removed") (eq $c.Status "deleted")}}
+        <form method="post" action="/c/{{$c.ID}}/restore" class="inline"><button class="link">Restore</button></form>
+      {{else}}
+        <form method="post" action="/c/{{$c.ID}}/delete" class="inline confirm" data-confirm="Remove this comment?"><button class="link">Remove</button></form>
+      {{end}}
+    {{end}}
+  </div>
+</div>
+{{end}}

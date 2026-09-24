@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1>{{.Title}}</h1>
+<form method="post" action="{{.Data.Action}}" class="stack">
+  {{if .Data.IsPost}}<label>Title <input name="title" value="{{.Data.Title}}" maxlength="300" required></label>{{end}}
+  <label>Text <textarea name="body" rows="8" {{if not .Data.IsPost}}required{{end}}>{{.Data.Body}}</textarea></label>
+  <div class="row"><button>Save</button> <a href="{{.Data.Back}}">Cancel</a></div>
+  <p class="muted">Earlier versions are kept, and the post shows "edited".</p>
+</form>
+{{end}}

@@ -33,3 +33,29 @@ form.inline { display: inline; }
 table { border-collapse: collapse; width: 100%; font-size: .95rem; }
 th, td { text-align: left; padding: .3rem .4rem; border-bottom: 1px solid var(--line); vertical-align: top; }
 code { font-size: .85rem; word-break: break-all; }
+
+/* Groups and posts */
+.group-head h1 { margin-bottom: .2rem; }
+.tabs { display: flex; gap: 1rem; border-bottom: 1px solid var(--line); margin: 1rem 0; }
+.tabs a { padding: .4rem 0; text-decoration: none; color: var(--muted); }
+.tabs a.on { color: var(--fg); border-bottom: 2px solid var(--accent); }
+.feed { list-style: none; padding: 0; margin: 0; }
+.feed li { border-bottom: 1px solid var(--line); }
+.card { display: flex; gap: .8rem; padding: .8rem 0; text-decoration: none; color: var(--fg); }
+.card .thumb { width: 88px; height: 88px; object-fit: cover; border-radius: .35rem; flex: none; }
+.card-text { display: flex; flex-direction: column; gap: .2rem; min-width: 0; }
+.excerpt { color: var(--muted); font-size: .95rem; overflow-wrap: anywhere; }
+.meta { color: var(--muted); font-size: .85rem; margin: .2rem 0; }
+.post .body, .comment .body { overflow-wrap: anywhere; }
+.photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: .4rem; margin: .8rem 0; }
+.photos img { width: 100%; height: 140px; object-fit: cover; border-radius: .35rem; }
+.inline-photo { max-width: 240px; border-radius: .35rem; margin-top: .3rem; }
+.actions { display: flex; gap: 1rem; font-size: .9rem; margin: .3rem 0; }
+.comments { margin-top: 2rem; }
+.thread { border-top: 1px solid var(--line); padding: .6rem 0; }
+.replies { margin-left: 1.2rem; padding-left: .8rem; border-left: 2px solid var(--line); }
+.comment.gone { color: var(--muted); font-style: italic; }
+.reply summary { cursor: pointer; color: var(--accent); font-size: .9rem; }
+.notice { background: color-mix(in srgb, var(--accent) 10%, transparent); padding: .4rem .6rem; border-radius: .35rem; font-size: .9rem; }
+button.secondary { background: none; color: var(--accent); border: 1px solid var(--accent); }
+button:disabled { opacity: .6; }

@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/stgnet/grus/internal/auth"
+	"github.com/stgnet/grus/internal/blob"
 	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/cmd"
 	"github.com/stgnet/grus/internal/ids"
@@ -45,8 +47,13 @@ func newSite(t *testing.T) *testSite {
 	must(t, lg, &cmd.CreateGroup{GroupID: 42, Slug: "travato", Name: "Travato Owners", Description: "Vans", At: 1})
 	g, _ := st.GroupBySlug("travato")
 
+	blobs, err := blob.Open(filepath.Join(t.TempDir(), "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	buf := &bytes.Buffer{}
 	srv, err := New(&Server{
+		Blobs:      blobs,
 		Store:      st,
 		Log:        lg,
 		IDs:        ids.New(1),
