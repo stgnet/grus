@@ -77,6 +77,9 @@ type Config struct {
 	// The hour (UTC, 0-23) the leader queues the nightly FAQ batch, when
 	// the model is otherwise idle. Default 8: 3-4am in US Eastern time.
 	FAQHour int
+	// The hour (UTC) the daily email digest goes out. Default 12: early
+	// morning across the US.
+	DigestHour int
 }
 
 // Load reads and checks a config file.
@@ -87,7 +90,7 @@ func Load(path string) (*Config, error) {
 	}
 	defer f.Close()
 
-	c := &Config{NodeNum: 1, DataDir: "/var/lib/grus", SMTPPort: 587, FAQHour: 8}
+	c := &Config{NodeNum: 1, DataDir: "/var/lib/grus", SMTPPort: 587, FAQHour: 8, DigestHour: 12}
 	sc := bufio.NewScanner(f)
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
@@ -168,6 +171,11 @@ func (c *Config) set(key, val string) error {
 		c.Workers = append(c.Workers, val)
 	case "ask_daily_limit":
 		c.AskLimit, err = strconv.Atoi(val)
+	case "digest_hour":
+		c.DigestHour, err = strconv.Atoi(val)
+		if err == nil && (c.DigestHour < 0 || c.DigestHour > 23) {
+			err = fmt.Errorf("digest_hour must be 0 to 23")
+		}
 	case "faq_hour":
 		c.FAQHour, err = strconv.Atoi(val)
 		if err == nil && (c.FAQHour < 0 || c.FAQHour > 23) {

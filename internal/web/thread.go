@@ -27,6 +27,8 @@ type commentView struct {
 	CanEdit bool
 	NewerID int64 // a later comment replaced this one's advice
 	Votes   *voteView
+	Helped  bool // this viewer marked it helpful
+	CanHelp bool // members, on others' shown comments
 }
 
 // voteView is the Keep / Hide vote on a flagged item (plan section 6,
@@ -51,6 +53,8 @@ type PostView struct {
 	CanEdit    bool
 	CanComment bool
 	Votes      *voteView
+	Helped     bool
+	CanHelp    bool
 }
 
 // noteView is a note as a related-post card. It has no author and no
@@ -105,6 +109,8 @@ type postData struct {
 	MoveChoices []store.Post
 	CanMove     bool
 	CanLink     bool
+	// M6: following the thread (members).
+	Following bool
 }
 
 // maxShownNotes: a thread shows its 5 newest link notes in place; older
@@ -170,6 +176,11 @@ func (s *Server) postData(c *greq, p *store.Post) (*postData, error) {
 	if err := s.surroundings(c, d); err != nil {
 		return nil, err
 	}
+	if c.u != nil && d.IsMember {
+		if d.Following, err = s.Store.Following(c.g.ID, p.ID, c.u.ID); err != nil {
+			return nil, err
+		}
+	}
 	shown := p.Status == "visible" || p.Status == "flagged"
 	d.CanLink = shown && (d.CanEdit || d.CanMod)
 	if shown && len(d.Updates) == 0 && (d.CanEdit || d.CanMod) {
@@ -206,6 +217,19 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 	if d.Votes, err = s.votes(c, "post", p.ID, p.UserID, p.Status); err != nil {
 		return nil, err
 	}
+	// "Helpful" votes (M6): which of this thread's items the viewer marked.
+	helped := map[string]bool{}
+	if c.u != nil && c.member() {
+		root := p.ID
+		if p.ContinuesID != 0 {
+			root = p.ContinuesID
+		}
+		if helped, err = s.Store.MyHelpful(c.g.ID, root, c.u.ID); err != nil {
+			return nil, err
+		}
+	}
+	d.Helped = helped[fmt.Sprintf("post:%d", p.ID)]
+	d.CanHelp = c.member() && !d.CanEdit && (p.Status == "visible" || p.Status == "flagged")
 
 	byComment := map[int64][]store.Image{}
 	for _, im := range images {
@@ -223,6 +247,8 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 		}
 		// A failed count only loses the buttons, not the page.
 		v.Votes, _ = s.votes(c, "comment", cm.ID, cm.UserID, cm.Status)
+		v.Helped = helped[fmt.Sprintf("comment:%d", cm.ID)]
+		v.CanHelp = c.member() && !v.CanEdit && (cm.Status == "visible" || cm.Status == "flagged")
 		return v
 	}
 	readable := func(cm store.Comment) bool {

@@ -97,6 +97,9 @@ func New(s *Server) (*Server, error) {
 	h.HandleFunc("POST /admin/domains", s.adminDomain)
 	h.HandleFunc("POST /admin/aliases", s.adminAlias)
 	h.HandleFunc("POST /admin/suspend", s.adminSuspend)
+	h.HandleFunc("GET /notifications", s.notificationsPage)
+	h.HandleFunc("GET /profile", s.profile)
+	h.HandleFunc("POST /profile", s.profileSave)
 	h.HandleFunc("GET /how-it-works", s.howItWorks)
 	// The root FAQ: the same pages as a group's, over the reserved root
 	// group file, edited by operators.
@@ -144,6 +147,9 @@ func New(s *Server) (*Server, error) {
 	g.HandleFunc("POST /c/{id}/report", s.report)
 	g.HandleFunc("POST /p/{id}/vote", s.vote)
 	g.HandleFunc("POST /c/{id}/vote", s.vote)
+	g.HandleFunc("POST /p/{id}/helpful", s.helpful)
+	g.HandleFunc("POST /c/{id}/helpful", s.helpful)
+	g.HandleFunc("POST /p/{id}/follow", s.follow)
 	g.HandleFunc("GET /submit", s.submitForm)
 	g.HandleFunc("POST /submit", s.submitPost)
 	g.HandleFunc("GET /p/{id}", s.postPage)
@@ -271,6 +277,7 @@ type page struct {
 	Manage   bool // show the group's Settings link
 	NoIndex  bool // ask search engines not to list this page
 	Error    string
+	Unread   int // the bell: unread notifications (set by render)
 	Data     any // the page's own data
 }
 
@@ -279,6 +286,9 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 	if t == nil {
 		s.serverError(w, r, fmt.Errorf("no template %q", name))
 		return
+	}
+	if p.User != nil {
+		p.Unread = s.unreadCount(p.User)
 	}
 	if p.HomeURL == "" {
 		if rt := routeOf(r); rt != nil {

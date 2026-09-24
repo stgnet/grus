@@ -118,6 +118,11 @@ func changeStatus(tx *sql.Tx, groupID int64, it *item, to string, at int64) ([]s
 	if err := threadChanged(tx, groupID, it.postID, at); err != nil {
 		return nil, err
 	}
+	if to == "auto_hidden" {
+		if err := authorNotice(tx, it, NoteHidden, 0, at); err != nil {
+			return nil, err
+		}
+	}
 	if it.kind == "post" && shown(was) != shown(to) {
 		return sisterRefs(tx, it.id)
 	}
@@ -268,6 +273,9 @@ func (c *Approve) Apply(a *Applier) (any, error) {
 		action := "approve"
 		if wasHeld {
 			action = "approve_held"
+			if err := authorNotice(tx, it, NoteApproved, c.By, c.At); err != nil {
+				return err
+			}
 			// Its check found no links while it was held; look again now.
 			if c.Kind == "post" {
 				var v int64

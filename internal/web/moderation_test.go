@@ -109,6 +109,9 @@ func TestReportQueueAndVotes(t *testing.T) {
 	if !strings.Contains(mod.do("GET", postURL, nil).Body.String(), "Removed by a moderator: Rule 2: be kind") {
 		t.Fatal("removal reason not shown")
 	}
+	if !strings.Contains(alice.do("GET", "https://nfb.group/notifications", nil).Body.String(), "A moderator removed your post in “Rude post”") {
+		t.Fatal("author not told of the removal")
+	}
 	lg := mod.do("GET", G+"/mod/log", nil).Body.String()
 	if !strings.Contains(lg, "Rule 2: be kind") || !strings.Contains(lg, "approve") {
 		t.Fatalf("mod log:\n%s", lg)
@@ -159,7 +162,7 @@ func TestLockPinBanSuspend(t *testing.T) {
 	// The operator suspends bob site-wide: he reads as signed out.
 	op := s.signedIn("scott@example.com", "scott")
 	expect(t, op.do("POST", "https://nfb.group/admin/suspend", url.Values{"who": {"bob"}, "days": {"7"}}), 303, "/admin")
-	if strings.Contains(bob.do("GET", G+"/", nil).Body.String(), `class="me">bob`) {
+	if strings.Contains(bob.do("GET", G+"/", nil).Body.String(), `profile">bob<`) {
 		t.Fatal("suspended account still signed in")
 	}
 }
@@ -183,4 +186,7 @@ func TestHeldFirstPostPage(t *testing.T) {
 	}
 	expect(t, owner.do("POST", G+"/mod/queue/approve", url.Values{"kind": {"post"}, "id": {idOf(loc)}}), 303, "")
 	expect(t, s.browser().do("GET", G+loc, nil), 200, "")
+	if !strings.Contains(bob.do("GET", "https://nfb.group/notifications", nil).Body.String(), "Your post “First post” is up") {
+		t.Fatal("author not told the held post is up")
+	}
 }

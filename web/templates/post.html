@@ -154,6 +154,8 @@
 
 {{define "post-actions"}}{{$v := .P}}{{$d := .D}}{{$p := $v.Post}}
 <div class="actions">
+  {{template "helpful" (dict "Path" (printf "/p/%d" $p.ID) "Score" $p.Score "Helped" $v.Helped "Can" $v.CanHelp)}}
+  {{if and $d.IsMember (eq $p.ID $d.Post.ID)}}<form method="post" action="/p/{{$p.ID}}/follow" class="inline"><input type="hidden" name="on" value="{{if $d.Following}}0{{else}}1{{end}}"><button class="link">{{if $d.Following}}Unfollow{{else}}Follow{{end}}</button></form>{{end}}
   {{if $v.CanEdit}}<a href="/p/{{$p.ID}}/edit">Edit</a>
     <form method="post" action="/p/{{$p.ID}}/delete" class="inline confirm" data-confirm="Delete this post?"><button class="link">Delete</button></form>{{end}}
   {{if and $d.CanMod (not $v.CanEdit)}}
@@ -251,6 +253,7 @@
   {{range $c.Images}}<a href="/img/{{.Hash}}"><img class="inline-photo" src="/img/{{.Hash}}/t" alt="" loading="lazy"></a>{{end}}
   {{if and (eq $c.Status "flagged") (not $c.CanEdit)}}</details>{{end}}
   <div class="actions">
+    {{template "helpful" (dict "Path" (printf "/c/%d" $c.ID) "Score" $c.Score "Helped" $c.Helped "Can" $c.CanHelp)}}
     {{if $c.CanEdit}}<a href="/c/{{$c.ID}}/edit">Edit</a>
       <form method="post" action="/c/{{$c.ID}}/delete" class="inline confirm" data-confirm="Delete this comment?"><button class="link">Delete</button></form>{{end}}
     {{if and $d.CanMod (not $c.CanEdit)}}
@@ -267,3 +270,7 @@
   </div>
 </div>
 {{end}}
+
+{{/* helpful: the one upvote, for sorting only. Members press it on
+     others' items; everyone sees the count once there is one. */}}
+{{define "helpful"}}{{if .Can}}<form method="post" action="{{.Path}}/helpful" class="inline"><input type="hidden" name="on" value="{{if .Helped}}0{{else}}1{{end}}"><button class="helpful{{if .Helped}} on{{end}}" aria-pressed="{{if .Helped}}true{{else}}false{{end}}">Helpful{{if .Score}} · {{.Score}}{{end}}</button></form>{{else if .Score}}<span class="meta">{{.Score}} found this helpful</span>{{end}}{{end}}

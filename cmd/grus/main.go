@@ -214,6 +214,8 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Notification emails and the digest go out from the leader only.
+	go srv.RunMail(ctx, node.IsLeader, c.DigestHour)
 	return listen(ctx, c, srv)
 }
 

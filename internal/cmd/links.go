@@ -98,6 +98,14 @@ func addLink(tx *sql.Tx, groupID, a, b int64, source string, by int64, ids [4]in
 	if err := feedWeight(tx, older, newer, at); err != nil {
 		return err
 	}
+	// "New information linked to a post you follow" (plan section 2).
+	// Only the older post's followers: the newer post is the news. Its
+	// author already knows about it.
+	var newerAuthor sql.NullInt64
+	tx.QueryRow(`SELECT user_id FROM posts WHERE id = ?`, newer).Scan(&newerAuthor)
+	if err := notifyFollowers(tx, older, NoteLinked, newer, 0, map[int64]bool{newerAuthor.Int64: true}, at); err != nil {
+		return err
+	}
 	// Linked threads are about the same thing, so an entry written from
 	// one of them takes in the other: a repeat question joins the entry
 	// that covers it, and what it adds flows back at the next rewrite.

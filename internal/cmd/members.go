@@ -139,6 +139,9 @@ func (c *ReviewJoin) Apply(a *Applier) (any, error) {
 			if _, err := tx.Exec(`UPDATE memberships SET status = 'active' WHERE user_id = ?`, c.UserID); err != nil {
 				return err
 			}
+			if err := notify(tx, c.UserID, NoteJoined, 0, 0, c.By, c.At); err != nil {
+				return err
+			}
 		} else {
 			action = "decline_join"
 			if _, err := tx.Exec(`DELETE FROM memberships WHERE user_id = ?`, c.UserID); err != nil {

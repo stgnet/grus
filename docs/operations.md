@@ -214,6 +214,21 @@ Accounts under three days old, or with nothing shown in the group yet,
 can't post links and can post five times an hour. Those limits are counted
 in memory on the node serving the request, like the daily question limit.
 
+## 11. Notifications and email
+
+The bell counts unread notifications: replies to your comments, new
+comments on posts you follow (you follow your own), newer posts linked to
+them, join approvals, and what mods did with your posts. Authors are told
+when something of theirs is hidden or removed unless the group turns off
+"notify_hidden" (quiet hiding).
+
+Email is off for everyone until they turn it on at `/profile`. The leader
+checks every 5 minutes and sends each person one email with whatever has
+waited 10 minutes unread; the daily digest (the day's top new posts in
+each of their groups) goes at `digest_hour` UTC, default 12. Both go
+through the same SMTP relay as sign-in links. If the leader changes
+between sending and recording, a batch can go twice; nothing is lost.
+
 ## Retention
 
 The leader submits a `Purge` command once a day. It removes expired sign-in

@@ -1,0 +1,11 @@
+{{define "content"}}
+<h1>Notifications</h1>
+{{if .Data}}
+<ul class="bell-list">
+{{range .Data}}
+  <li {{if .Unread}}class="unread"{{end}}><a href="{{.URL}}">{{.Text}}</a> <span class="meta">· {{.Group}} · {{date .CreatedAt}}</span></li>
+{{end}}
+</ul>
+{{else}}<p class="muted">Nothing yet. You'll hear here about replies to your posts and comments, new comments on posts you follow, and newer posts linked to them.</p>{{end}}
+<p class="muted"><a href="/profile">Email and digest settings</a></p>
+{{end}}

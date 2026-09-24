@@ -115,6 +115,11 @@ func (c *CreatePost) Apply(a *Applier) (any, error) {
 		if err := insertImages(tx, c.PostID, nil, c.UserID, c.Images, c.At); err != nil {
 			return err
 		}
+		// Authors follow their own posts, so they hear about replies.
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO follows (user_id, post_id, created_at) VALUES (?, ?, ?)`,
+			c.UserID, c.PostID, c.At); err != nil {
+			return err
+		}
 		// Check it now (links to older posts; moderation from M5), and
 		// write its digest once the first replies settle.
 		if err := schedule(tx, JobCheck, c.PostID, 1, c.At, c.At); err != nil {
@@ -274,6 +279,9 @@ func (c *CreateComment) Apply(a *Applier) (any, error) {
 		if err := schedule(tx, JobCheckComment, c.CommentID, 1, c.At, c.At); err != nil {
 			return err
 		}
+		if err := commentNotices(tx, c.PostID, c.CommentID, c.ParentID, c.UserID, c.At); err != nil {
+			return err
+		}
 		return ftsPut(tx, "comment", c.CommentID, c.PostID, "", c.Body)
 	})
 }
@@ -386,6 +394,9 @@ func (c *SoftDelete) Apply(a *Applier) (any, error) {
 				return err
 			}
 			if err := modExample(tx, it, "hide", c.At); err != nil {
+				return err
+			}
+			if err := authorNotice(tx, it, NoteRemoved, c.By, c.At); err != nil {
 				return err
 			}
 			return modLog(tx, c.By, "remove", c.Kind, c.ID, c.Reason, c.At)

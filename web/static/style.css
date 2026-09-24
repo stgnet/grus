@@ -99,3 +99,12 @@ button.danger { background: var(--err); }
 .votes button { padding: .2rem .7rem; }
 details.flagged summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
 .queue-item { border: 1px solid var(--line); border-radius: .5rem; padding: .6rem .9rem; margin: .6rem 0; }
+/* M6: engagement */
+.windows { display: flex; gap: .8rem; font-size: .9rem; margin: -.4rem 0 .8rem; }
+.windows a { color: var(--muted); text-decoration: none; }
+.windows a.on { color: var(--fg); font-weight: 600; }
+button.helpful.on { background: var(--accent); color: var(--bg); }
+button.helpful { background: none; color: var(--accent); border: 1px solid var(--line); padding: .1rem .6rem; font-size: .85rem; }
+.bell-list li { border-bottom: 1px solid var(--line); padding: .5rem 0; list-style: none; }
+.bell-list li.unread { font-weight: 600; }
+.bell-list { padding: 0; }

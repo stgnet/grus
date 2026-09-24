@@ -18,6 +18,9 @@ type User struct {
 	IsOperator     bool
 	SuspendedUntil int64
 	CreatedAt      int64
+	NotifyEmail    bool   // notifications are also emailed (M6)
+	Digest         string // off | daily
+	DigestSentAt   int64
 }
 
 // Group is a row of the site's group list. Settings live in the group's own
@@ -140,11 +143,13 @@ func (s *Store) HostAlias(host string) (groupID int64, found bool, err error) {
 	return gid.Int64, true, nil
 }
 
-const userCols = `id, COALESCE(handle, ''), COALESCE(email, ''), is_operator, suspended_until, created_at`
+const userCols = `id, COALESCE(handle, ''), COALESCE(email, ''), is_operator, suspended_until, created_at,
+	notify_email, digest, digest_sent_at`
 
-func scanUser(row *sql.Row) (*User, error) {
+func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Handle, &u.Email, &u.IsOperator, &u.SuspendedUntil, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Handle, &u.Email, &u.IsOperator, &u.SuspendedUntil, &u.CreatedAt,
+		&u.NotifyEmail, &u.Digest, &u.DigestSentAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

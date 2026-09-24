@@ -111,6 +111,13 @@ func (c *Purge) Apply(a *Applier) (any, error) {
 				   OR (kind = 'comment' AND item_id NOT IN (SELECT id FROM comments))`,
 				`DELETE FROM flag_votes WHERE (kind = 'post' AND item_id NOT IN (SELECT id FROM posts))
 				   OR (kind = 'comment' AND item_id NOT IN (SELECT id FROM comments))`,
+				// M6: votes and follows on items that are gone; notifications
+				// once read for 90 days, or unread for 180.
+				`DELETE FROM votes WHERE (kind = 'post' AND item_id NOT IN (SELECT id FROM posts))
+				   OR (kind = 'comment' AND item_id NOT IN (SELECT id FROM comments))`,
+				`DELETE FROM follows WHERE post_id NOT IN (SELECT id FROM posts)`,
+				`DELETE FROM notifications WHERE post_id != 0 AND post_id NOT IN (SELECT id FROM posts)
+				   OR read_at < ?1 - 90 * 86400 OR created_at < ?1 - 180 * 86400`,
 				`DELETE FROM faq_comments WHERE purge_after < ?1`,
 				`UPDATE posts SET continues_post_id = NULL, continued_at = NULL
 				   WHERE continues_post_id IS NOT NULL AND continues_post_id NOT IN (SELECT id FROM posts)`,

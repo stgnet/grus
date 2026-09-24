@@ -113,6 +113,8 @@ func (s *Server) templateFuncs() template.FuncMap {
 			}
 			return fmt.Sprintf("%d %s", n, many)
 		},
+		// list makes a slice in a template: {{range list "a" "b"}}
+		"list": func(v ...string) []string { return v },
 		// hasTopic: is this topic among a post's topics? (for checkboxes)
 		"hasTopic": func(ts []store.Topic, id int64) bool {
 			for _, t := range ts {

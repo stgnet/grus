@@ -14,7 +14,8 @@
   <nav>
     {{if .Group}}<a href="{{.HomeURL}}">All groups</a>{{end}}
     {{if .User}}
-      {{if .User.Handle}}<span class="me">{{.User.Handle}}</span>{{else}}<a href="{{.HomeURL}}welcome">Choose a handle</a>{{end}}
+      <a href="{{.HomeURL}}notifications">Notifications{{if .Unread}} ({{.Unread}}){{end}}</a>
+      {{if .User.Handle}}<a class="me" href="{{.HomeURL}}profile">{{.User.Handle}}</a>{{else}}<a href="{{.HomeURL}}welcome">Choose a handle</a>{{end}}
       {{if .User.IsOperator}}<a href="{{.HomeURL}}admin">Admin</a>{{end}}
       <form method="post" action="/logout" class="inline"><button class="link">Sign out</button></form>
     {{else if .LoginURL}}

@@ -103,6 +103,7 @@ type feedData struct {
 	Pending     bool
 	Posts       []postCard
 	Sort        string
+	Window      string // Top: week | month | year | all
 	NextPage    int
 	MemberCount int
 	FAQEntries  int  // the FAQ, pinned at the top of the feed
@@ -127,14 +128,18 @@ func (s *Server) groupHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sort := r.URL.Query().Get("sort")
-	if sort != store.SortNew {
+	if sort != store.SortNew && sort != store.SortTop {
 		sort = store.SortActive
+	}
+	window := r.URL.Query().Get("t")
+	if _, ok := store.TopWindows[window]; !ok {
+		window = "month"
 	}
 	pg, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if pg < 0 {
 		pg = 0
 	}
-	d := feedData{Settings: c.st, CanRead: c.canRead(nil), IsMember: c.member(), Pending: c.v.Status == "pending", Sort: sort}
+	d := feedData{Settings: c.st, CanRead: c.canRead(nil), IsMember: c.member(), Pending: c.v.Status == "pending", Sort: sort, Window: window}
 	d.MemberCount, _ = s.Store.MemberCount(c.g.ID)
 	d.CanMod = c.mod()
 	if d.CanMod {
@@ -148,7 +153,17 @@ func (s *Server) groupHome(w http.ResponseWriter, r *http.Request) {
 		d.Newcomer = !d.IsMember && d.FAQEntries > 0
 	}
 	if d.CanRead {
-		posts, err := s.Store.Feed(c.g.ID, sort, feedPageSize+1, pg*feedPageSize)
+		var posts []store.Post
+		var err error
+		if sort == store.SortTop {
+			var since int64
+			if w := store.TopWindows[window]; w > 0 {
+				since = s.Now().Unix() - w
+			}
+			posts, err = s.Store.FeedTop(c.g.ID, since, feedPageSize+1, pg*feedPageSize)
+		} else {
+			posts, err = s.Store.Feed(c.g.ID, sort, feedPageSize+1, pg*feedPageSize)
+		}
 		if err != nil {
 			s.serverError(w, r, err)
 			return

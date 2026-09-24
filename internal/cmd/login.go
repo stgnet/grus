@@ -100,7 +100,7 @@ func (c *RedeemLogin) Apply(a *Applier) (any, error) {
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			out.UserID = c.NewUserID
-			if _, err := tx.Exec(`INSERT INTO users (id, email, created_at, is_operator) VALUES (?, ?, ?, ?)`,
+			if _, err := tx.Exec(`INSERT INTO users (id, email, created_at, is_operator, notify_email) VALUES (?, ?, ?, ?, 0)`,
 				out.UserID, email, c.At, c.Operator); err != nil {
 				return err
 			}

@@ -1,0 +1,17 @@
+{{define "content"}}
+<h1>Your settings</h1>
+{{if and .Data .Data.Saved}}<p class="notice">Saved.</p>{{end}}
+<p>Signed in as <strong>{{.User.Handle}}</strong>. Your email address is never shown to anyone.</p>
+<form method="post" action="/profile" class="stack">
+  <h2>Email</h2>
+  <label class="check"><input type="checkbox" name="email" {{if .User.NotifyEmail}}checked{{end}}> Email me my notifications</label>
+  <p class="muted">Replies, comments on posts you follow, and the rest, gathered into one email every few minutes rather than one each.</p>
+  <label>Daily digest
+    <select name="digest">
+      <option value="off" {{if ne .User.Digest "daily"}}selected{{end}}>Off</option>
+      <option value="daily" {{if eq .User.Digest "daily"}}selected{{end}}>Daily: the day's top new posts in your groups</option>
+    </select>
+  </label>
+  <button>Save</button>
+</form>
+{{end}}

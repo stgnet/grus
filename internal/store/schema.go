@@ -160,6 +160,15 @@ CREATE TABLE group_pairs (
   CHECK (group_a < group_b)
 );
 `,
+	// 4: M6 notification preferences. notify_email was created defaulting
+	// to on, but the plan has email off until someone asks for it. SQLite
+	// can't change a column's default, so new accounts get 0 explicitly
+	// (cmd.Login) and this resets the accounts made before M6 (none had
+	// been emailed anything but sign-in links yet).
+	`
+UPDATE users SET notify_email = 0;
+ALTER TABLE users ADD COLUMN digest_sent_at INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 var groupMigrations = []string{
@@ -633,5 +642,47 @@ CREATE TABLE mod_examples (
   decision   TEXT NOT NULL CHECK (decision IN ('keep', 'hide')),
   created_at INTEGER NOT NULL
 );
+`,
+	// 7: M6 engagement: "helpful" votes, following posts, notifications.
+	`
+-- "Helpful" votes on posts and comments: one per member per item, used
+-- only for the Top sort. posts.score and comments.score are the counts,
+-- kept by the same command.
+CREATE TABLE votes (
+  kind       TEXT NOT NULL CHECK (kind IN ('post', 'comment')),
+  item_id    INTEGER NOT NULL,
+  user_id    INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (kind, item_id, user_id)
+);
+
+-- Following a post: notified of its new comments and of newer posts
+-- linked to it. Authors follow their own posts automatically.
+CREATE TABLE follows (
+  user_id    INTEGER NOT NULL,
+  post_id    INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, post_id)
+);
+CREATE INDEX follows_post ON follows(post_id);
+
+-- The bell. Rows hold ids only; the text and links are made when shown,
+-- so a renamed domain or an edited title is always current.
+--   kind: reply | comment | linked | joined | hidden | removed | approved
+--   ref_id: the comment (reply, comment, hidden or removed comments), or
+--   the newer post (linked); 0 otherwise.
+-- AUTOINCREMENT, so every node gives the same row the same id.
+CREATE TABLE notifications (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL,
+  kind       TEXT NOT NULL,
+  post_id    INTEGER NOT NULL DEFAULT 0,
+  ref_id     INTEGER NOT NULL DEFAULT 0,
+  actor_id   INTEGER NOT NULL DEFAULT 0,
+  read_at    INTEGER,
+  emailed_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX notifications_user ON notifications(user_id, read_at);
 `,
 }

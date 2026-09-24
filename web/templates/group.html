@@ -20,9 +20,11 @@
 <nav class="tabs">
   <a href="/?sort=active" {{if eq $d.Sort "active"}}class="on"{{end}}>Active</a>
   <a href="/?sort=new" {{if eq $d.Sort "new"}}class="on"{{end}}>New</a>
+  <a href="/?sort=top" {{if eq $d.Sort "top"}}class="on"{{end}}>Top</a>
   <a href="/faq">FAQ</a>
   {{if $d.CanMod}}<a href="/mod/queue">Queue{{if $d.Queue}} ({{$d.Queue}}){{end}}</a> <a href="/mod/members">Members{{if $d.Requests}} ({{$d.Requests}}){{end}}</a> <a href="/mod/sources">Sources</a> <a href="/mod/log">Log</a>{{end}}
 </nav>
+{{if eq $d.Sort "top"}}<p class="windows">{{range $w := list "week" "month" "year" "all"}}<a href="/?sort=top&amp;t={{$w}}" {{if eq $d.Window $w}}class="on"{{end}}>{{if eq $w "all"}}All time{{else}}This {{$w}}{{end}}</a> {{end}}</p>{{end}}
 {{if $d.FAQEntries}}<a class="card pinned-faq" href="/faq"><span class="card-text"><strong><span class="tag">pinned</span> Group FAQ</strong><span class="meta">{{plural $d.FAQEntries "entry" "entries"}}, built from the group's discussions · Browse by topic</span></span></a>{{end}}
 {{if $d.Posts}}
 <ul class="feed">
@@ -33,13 +35,13 @@
       <span class="card-text">
         <strong>{{if .Pinned}}<span class="tag">pinned</span> {{end}}{{.Title}}</strong>
         {{if .Excerpt}}<span class="excerpt">{{.Excerpt}}</span>{{end}}
-        <span class="meta">{{.Author}} · {{date .CreatedAt}} · {{plural .CommentCount "comment" "comments"}}</span>
+        <span class="meta">{{.Author}} · {{date .CreatedAt}} · {{plural .CommentCount "comment" "comments"}}{{if .Score}} · {{.Score}} helpful{{end}}</span>
       </span>
     </a>
   </li>
 {{end}}
 </ul>
-{{if $d.NextPage}}<p><a href="/?sort={{$d.Sort}}&amp;page={{$d.NextPage}}">Older posts</a></p>{{end}}
+{{if $d.NextPage}}<p><a href="/?sort={{$d.Sort}}{{if eq $d.Sort "top"}}&amp;t={{$d.Window}}{{end}}&amp;page={{$d.NextPage}}">Older posts</a></p>{{end}}
 {{else}}
 <p class="muted">No posts yet. Be the first.</p>
 {{end}}
