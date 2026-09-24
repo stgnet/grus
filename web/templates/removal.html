@@ -1,0 +1,14 @@
+{{define "content"}}{{$d := .Data}}
+{{if $d.Done}}
+<h1>Removed</h1>
+<p>It's no longer shown here. If this was a mistake, the group's moderators can put it back.</p>
+{{else}}
+<h1>Request removal</h1>
+{{with $d.Source}}<p>The summary of <strong>{{.Site}}</strong>{{if .Title}}: {{.Title}}{{end}} will be taken down at once, and its link removed from this group.</p>{{end}}
+{{with $d.Post}}<p>This archive thread, <strong>{{.Title}}</strong>, will be taken down at once.</p>{{end}}
+<form method="post" class="stack">
+  <label>Anything you'd like the moderators to know (optional) <textarea name="reason" rows="3" maxlength="500"></textarea></label>
+  <button>Remove it</button>
+</form>
+{{end}}
+{{end}}

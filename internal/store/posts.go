@@ -90,7 +90,10 @@ func (s *Store) Feed(groupID int64, sort string, limit, offset int) ([]Post, err
 	if err != nil {
 		return nil, err
 	}
-	order := "last_activity_at DESC"
+	// sink: a repeat of a well-answered thread is treated as a little
+	// older in the Active feed (a feed_weight nudge), so the same question
+	// every month doesn't crowd out everything else.
+	order := "last_activity_at - sink DESC"
 	if sort == SortNew {
 		order = "created_at DESC"
 	}

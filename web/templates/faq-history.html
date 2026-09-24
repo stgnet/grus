@@ -1,0 +1,12 @@
+{{define "content"}}{{$d := .Data}}
+<h1>History</h1>
+<p><a href="/faq/e/{{$d.Entry.ID}}">{{$d.Entry.Question}}</a></p>
+<p class="muted">Every version of this entry, newest first. Putting an earlier one back is itself recorded, so it can be undone too.</p>
+<ol class="history">
+{{range $i, $h := $d.History}}
+  <li><p class="meta">{{date $h.CreatedAt}} · {{$h.By}}{{if eq $i 0}} · current{{end}}</p>
+    <p><strong>{{$h.Question}}</strong></p><p>{{$h.Answer}}</p>
+    {{if ne $i 0}}<form method="post" action="/faq/e/{{$d.Entry.ID}}/rollback" class="inline confirm" data-confirm="Put this version back?"><input type="hidden" name="version" value="{{$h.ID}}"><button class="secondary">Put this version back</button></form>{{end}}</li>
+{{end}}
+</ol>
+{{end}}

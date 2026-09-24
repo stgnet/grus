@@ -1,0 +1,38 @@
+{{define "content"}}{{$d := .Data}}
+<p class="crumbs"><a href="/faq">FAQ</a>{{with $d.Parent}} › <a href="/faq/t/{{.ID}}">{{.Title}}</a>{{end}}</p>
+<h1>{{$d.Topic.Title}}</h1>
+{{if $d.Children}}<p class="topics">{{range $d.Children}}<a class="chip" href="/faq/t/{{.ID}}">{{.Title}}</a> {{end}}</p>{{end}}
+{{if $d.Entries}}
+<h2>In the FAQ</h2>
+<ul class="faq-entries">
+{{range $d.Entries}}<li><a href="/faq/e/{{.ID}}"><strong>{{.Question}}</strong></a><p class="about">{{excerpt .Answer 240}}</p></li>{{end}}
+</ul>
+{{end}}
+{{if $d.Posts}}
+<h2>Discussions</h2>
+<p class="muted">The most useful first: threads in the FAQ, then the ones with the most discussion.</p>
+<ul class="feed">
+{{range $d.Posts}}
+  <li><a class="card" href="/p/{{.ID}}">
+      {{if .ThumbHash}}<img class="thumb" src="/img/{{.ThumbHash}}/t" alt="" loading="lazy">{{end}}
+      <span class="card-text"><strong>{{.Title}}</strong>
+        {{if .Excerpt}}<span class="excerpt">{{.Excerpt}}</span>{{end}}
+        <span class="meta">{{.Author}} · {{date .CreatedAt}} · {{plural .CommentCount "comment" "comments"}}</span></span></a></li>
+{{end}}
+</ul>
+{{if $d.NextPage}}<p><a href="/faq/t/{{$d.Topic.ID}}?page={{$d.NextPage}}">More</a></p>{{end}}
+{{end}}
+{{if and (not $d.Entries) (not $d.Posts)}}<p class="muted">Nothing on this topic yet.</p>{{end}}
+{{if $d.CanMod}}
+<details class="tools"><summary>Rename or move this topic</summary>
+  <form method="post" action="/faq/t/{{$d.Topic.ID}}" class="stack">
+    <label>Title <input name="title" value="{{$d.Topic.Title}}" maxlength="80" required></label>
+    {{if not $d.Children}}<label>Under <select name="parent"><option value="0">(a main topic)</option>{{range $d.AllTopics}}<option value="{{.ID}}" {{if eq .ID $d.Topic.ParentID}}selected{{end}}>{{.Title}}</option>{{end}}</select></label>{{end}}
+    <label>Order <input name="sort" type="number" value="{{$d.Topic.Sort}}"></label>
+    <button class="secondary">Save</button>
+    <p class="muted">A topic a moderator names is left alone by the weekly tidy-up.</p>
+  </form>
+  <p><a href="/faq/new?topic={{$d.Topic.ID}}">Write an entry under this topic</a></p>
+</details>
+{{end}}
+{{end}}

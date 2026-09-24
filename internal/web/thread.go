@@ -25,6 +25,7 @@ type commentView struct {
 	Author  string
 	Images  []store.Image
 	CanEdit bool
+	NewerID int64 // a later comment replaced this one's advice
 }
 
 // PostView is a post with its photos and comments: the page's main post,
@@ -51,6 +52,22 @@ type noteView struct {
 	CanRemove bool
 }
 
+// combinedView is a combined note with its numbered sources, so the "[2]"
+// in its text points somewhere.
+type combinedView struct {
+	store.Note
+	Sources []citeView
+}
+
+type citeView struct {
+	N       int
+	Title   string
+	URL     string
+	Site    string // an outside page's site; "" for a thread here
+	Date    int64
+	Missing bool // gone since the note was written
+}
+
 type postData struct {
 	PostView
 	Updates   []PostView
@@ -58,6 +75,16 @@ type postData struct {
 	MoreNotes []noteView // beyond the 5 newest: "N more related posts"
 	CanMod    bool
 	IsMember  bool
+	// M3: how the comments are laid out, and what surrounds them.
+	Arr       arrangement
+	Plain     bool // ?order=time
+	Combined  *combinedView
+	FAQ       []store.Entry  // entries this thread is a source of
+	Pages     []store.Source // outside pages shown on it ("Elsewhere")
+	Topics    []store.Topic
+	AllTopics []store.Topic // for the author or a mod to choose from
+	CanTopics bool
+	Nudges    []nudgeView // for mods: how this thread is arranged
 	// Move under an earlier post: the author's own earlier posts to choose
 	// from (mods type a link instead).
 	MoveChoices []store.Post
@@ -94,6 +121,11 @@ func (s *Server) postPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	d.Plain = r.URL.Query().Get("order") == "time"
+	if err := s.arrangeComments(c, d); err != nil {
+		s.serverError(w, r, err)
+		return
+	}
 	s.render(w, r, http.StatusOK, "post", c.page(p.Title, d))
 }
 
@@ -118,6 +150,9 @@ func (s *Server) postData(c *greq, p *store.Post) (*postData, error) {
 		d.Updates = append(d.Updates, *v)
 	}
 	if err := s.placeNotes(c, d); err != nil {
+		return nil, err
+	}
+	if err := s.surroundings(c, d); err != nil {
 		return nil, err
 	}
 	shown := p.Status == "visible" || p.Status == "flagged"
@@ -245,6 +280,105 @@ func (s *Server) placeNotes(c *greq, d *postData) error {
 		} else {
 			d.TopNotes = append(d.TopNotes, v)
 		}
+	}
+	return nil
+}
+
+// surroundings gathers what M3 shows around a post: the FAQ entries it's
+// part of, the outside pages on it, its combined note, and its topics.
+func (s *Server) surroundings(c *greq, d *postData) error {
+	var err error
+	g, id := c.g.ID, d.Post.ID
+	if d.FAQ, err = s.Store.EntriesForPost(g, id); err != nil {
+		return err
+	}
+	pages, err := s.Store.SourcesForPost(g, id)
+	if err != nil {
+		return err
+	}
+	for _, pg := range pages {
+		if pg.Shown() {
+			d.Pages = append(d.Pages, pg)
+		}
+	}
+	if d.Topics, _, err = s.Store.PostTopics(g, id); err != nil {
+		return err
+	}
+	shown := d.Post.Status == "visible" || d.Post.Status == "flagged"
+	d.CanTopics = shown && (d.CanEdit || d.CanMod) && d.Post.ContinuesID == 0
+	if d.CanTopics {
+		tree, err := s.Store.Topics(g)
+		if err != nil {
+			return err
+		}
+		d.AllTopics = store.FlatTopics(tree)
+	}
+	notes, err := s.Store.Notes(g, id)
+	if err != nil {
+		return err
+	}
+	for _, n := range notes {
+		if n.Kind != "combined" || n.Text == "" {
+			continue
+		}
+		srcs, err := s.Store.NoteSources(g, n.ID)
+		if err != nil {
+			return err
+		}
+		cv := &combinedView{Note: n}
+		for i, src := range srcs {
+			cite := citeView{N: i + 1, Missing: true}
+			if src.SourceID != 0 {
+				if pg, err := s.Store.Source(g, src.SourceID); err == nil && pg != nil && pg.Shown() {
+					cite = citeView{N: i + 1, Title: pg.Title, URL: pg.URL, Site: pg.Site, Date: pg.PublishedAt}
+				}
+			} else if p, err := s.Store.Post(g, src.PostID); err == nil && p != nil &&
+				c.canRead(&auth.Item{AuthorID: p.UserID, Status: p.Status}) && (p.Status == "visible" || p.Status == "flagged") {
+				cite = citeView{N: i + 1, Title: p.Title, URL: fmt.Sprintf("/p/%d", p.ID), Date: p.CreatedAt}
+			}
+			cv.Sources = append(cv.Sources, cite)
+		}
+		d.Combined = cv
+	}
+	return nil
+}
+
+// arrangeComments lays out the main post's comments (see arrange.go).
+func (s *Server) arrangeComments(c *greq, d *postData) error {
+	notes, err := s.Store.Notes(c.g.ID, d.Post.ID)
+	if err != nil {
+		return err
+	}
+	var summary *store.Note
+	covers := map[int64]bool{}
+	for _, n := range notes {
+		if n.Kind == "summary" && n.Text != "" {
+			n := n
+			summary = &n
+			srcs, err := s.Store.NoteSources(c.g.ID, n.ID)
+			if err != nil {
+				return err
+			}
+			for _, src := range srcs {
+				if src.Covers {
+					covers[src.CommentID] = true
+				}
+			}
+		}
+	}
+	nudges, err := s.Store.Nudges(c.g.ID, d.Post.ID)
+	if err != nil {
+		return err
+	}
+	var threadNudges []store.Nudge
+	for _, n := range nudges {
+		if n.Kind != "feed_weight" {
+			threadNudges = append(threadNudges, n)
+		}
+	}
+	d.Arr = arrange(d.Threads, summary, covers, threadNudges, d.Plain)
+	if d.CanMod {
+		d.Nudges = describeNudges(nudges)
 	}
 	return nil
 }

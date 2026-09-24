@@ -1,0 +1,19 @@
+{{define "content"}}{{$f := .Data}}
+<h1>{{if $f.Entry}}Edit FAQ entry{{else}}New FAQ entry{{end}}</h1>
+<form method="post" action="{{if $f.Entry}}/faq/e/{{$f.Entry.ID}}/edit{{else}}/faq/new{{end}}" class="stack">
+  <label>Question <input name="question" value="{{$f.Question}}" maxlength="200" required></label>
+  <label>Answer <textarea name="answer" rows="8" maxlength="2000" required>{{$f.Answer}}</textarea></label>
+  <p class="muted">Say what members report, not what's right: "most owners who upgraded report...". No names.</p>
+  <label>Topic <select name="topic">
+    {{if not $f.Entry}}<option value="0">(new topic, below)</option>{{end}}
+    {{range $f.AllTopics}}<option value="{{.ID}}" {{if eq .ID $f.TopicID}}selected{{end}}>{{if .ParentID}}&nbsp;&nbsp;&nbsp;{{end}}{{.Title}}</option>{{end}}
+  </select></label>
+  {{if not $f.Entry}}<label>Or a new topic <input name="new_topic" maxlength="80"></label>{{end}}
+  {{if $f.Entry}}
+  <label class="check"><input type="checkbox" name="locked" {{if $f.Locked}}checked{{end}}> Lock: keep this text as written (updates become suggestions for you to review)</label>
+  <label class="check"><input type="checkbox" name="hidden" {{if $f.Hidden}}checked{{end}}> Hide this entry</label>
+  {{end}}
+  <button>Save</button>
+</form>
+{{if $f.Entry}}<p><a href="/faq/e/{{$f.Entry.ID}}/history">History</a> · <a href="/faq/e/{{$f.Entry.ID}}">Back to the entry</a></p>{{end}}
+{{end}}

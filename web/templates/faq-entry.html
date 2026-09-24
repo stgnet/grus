@@ -1,0 +1,51 @@
+{{define "content"}}{{$d := .Data}}{{$e := $d.Entry}}
+<p class="crumbs"><a href="/faq">FAQ</a>{{with $d.Topic}} › <a href="/faq/t/{{.ID}}">{{.Title}}</a>{{end}}</p>
+<h1>{{$e.Question}}</h1>
+{{if ne $e.Status "active"}}<p class="notice">Hidden: only moderators see this entry.</p>{{end}}
+<div class="answer" data-generated="{{if $e.UpdatedBy}}mod{{else}}auto{{end}}"><p>{{$e.Answer}}</p></div>
+<p class="meta">Based on {{plural (len $d.Posts) "post" "posts"}}{{if $d.Hidden}} (and {{$d.Hidden}} for members only){{end}} · updated {{month $e.UpdatedAt}}{{if $d.UpdatedByAI}} · kept up to date from these discussions{{else}} · written by a moderator{{end}}</p>
+{{if $d.CanMod}}<p class="actions"><a href="/faq/e/{{$e.ID}}/edit">Edit</a> <a href="/faq/e/{{$e.ID}}/history">History</a>{{if $e.Locked}} <span class="muted">locked</span>{{end}}</p>
+{{if $e.Suggestion}}<p class="notice">Suggested update: {{$e.Suggestion}} <a href="/faq/e/{{$e.ID}}/edit?use=suggestion">Review</a></p>{{end}}{{end}}
+
+{{if $d.Posts}}
+<h2>From these discussions</h2>
+<ul class="results">
+{{range $d.Posts}}<li><a href="/p/{{.ID}}"><strong>{{.Title}}</strong></a> <span class="meta">{{month .CreatedAt}} · {{plural .CommentCount "comment" "comments"}}</span>
+  {{if .Digest}}<p class="about">{{.Digest}}</p>{{end}}
+  {{if $d.CanMod}}<form method="post" action="/faq/e/{{$e.ID}}/unsource" class="inline"><input type="hidden" name="post" value="{{.ID}}"><button class="link">Not a source</button></form>{{end}}</li>{{end}}
+</ul>
+{{end}}
+
+{{if $d.Pages}}
+{{if $d.MorePages}}<details class="more-notes"><summary>{{plural (len $d.Pages) "more source" "more sources"}} from elsewhere</summary>{{else}}<h2>Elsewhere</h2>{{end}}
+{{range $d.Pages}}
+<aside class="note page" data-generated="auto">
+  <p class="note-head"><strong>{{.Site}}</strong>{{if .Title}} · <a href="{{.URL}}" rel="nofollow noopener">{{.Title}}</a>{{end}}{{if .PublishedAt}} <span class="muted">({{month .PublishedAt}})</span>{{end}}</p>
+  {{if eq .Status "gone"}}<p class="muted">This page is no longer available.</p>{{end}}
+  <p>{{.Summary}}</p>
+  <p class="meta"><a href="{{.URL}}" rel="nofollow noopener">Open on {{.Site}}</a>{{if not $d.Root}} · <a href="/sources/{{.ID}}/remove">Request removal</a>{{end}}</p>
+</aside>
+{{end}}
+{{if $d.MorePages}}</details>{{end}}
+{{end}}
+
+{{if not $d.Root}}
+<section class="comments" id="comments">
+<h2>{{plural (len $d.Comments) "comment" "comments"}}</h2>
+<p class="muted">Out of date, or missing something? Say so here. Comments are read when the entry is next updated.</p>
+{{range $d.Comments}}
+<div class="comment" id="c{{.ID}}">
+  <p class="meta">{{.Author}} · {{date .CreatedAt}}</p>
+  <div class="body">{{text .Body}}</div>
+  {{if .CanDelete}}<div class="actions"><form method="post" action="/faq/c/{{.ID}}/delete" class="inline confirm" data-confirm="Delete this comment?"><button class="link">Delete</button></form></div>{{end}}
+</div>
+{{end}}
+{{if $d.CanComment}}
+<form method="post" action="/faq/e/{{$e.ID}}/comment" class="stack">
+  <label>Add a comment <textarea name="body" rows="3" required></textarea></label>
+  <button>Comment</button>
+</form>
+{{else if not .User}}<p><a href="{{.LoginURL}}">Sign in</a> to comment.</p>{{end}}
+</section>
+{{end}}
+{{end}}

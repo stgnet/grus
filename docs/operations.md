@@ -143,6 +143,32 @@ Group owners turn AI off for their group on the group's Settings page.
 With it off, no job runs for that group and search never asks the model
 about it. Nothing is ever sent to an outside AI service.
 
+## 8. The FAQ and outside sources
+
+Each night at `faq_hour` (UTC, default 8) the leader queues the FAQ batch:
+entries whose threads changed are rewritten, and threads that grew into a
+well-answered cluster get a new entry (at most 20 a night per group). On
+Sundays the batch also tidies the topic outline and re-reads outside pages
+not checked in the past week. The work runs on the worker like any other
+job, so with no worker it simply waits.
+
+Mods (or anyone they trust) can edit any entry; a locked entry keeps its
+wording and the model only leaves a suggestion beside it. Every change is
+kept in the entry's history and can be rolled back.
+
+The FAQ on the bare primary domain is the site-wide one. Its list of groups
+and their top topics is automatic; its entries are written by operators on
+that page.
+
+Outside pages are read by the worker through a restricted fetcher: public
+addresses only (checked again after every redirect), ports 80 and 443,
+robots.txt obeyed, and only the page's summary, title and date are kept.
+A member's link is read only if its site is on the group's allowed list
+(`/mod/sources`); everything else waits for a mod. Facebook links are never
+read: they need a description instead. Anyone can ask for a page (or an
+imported archive thread) to be taken down, and it is, at once; the mods can
+restore it if the request was mistaken.
+
 ## Retention
 
 The leader submits a `Purge` command once a day. It removes expired sign-in

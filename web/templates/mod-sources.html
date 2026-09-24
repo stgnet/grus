@@ -1,0 +1,46 @@
+{{define "content"}}{{$d := .Data}}
+<h1>Outside sources</h1>
+<p class="muted">Summaries of pages elsewhere, each with its link. Pages are read only from sites allowed below, and never from Facebook.</p>
+
+<h2>Waiting for you</h2>
+{{if $d.Queue}}
+<form method="post" action="/mod/sources/approve" class="stack">
+<ul class="results">
+{{range $d.Queue}}
+  <li><label class="check"><input type="checkbox" name="id" value="{{.ID}}" checked> <strong>{{.Site}}</strong>{{if .Title}}: {{.Title}}{{end}}</label>
+    <a href="{{.URL}}" rel="nofollow noopener"><code>{{.URL}}</code></a>
+    {{if .Summary}}<p class="about">{{.Summary}}</p>{{else if .Problem}}<p class="error">Couldn't be read: {{.Problem}}</p>{{else if eq .Via "member"}}<p class="muted">A member's link from a site that isn't allowed yet. Approving it reads this page.</p>{{else}}<p class="muted">Not read yet.</p>{{end}}</li>
+{{end}}
+</ul>
+<button>Approve ticked</button>
+</form>
+{{else}}<p class="muted">Nothing waiting.</p>{{end}}
+
+<h2>Sites pages may be read from</h2>
+{{if $d.Domains}}<ul class="plain">{{range $d.Domains}}<li>{{.}} <form method="post" action="/mod/sources/disallow" class="inline"><input type="hidden" name="domain" value="{{.}}"><button class="link">Remove</button></form></li>{{end}}</ul>
+{{else}}<p class="muted">None yet. Members' links are held here until you allow their site.</p>{{end}}
+<form method="post" action="/mod/sources/allow" class="row">
+  <input name="domain" placeholder="example.com" required aria-label="Site"><button class="secondary">Allow</button>
+</form>
+
+<h2>Seed from the web</h2>
+<p class="muted">For a new group: paste links worth including, one per line, or a list page (a forum index, a recall list) whose links on the same site should each be read. Everything seeded waits here for approval. Check each site's terms first.</p>
+<form method="post" action="/mod/sources/seed" class="stack">
+  <label>Links <textarea name="links" rows="5"></textarea></label>
+  <label>Or a list page <input name="list" type="url" placeholder="https://"></label>
+  <button class="secondary">Read these</button>
+</form>
+
+<h2>Recent</h2>
+{{if $d.Recent}}
+<ul class="results">
+{{range $d.Recent}}
+  <li><strong>{{.Site}}</strong>{{if .Title}}: {{.Title}}{{end}} <span class="meta">{{.Status}}{{if eq .Via "described"}}, described{{end}}</span>
+    <a href="{{.URL}}" rel="nofollow noopener"><code>{{.URL}}</code></a>
+    {{if .Problem}}<p class="error">{{.Problem}}</p>{{end}}
+    {{if eq .Status "removed"}}<form method="post" action="/mod/sources/restore" class="inline"><input type="hidden" name="id" value="{{.ID}}"><button class="link">Restore</button></form>
+    {{else}}<form method="post" action="/mod/sources/remove" class="inline confirm" data-confirm="Remove this source?"><input type="hidden" name="id" value="{{.ID}}"><button class="link">Remove</button></form>{{end}}</li>
+{{end}}
+</ul>
+{{else}}<p class="muted">None yet.</p>{{end}}
+{{end}}

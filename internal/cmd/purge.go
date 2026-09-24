@@ -89,12 +89,22 @@ func (c *Purge) Apply(a *Applier) (any, error) {
 				   OR newer_post_id NOT IN (SELECT id FROM posts)`,
 				// (Sources in other groups, from M4, are checked against
 				// that group's own posts, when it purges.)
-				fmt.Sprintf(`DELETE FROM note_sources WHERE (group_id = %d AND post_id NOT IN (SELECT id FROM posts))
+				// (Rows for an outside source have post_id 0, and are kept.)
+				fmt.Sprintf(`DELETE FROM note_sources WHERE (group_id = %d AND source_id = 0 AND post_id NOT IN (SELECT id FROM posts))
+				   OR (comment_id != 0 AND comment_id NOT IN (SELECT id FROM comments))
 				   OR note_id IN (SELECT id FROM notes WHERE host_post_id NOT IN (SELECT id FROM posts))`, id),
 				`DELETE FROM notes WHERE host_post_id NOT IN (SELECT id FROM posts)
 				   OR (kind = 'link' AND id NOT IN (SELECT note_id FROM note_sources))`,
-				`DELETE FROM jobs WHERE (kind IN ('check', 'digest') AND ref_id NOT IN (SELECT id FROM posts))
+				`DELETE FROM jobs WHERE (kind IN ('check', 'digest', 'summary', 'faq_new') AND ref_id NOT IN (SELECT id FROM posts))
 				   OR (kind = 'note' AND ref_id NOT IN (SELECT id FROM notes))`,
+				// M3: the FAQ's links to posts that are gone, topic tags,
+				// nudges, and outside pages shown on them; and comments on
+				// FAQ entries past their retention.
+				`DELETE FROM faq_sources WHERE post_id NOT IN (SELECT id FROM posts)`,
+				`DELETE FROM post_topics WHERE post_id NOT IN (SELECT id FROM posts)`,
+				`DELETE FROM nudges WHERE post_id NOT IN (SELECT id FROM posts)`,
+				`DELETE FROM source_links WHERE post_id != 0 AND post_id NOT IN (SELECT id FROM posts)`,
+				`DELETE FROM faq_comments WHERE purge_after < ?1`,
 				`UPDATE posts SET continues_post_id = NULL, continued_at = NULL
 				   WHERE continues_post_id IS NOT NULL AND continues_post_id NOT IN (SELECT id FROM posts)`,
 				// "Not what I was looking for" searches are kept 180 days.

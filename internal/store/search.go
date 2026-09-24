@@ -119,3 +119,40 @@ func (s *Store) Search(groupID int64, query string, limit int, withFlagged bool)
 	}
 	return hits, nil
 }
+
+// KindHit is a match on a FAQ entry or an outside source.
+type KindHit struct {
+	ID      int64
+	Title   string
+	Snippet string
+	Rank    float64
+}
+
+// SearchKind finds FAQ entries (kind "faq") or outside sources (kind
+// "source") matching an FTS query, best first. Only shown ones are in the
+// index: an entry or source leaves it in the same transaction that hides
+// it.
+func (s *Store) SearchKind(groupID int64, kind, query string, limit int) ([]KindHit, error) {
+	if query == "" {
+		return nil, nil
+	}
+	db, err := s.Group(groupID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`SELECT ref_id, title, snippet(search_fts, 4, '[', ']', '…', 16), bm25(search_fts, 0, 0, 0, 10.0, 1.0) AS r
+		FROM search_fts WHERE search_fts MATCH ? AND kind = ? ORDER BY r LIMIT ?`, query, kind, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []KindHit
+	for rows.Next() {
+		var h KindHit
+		if err := rows.Scan(&h.ID, &h.Title, &h.Snippet, &h.Rank); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}

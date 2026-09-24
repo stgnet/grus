@@ -31,6 +31,7 @@ import (
 	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/cmd"
 	"github.com/stgnet/grus/internal/config"
+	"github.com/stgnet/grus/internal/fetch"
 	"github.com/stgnet/grus/internal/ids"
 	"github.com/stgnet/grus/internal/mail"
 	"github.com/stgnet/grus/internal/store"
@@ -143,6 +144,7 @@ func serve(args []string) error {
 	}
 
 	go purgeDaily(ctx, node)
+	go faqNightly(ctx, node, c.FAQHour)
 
 	// Photos live on disk beside the databases, outside the Raft log.
 	// Every node, including a copy-only Studio, serves them to the others
@@ -171,7 +173,9 @@ func serve(args []string) error {
 	if c.AIURL != "" {
 		engine = &ai.Engine{LLM: ai.NewOllama(c.AIURL, c.AIModel, c.AIContext), Store: st, Meter: meter}
 		engine.Handler(rpcMux, node.AppliedIndex)
-		w := &ai.Worker{Engine: engine, Log: node, IDs: gen, Name: c.NodeID, Now: time.Now}
+		// The worker also reads outside pages for their summaries, with a
+		// fetcher that only reads what a group allows (internal/fetch).
+		w := &ai.Worker{Engine: engine, Log: node, IDs: gen, Name: c.NodeID, Now: time.Now, Fetch: fetch.New()}
 		go w.Run(ctx)
 		log.Printf("ai: model %s at %s", c.AIModel, c.AIURL)
 	}
@@ -295,6 +299,34 @@ func purgeDaily(ctx context.Context, node *cluster.Node) {
 			continue
 		}
 		last = time.Now()
+	}
+}
+
+// faqNightly has the leader queue the nightly FAQ batch (cmd.QueueFAQ) once
+// a day at faq_hour UTC, when the model is otherwise idle, and the weekly
+// outline pass and outside-page re-checks on Sundays. The batch only
+// queues jobs; workers do them.
+func faqNightly(ctx context.Context, node *cluster.Node, hour int) {
+	var lastDay string
+	tick := time.NewTicker(5 * time.Minute)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		now := time.Now().UTC()
+		day := now.Format("2006-01-02")
+		if !node.IsLeader() || now.Hour() != hour || day == lastDay {
+			continue
+		}
+		weekly := now.Weekday() == time.Sunday
+		if _, err := node.Apply(&cmd.QueueFAQ{Weekly: weekly, At: now.Unix()}); err != nil {
+			log.Printf("faq batch: %v", err)
+			continue
+		}
+		lastDay = day
 	}
 }
 

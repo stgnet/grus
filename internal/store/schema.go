@@ -381,4 +381,154 @@ CREATE TABLE ai_feedback (
   created_at INTEGER NOT NULL
 );
 `,
+	// 4: M3 the group FAQ, summaries and nudges, topics, outside sources.
+	`
+-- The FAQ outline. parent_id 0 = a top-level topic. A topic the weekly
+-- outline pass merged away keeps its row (merged_into set), so old links
+-- to it still land somewhere. locked = a mod named it; the pass leaves it.
+CREATE TABLE faq_topics (
+  id          INTEGER PRIMARY KEY,
+  parent_id   INTEGER NOT NULL DEFAULT 0,
+  title       TEXT NOT NULL,
+  sort        INTEGER NOT NULL DEFAULT 0,
+  locked      INTEGER NOT NULL DEFAULT 0,
+  merged_into INTEGER,
+  created_at  INTEGER NOT NULL
+);
+
+-- One question and what the group's threads say about it. version goes up
+-- whenever anything it's written from changes (a source thread, a new
+-- source, a comment on the entry); stale says a rewrite is due. locked =
+-- a mod froze the text: rewrites become suggestions in the mod queue.
+-- updated_by NULL = written by the system; a mod's id when a mod wrote it.
+CREATE TABLE faq_entries (
+  id         INTEGER PRIMARY KEY,
+  topic_id   INTEGER NOT NULL,
+  question   TEXT NOT NULL,
+  answer     TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'hidden')),
+  locked     INTEGER NOT NULL DEFAULT 0,
+  stale      INTEGER NOT NULL DEFAULT 0,
+  version    INTEGER NOT NULL DEFAULT 1,
+  suggestion TEXT,  -- a rewrite proposed for a locked entry
+  sort       INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  updated_by INTEGER
+);
+CREATE INDEX faq_entries_topic ON faq_entries(topic_id, status);
+
+-- The threads an entry is written from. A post asked again later and
+-- pointed at the entry becomes a source too, so what it adds flows back.
+CREATE TABLE faq_sources (
+  entry_id INTEGER NOT NULL,
+  post_id  INTEGER NOT NULL,
+  PRIMARY KEY (entry_id, post_id)
+);
+CREATE INDEX faq_sources_post ON faq_sources(post_id);
+
+-- Every earlier version of an entry, so any change can be rolled back.
+CREATE TABLE faq_history (
+  id         INTEGER PRIMARY KEY,
+  entry_id   INTEGER NOT NULL,
+  question   TEXT NOT NULL,
+  answer     TEXT NOT NULL,
+  changed_by INTEGER,  -- NULL = the system
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX faq_history_entry ON faq_history(entry_id, id);
+
+-- Members' comments on an entry ("this is out of date for 2024+ models"):
+-- new information for the next rewrite, the same as a new thread.
+CREATE TABLE faq_comments (
+  id          INTEGER PRIMARY KEY,
+  entry_id    INTEGER NOT NULL,
+  user_id     INTEGER NOT NULL,
+  body        TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'visible' CHECK (status IN ('visible', 'deleted', 'removed')),
+  created_at  INTEGER NOT NULL,
+  purge_after INTEGER
+);
+CREATE INDEX faq_comments_entry ON faq_comments(entry_id, created_at);
+
+-- Browse by topic: one to three topics per post. topics_manual = the
+-- author or a mod chose them, and the system stops changing them.
+CREATE TABLE post_topics (
+  post_id  INTEGER NOT NULL,
+  topic_id INTEGER NOT NULL,
+  source   TEXT NOT NULL CHECK (source IN ('auto', 'author', 'mod')),
+  PRIMARY KEY (post_id, topic_id)
+);
+CREATE INDEX post_topics_topic ON post_topics(topic_id);
+ALTER TABLE posts ADD COLUMN topics_manual INTEGER NOT NULL DEFAULT 0;
+
+-- Display-only changes to how a thread is shown (plan section 2, "Nudging
+-- order, not content"). Nothing a member wrote changes; each nudge has its
+-- reason, and a mod can reverse it (state 'reversed', which also stops the
+-- system from making the same nudge again).
+--   rank:     target = a comment that carries the answer; shown first
+--   tangent:  target = first comment of an off-topic stretch, value = the
+--             last one, reason = what it's about ("tire pressure")
+--   superseded: target = a comment, value = the later comment that
+--             replaces its advice
+--   feed_weight: target = a post that repeats a well-answered thread,
+--             value = seconds it's treated as older in the Active feed
+CREATE TABLE nudges (
+  id          INTEGER PRIMARY KEY,
+  post_id     INTEGER NOT NULL,  -- the thread it's shown in
+  kind        TEXT NOT NULL CHECK (kind IN ('rank', 'tangent', 'superseded', 'feed_weight')),
+  target_id   INTEGER NOT NULL,
+  value       INTEGER NOT NULL DEFAULT 0,
+  reason      TEXT NOT NULL DEFAULT '',
+  set_by      INTEGER,           -- NULL = the system
+  state       TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'reversed')),
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX nudges_post ON nudges(post_id, state);
+-- feed_weight, denormalized so the Active feed needs no join.
+ALTER TABLE posts ADD COLUMN sink INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX posts_active_weighted ON posts(status, last_activity_at - sink);
+
+-- Outside pages: a short summary in our own words plus the link, never the
+-- page's text. content_hash spots a changed page on the weekly re-check.
+-- via: member | mod | seed | described (a person wrote the summary, and
+-- the page is never fetched: always so for Facebook).
+CREATE TABLE sources (
+  id           INTEGER PRIMARY KEY,
+  url          TEXT NOT NULL UNIQUE,
+  site         TEXT NOT NULL,
+  title        TEXT NOT NULL DEFAULT '',
+  published_at INTEGER,
+  summary      TEXT NOT NULL DEFAULT '',
+  content_hash TEXT,
+  via          TEXT NOT NULL CHECK (via IN ('member', 'mod', 'seed', 'described')),
+  added_by     INTEGER,
+  status       TEXT NOT NULL CHECK (status IN ('pending', 'active', 'gone', 'removed')),
+  version      INTEGER NOT NULL DEFAULT 1,
+  problem      TEXT NOT NULL DEFAULT '',  -- why it couldn't be read, for mods
+  is_list      INTEGER NOT NULL DEFAULT 0, -- a seed list page: read for its links, never shown
+  checked_at   INTEGER,
+  created_at   INTEGER NOT NULL
+);
+
+-- Where a source shows: on a post (as an "Elsewhere" card) or as a source
+-- of a FAQ entry. 0 = not that kind of place.
+CREATE TABLE source_links (
+  source_id    INTEGER NOT NULL,
+  post_id      INTEGER NOT NULL DEFAULT 0,
+  faq_entry_id INTEGER NOT NULL DEFAULT 0,
+  created_at   INTEGER NOT NULL,
+  PRIMARY KEY (source_id, post_id, faq_entry_id)
+);
+CREATE INDEX source_links_post  ON source_links(post_id);
+CREATE INDEX source_links_entry ON source_links(faq_entry_id);
+
+-- The sites a mod allowed pages to be read from. The fetcher reads nothing
+-- else, and never follows links on its own.
+CREATE TABLE source_domains (
+  domain     TEXT PRIMARY KEY,
+  added_by   INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+`,
 }

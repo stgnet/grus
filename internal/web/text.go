@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"github.com/stgnet/grus/internal/store"
 	"html"
 	"html/template"
 	"net/url"
@@ -111,6 +112,15 @@ func (s *Server) templateFuncs() template.FuncMap {
 				return fmt.Sprintf("%d %s", n, one)
 			}
 			return fmt.Sprintf("%d %s", n, many)
+		},
+		// hasTopic: is this topic among a post's topics? (for checkboxes)
+		"hasTopic": func(ts []store.Topic, id int64) bool {
+			for _, t := range ts {
+				if t.ID == id {
+					return true
+				}
+			}
+			return false
 		},
 	}
 }

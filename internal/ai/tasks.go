@@ -63,19 +63,21 @@ func (e *Engine) Digest(ctx context.Context, groupID, postID int64) (string, err
 	return clean(out.Digest), err
 }
 
-// Candidate is another post offered to the match step.
+// Candidate is another post, a FAQ entry, or an outside page offered to
+// the match step.
 type Candidate struct {
 	ID   int64
+	Kind string // post | faq | page
 	Text string // title, date, and digest or opening
 }
 
 // Match picks which candidates are about the same thing as the post.
-func (e *Engine) Match(ctx context.Context, post string, cands []Candidate) ([]int64, error) {
+func (e *Engine) Match(ctx context.Context, post string, cands []Candidate) ([]Candidate, error) {
 	if len(cands) == 0 {
 		return nil, nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "NEW POST:\n%s\n\nOTHER POSTS:\n", post)
+	fmt.Fprintf(&b, "NEW POST:\n%s\n\nOTHER ITEMS:\n", post)
 	for i, c := range cands {
 		// Numbered 1..n rather than by id: small models copy short numbers
 		// reliably and long ones not.
@@ -87,15 +89,15 @@ func (e *Engine) Match(ctx context.Context, post string, cands []Candidate) ([]i
 	if err := e.call(ctx, "check", false, Voice+matchTask, b.String(), matchSchema, &out); err != nil {
 		return nil, err
 	}
-	var ids []int64
+	var matches []Candidate
 	seen := map[int]bool{}
 	for _, n := range out.SameTopic {
 		if n >= 1 && n <= len(cands) && !seen[n] {
 			seen[n] = true
-			ids = append(ids, cands[n-1].ID)
+			matches = append(matches, cands[n-1])
 		}
 	}
-	return ids, nil
+	return matches, nil
 }
 
 // Note writes (or refreshes) the note on host that points at other.
@@ -152,19 +154,37 @@ func (e *Engine) Expand(ctx context.Context, question, prev string) ([]string, e
 
 // Card is one search result statement: what one thread says about the
 // question.
+// One of PostID, EntryID or SourceID is set: a card cites a thread, a FAQ
+// entry, or an outside page.
 type Card struct {
 	GroupID   int64
 	PostID    int64
+	EntryID   int64
+	SourceID  int64
 	Statement string
 }
 
-// ThreadSummary is what the pick step reads per thread.
+// ThreadSummary is what the pick step reads per item: a thread (by its
+// digest), a FAQ entry (by its answer), or an outside page (by its
+// summary).
 type ThreadSummary struct {
-	GroupID int64
-	PostID  int64
-	Title   string
-	Date    int64
-	Digest  string
+	GroupID  int64
+	PostID   int64
+	EntryID  int64
+	SourceID int64
+	Title    string
+	Date     int64
+	Digest   string
+}
+
+func (t ThreadSummary) label() string {
+	switch {
+	case t.EntryID != 0:
+		return "FAQ entry: "
+	case t.SourceID != 0:
+		return "Outside page: "
+	}
+	return ""
 }
 
 // Pick ranks threads for a question and states what each says about it.
@@ -175,7 +195,7 @@ func (e *Engine) Pick(ctx context.Context, question string, threads []ThreadSumm
 	var b strings.Builder
 	fmt.Fprintf(&b, "QUESTION: %s\n\nTHREADS:\n", question)
 	for i, t := range threads {
-		fmt.Fprintf(&b, "%d. %s (%s)\n%s\n\n", i+1, t.Title, time.Unix(t.Date, 0).UTC().Format("Jan 2006"), t.Digest)
+		fmt.Fprintf(&b, "%d. %s%s (%s)\n%s\n\n", i+1, t.label(), t.Title, time.Unix(t.Date, 0).UTC().Format("Jan 2006"), t.Digest)
 	}
 	var out struct {
 		Cards []struct {
@@ -195,7 +215,7 @@ func (e *Engine) Pick(ctx context.Context, question string, threads []ThreadSumm
 		seen[c.N] = true
 		t := threads[c.N-1]
 		if s := clean(c.Statement); s != "" {
-			cards = append(cards, Card{GroupID: t.GroupID, PostID: t.PostID, Statement: s})
+			cards = append(cards, Card{GroupID: t.GroupID, PostID: t.PostID, EntryID: t.EntryID, SourceID: t.SourceID, Statement: s})
 		}
 	}
 	return cards, nil

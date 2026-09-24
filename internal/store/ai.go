@@ -327,6 +327,55 @@ func (s *Store) ThreadText(groupID, postID int64, maxChars int) (string, *Post, 
 	return head + strings.Join(lines, "\n"), p, nil
 }
 
+// NumberedComments writes a thread's shown comments for the summary job,
+// one per line as "[n] who, date: text", numbered in thread order, with
+// authors labeled as ThreadText labels them. It returns the text and the
+// comment id behind each number. Comments that don't fit in maxChars are
+// left off the end: the summary covers only what the model read, and the
+// rest of the thread stays unfolded.
+func (s *Store) NumberedComments(groupID, postID int64, maxChars int) (string, []int64, error) {
+	p, err := s.Post(groupID, postID)
+	if err != nil || p == nil {
+		return "", nil, err
+	}
+	cs, err := s.Comments(groupID, postID)
+	if err != nil {
+		return "", nil, err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Title: %s\nOP (%s): %s\n\nCOMMENTS:\n", p.Title, ymd(p.CreatedAt), oneParagraph(p.Body))
+	labels := map[int64]string{}
+	if p.UserID != 0 {
+		labels[p.UserID] = "OP"
+	}
+	var ids []int64
+	next := 1
+	for _, c := range cs {
+		if c.Status != "visible" && c.Status != "flagged" {
+			continue
+		}
+		who := labels[c.UserID]
+		if who == "" || c.UserID == 0 { // archive comments: each its own person
+			who = fmt.Sprintf("commenter %d", next)
+			next++
+			if c.UserID != 0 {
+				labels[c.UserID] = who
+			}
+		}
+		reply := ""
+		if c.ParentID != 0 {
+			reply = " (reply)"
+		}
+		line := fmt.Sprintf("[%d] %s%s, %s: %s\n", len(ids)+1, who, reply, ymd(c.CreatedAt), oneParagraph(c.Body))
+		if b.Len()+len(line) > maxChars {
+			break
+		}
+		b.WriteString(line)
+		ids = append(ids, c.ID)
+	}
+	return b.String(), ids, nil
+}
+
 func ymd(unix int64) string { return time.Unix(unix, 0).UTC().Format("2006-01-02") }
 
 // oneParagraph folds line breaks so every comment is one line of the

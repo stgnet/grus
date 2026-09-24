@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -42,8 +43,10 @@ type searchHit struct {
 
 type searchData struct {
 	Q, Prev string
-	Hits    []searchHit
-	Ask     bool // the page should ask for fact cards
+	FAQ     []store.Entry  // matching FAQ entries: the group's best summaries, shown first
+	Hits    []searchHit    // threads
+	Pages   []store.Source // outside pages, labeled with their site
+	Ask     bool           // the page should ask for fact cards
 	Related string
 }
 
@@ -64,6 +67,10 @@ func (s *Server) searchPage(w http.ResponseWriter, r *http.Request) {
 	if d.Q != "" {
 		var err error
 		if d.Hits, err = s.plainSearch(c, d.Prev+" "+d.Q, 20); err != nil {
+			s.serverError(w, r, err)
+			return
+		}
+		if d.FAQ, d.Pages, err = s.otherHits(c, d.Prev+" "+d.Q); err != nil {
 			s.serverError(w, r, err)
 			return
 		}
@@ -110,9 +117,38 @@ func (s *Server) plainSearch(c *greq, q string, limit int) ([]searchHit, error) 
 	return out, nil
 }
 
+// otherHits is plain search over the FAQ and outside pages.
+func (s *Server) otherHits(c *greq, q string) ([]store.Entry, []store.Source, error) {
+	query := store.FTSQuery(q)
+	var entries []store.Entry
+	hits, err := s.Store.SearchKind(c.g.ID, "faq", query, 3)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, h := range hits {
+		if e, err := s.Store.Entry(c.g.ID, h.ID); err == nil && e != nil && e.Status == "active" {
+			entries = append(entries, *e)
+		}
+	}
+	var pages []store.Source
+	if hits, err = s.Store.SearchKind(c.g.ID, "source", query, 5); err != nil {
+		return nil, nil, err
+	}
+	for _, h := range hits {
+		if src, err := s.Store.Source(c.g.ID, h.ID); err == nil && src != nil && src.Shown() {
+			pages = append(pages, *src)
+		}
+	}
+	return entries, pages, nil
+}
+
+// cardView is one fact card: what a thread, a FAQ entry, or an outside
+// page says about the question.
 type cardView struct {
-	ID        int64
+	URL       string
 	Title     string
+	Label     string // "FAQ", or an outside page's site
+	External  bool
 	Date      int64
 	Statement string
 }
@@ -167,17 +203,45 @@ func (s *Server) ask(w http.ResponseWriter, r *http.Request) {
 				if card.GroupID != c.g.ID {
 					continue
 				}
-				p, err := s.Store.Post(c.g.ID, card.PostID)
-				if err != nil || p == nil || p.Status != "visible" || !c.canRead(&auth.Item{AuthorID: p.UserID, Status: p.Status}) {
+				v, ok := s.checkCard(c, card)
+				if !ok {
 					continue
 				}
-				d.Cards = append(d.Cards, cardView{ID: p.ID, Title: p.Title, Date: p.CreatedAt, Statement: card.Statement})
-				ids = append(ids, strconv.FormatInt(p.ID, 10))
+				d.Cards = append(d.Cards, v)
+				ids = append(ids, strconv.FormatInt(card.PostID+card.EntryID+card.SourceID, 10))
 			}
 			d.CitedIDs = strings.Join(ids, ",")
 		}
 	}
 	s.renderFragment(w, r, "cards", d)
+}
+
+// checkCard re-checks one card against this reader and what's shown now,
+// and fills in what the page needs to show it.
+func (s *Server) checkCard(c *greq, card ai.Card) (cardView, bool) {
+	switch {
+	case card.EntryID != 0:
+		e, err := s.Store.Entry(c.g.ID, card.EntryID)
+		if err != nil || e == nil || e.Status != "active" {
+			return cardView{}, false
+		}
+		return cardView{URL: fmt.Sprintf("/faq/e/%d", e.ID), Title: e.Question, Label: "FAQ", Date: e.UpdatedAt, Statement: card.Statement}, true
+	case card.SourceID != 0:
+		src, err := s.Store.Source(c.g.ID, card.SourceID)
+		if err != nil || src == nil || !src.Shown() || src.Status != "active" {
+			return cardView{}, false
+		}
+		date := src.PublishedAt
+		if date == 0 {
+			date = src.CreatedAt
+		}
+		return cardView{URL: src.URL, Title: src.Title, Label: src.Site, External: true, Date: date, Statement: card.Statement}, true
+	}
+	p, err := s.Store.Post(c.g.ID, card.PostID)
+	if err != nil || p == nil || p.Status != "visible" || !c.canRead(&auth.Item{AuthorID: p.UserID, Status: p.Status}) {
+		return cardView{}, false
+	}
+	return cardView{URL: fmt.Sprintf("/p/%d", p.ID), Title: p.Title, Date: p.CreatedAt, Statement: card.Statement}, true
 }
 
 // askFeedback saves a search someone marked "not what I was looking for".

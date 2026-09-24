@@ -39,6 +39,22 @@ func (f *fakeLLM) Call(ctx context.Context, req Request, out any) (Usage, error)
 		}
 	case strings.Contains(req.System, expandTask):
 		answer = `{"phrases": ["fridge fan", "rattle"]}`
+	case strings.Contains(req.System, summaryTask):
+		answer = `{"summary": "Most report the fan bearing; two found a loose screw.", "useful": [5, 99],
+			"tangents": [{"from": 2, "to": 4, "about": "tire pressure"}], "superseded": [{"n": 1, "by": 6}]}`
+	case strings.Contains(req.System, combinedTask):
+		answer = `{"changed": true, "note": "Owners report the fan swap [1] and a loose screw [2]."}`
+	case strings.Contains(req.System, faqNewTask):
+		answer = `{"question": "How do owners fix a rattling fridge fan?", "answer": "Owners report replacing the fan stopped the rattle.",
+			"topic": 0, "new_topic": "Fridge", "parent": 0, "pages": [1]}`
+	case strings.Contains(req.System, faqRewriteTask):
+		answer = `{"changed": true, "answer": "Owners report replacing the fan; one says it still rattles."}`
+	case strings.Contains(req.System, outlineTask):
+		answer = `{"merge": [{"keep": 1, "drop": 2}], "rename": [{"n": 3, "title": "Tires and wheels"}]}`
+	case strings.Contains(req.System, sourceTask):
+		answer = `{"title": "Fan bulletin", "summary": "The bulletin says the fridge fan was revised in 2021."}`
+	case strings.Contains(req.System, topicsTask):
+		answer = `{"topics": [1]}`
 	case strings.Contains(req.System, pickTask):
 		answer = `{"cards": [{"n": 1, "statement": "Owners report the stock fan's bearing was the cause."}, {"n": 99, "statement": "made up"}]}`
 	default:

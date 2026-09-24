@@ -58,7 +58,7 @@ func (s *Server) linkPost(w http.ResponseWriter, r *http.Request) {
 		source = "mod"
 	}
 	_, err := s.Log.Apply(&cmd.AddLink{GroupID: c.g.ID, PostA: p.ID, PostB: other, Source: source, By: c.u.ID,
-		NoteA: s.IDs.Next(), NoteB: s.IDs.Next(), At: s.Now().Unix()})
+		NoteA: s.IDs.Next(), NoteB: s.IDs.Next(), CombinedA: s.IDs.Next(), CombinedB: s.IDs.Next(), At: s.Now().Unix()})
 	if s.commandFailed(w, r, c, err, "message", message{Title: "Can't link"}) {
 		return
 	}

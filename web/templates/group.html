@@ -12,11 +12,16 @@
     {{if $d.Pending}}<span class="muted">Your request to join is waiting for a moderator.</span>{{end}}
   </div>
 </section>
+{{if $d.Newcomer}}<p class="notice start-faq"><strong>New here?</strong> <a href="/faq">Start with the FAQ</a>: what this group has learned, topic by topic, with links to the discussions.</p>{{end}}
+{{if and (not $d.CanRead) $d.FAQEntries}}<p><a class="button secondary" href="/faq">Read the group's FAQ</a></p>{{end}}
 {{if $d.CanRead}}
 <nav class="tabs">
   <a href="/?sort=active" {{if eq $d.Sort "active"}}class="on"{{end}}>Active</a>
   <a href="/?sort=new" {{if eq $d.Sort "new"}}class="on"{{end}}>New</a>
+  <a href="/faq">FAQ</a>
+  {{if $d.CanMod}}<a href="/mod/sources">Sources</a>{{end}}
 </nav>
+{{if $d.FAQEntries}}<a class="card pinned-faq" href="/faq"><span class="card-text"><strong><span class="tag">pinned</span> Group FAQ</strong><span class="meta">{{plural $d.FAQEntries "entry" "entries"}}, built from the group's discussions · Browse by topic</span></span></a>{{end}}
 {{if $d.Posts}}
 <ul class="feed">
 {{range $d.Posts}}

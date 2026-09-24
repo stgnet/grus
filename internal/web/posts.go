@@ -98,11 +98,12 @@ func (s *Server) submitPost(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		_, err := s.Log.Apply(&cmd.AddLink{GroupID: c.g.ID, PostA: id, PostB: other, Source: "author", By: c.u.ID,
-			NoteA: s.IDs.Next(), NoteB: s.IDs.Next(), At: s.Now().Unix()})
+			NoteA: s.IDs.Next(), NoteB: s.IDs.Next(), CombinedA: s.IDs.Next(), CombinedB: s.IDs.Next(), At: s.Now().Unix()})
 		if err != nil && !cmd.IsInput(err) {
 			log.Printf("link new post %d to %d: %v", id, other, err)
 		}
 	}
+	s.sourcesFromText(c, id, d.Body)
 	http.Redirect(w, r, fmt.Sprintf("/p/%d", id), http.StatusSeeOther)
 }
 
@@ -318,6 +319,7 @@ func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	s.sourcesFromText(c, p.ID, r.FormValue("body"))
 	http.Redirect(w, r, fmt.Sprintf("%s#c%d", back, id), http.StatusSeeOther)
 }
 

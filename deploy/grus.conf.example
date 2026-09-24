@@ -57,3 +57,5 @@ operator = scott@stg.net
 worker = studio.example.net:7946
 # Quick answers per member per day (0 = the default, 20).
 # ask_daily_limit = 20
+# Hour (UTC, 0-23) the nightly FAQ batch is queued.
+# faq_hour = 8

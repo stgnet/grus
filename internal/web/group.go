@@ -13,11 +13,12 @@ import (
 // greq is what every handler on a group's host starts from: the group, its
 // settings, who's asking, and what they are in this group.
 type greq struct {
-	rt *route
-	g  *store.Group
-	st *store.Settings
-	u  *store.User // nil when signed out
-	v  auth.Viewer
+	rt   *route
+	g    *store.Group
+	st   *store.Settings
+	u    *store.User // nil when signed out
+	v    auth.Viewer
+	root bool // the root FAQ on the bare domain, not a real group
 }
 
 // group loads the request's group context. It writes a 404 and returns nil
@@ -48,6 +49,9 @@ func (c *greq) member() bool                 { return auth.IsMember(c.v) }
 
 // page starts a page for this group.
 func (c *greq) page(title string, data any) *page {
+	if c.root {
+		return &page{Title: title, User: c.u, Data: data}
+	}
 	return &page{Title: title, User: c.u, Group: c.g, Data: data, Manage: auth.CanManage(c.v),
 		// Groups aren't listed by search engines unless their owners say so.
 		NoIndex: !c.st.AllowIndexing || c.st.Visibility != "public"}
@@ -101,6 +105,9 @@ type feedData struct {
 	Sort        string
 	NextPage    int
 	MemberCount int
+	FAQEntries  int  // the FAQ, pinned at the top of the feed
+	Newcomer    bool // not a member: "New here? Start with the FAQ"
+	CanMod      bool
 }
 
 type postCard struct {
@@ -127,6 +134,11 @@ func (s *Server) groupHome(w http.ResponseWriter, r *http.Request) {
 	}
 	d := feedData{Settings: c.st, CanRead: c.canRead(nil), IsMember: c.member(), Pending: c.v.Status == "pending", Sort: sort}
 	d.MemberCount, _ = s.Store.MemberCount(c.g.ID)
+	d.CanMod = c.mod()
+	if auth.CanReadFAQ(c.v, c.st.Visibility, c.st.PublicFAQ) {
+		d.FAQEntries, _ = s.Store.EntryCount(c.g.ID)
+		d.Newcomer = !d.IsMember && d.FAQEntries > 0
+	}
 	if d.CanRead {
 		posts, err := s.Store.Feed(c.g.ID, sort, feedPageSize+1, pg*feedPageSize)
 		if err != nil {

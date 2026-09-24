@@ -23,7 +23,19 @@ const (
 	JobCheck  = "check"  // a new or edited post: find older posts on the same topic (M5 adds moderation)
 	JobDigest = "digest" // a thread's stored factual summary, which search reads
 	JobNote   = "note"   // write or refresh one note
+
+	// M3
+	JobSummary    = "summary"     // a long thread's summary note, and its nudges
+	JobFAQNew     = "faq_new"     // an entry for a cluster of threads (ref = its oldest post)
+	JobFAQRewrite = "faq_rewrite" // rewrite a stale entry
+	JobOutline    = "faq_outline" // the weekly pass over the topic titles (ref 0)
+	JobSource     = "source"      // read an outside page and summarize it
+	JobSeed       = "seed"        // read a seed list page for its links
 )
+
+// SummaryMin is how many comments a thread needs before it gets a summary
+// note: below that, the thread is short enough to just read.
+const SummaryMin = 10
 
 // Timing, from the plan: rewrite after activity settles (about 15 minutes of
 // quiet), at most once an hour, and never let a busy thread wait forever.
@@ -80,6 +92,19 @@ func threadChanged(tx *sql.Tx, groupID, postID, at int64) error {
 			return err
 		}
 		if err := schedule(tx, JobDigest, id, v, at+QuietPeriod, at); err != nil {
+			return err
+		}
+		var comments int
+		tx.QueryRow(`SELECT comment_count FROM posts WHERE id = ?`, id).Scan(&comments)
+		if comments >= SummaryMin {
+			if err := schedule(tx, JobSummary, id, v, at+QuietPeriod, at); err != nil {
+				return err
+			}
+		}
+		// FAQ entries written from this thread are rewritten at the next
+		// nightly batch.
+		if _, err := tx.Exec(`UPDATE faq_entries SET stale = 1, version = version + 1
+			WHERE id IN (SELECT entry_id FROM faq_sources WHERE post_id = ?)`, id); err != nil {
 			return err
 		}
 		rows, err := tx.Query(`SELECT n.id FROM notes n JOIN note_sources s ON s.note_id = n.id

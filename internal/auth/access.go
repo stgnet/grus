@@ -84,3 +84,14 @@ func CanRead(v Viewer, visibility string, item *Item) bool {
 func CanManage(v Viewer) bool {
 	return v.Operator || (v.member() && v.Role == "owner")
 }
+
+// CanReadFAQ: may this viewer read the group's FAQ? Whoever can read the
+// group can. A private group's owner can also make its FAQ a public preview
+// (plan section 4, "Privacy"), which shows the entries while the threads
+// they link to stay members-only. Hidden groups never preview.
+func CanReadFAQ(v Viewer, visibility string, publicFAQ bool) bool {
+	if CanRead(v, visibility, nil) {
+		return true
+	}
+	return visibility == "private" && publicFAQ && v.Status != "banned"
+}

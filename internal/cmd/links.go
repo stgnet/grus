@@ -3,6 +3,8 @@ package cmd
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -20,25 +22,39 @@ const MaxNoteLen = 1200
 
 // AddLink links two posts in one group. Source says who asked: "author"
 // (the "Link to this" button), "mod", or "auto" (the check job, via
-// SetCheck). NoteA and NoteB are ids for the two notes, used if new.
+// SetCheck). NoteA and NoteB are ids for the two notes, used if new;
+// CombinedA and CombinedB are ids for a combined note on either post, used
+// if this link is the one that makes a post need one.
 type AddLink struct {
-	GroupID int64
-	PostA   int64
-	PostB   int64
-	Source  string
-	By      int64
-	NoteA   int64
-	NoteB   int64
-	At      int64
+	GroupID   int64
+	PostA     int64
+	PostB     int64
+	Source    string
+	By        int64
+	NoteA     int64
+	NoteB     int64
+	CombinedA int64
+	CombinedB int64
+	At        int64
 }
 
 func (c *AddLink) Apply(a *Applier) (any, error) {
 	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
-		return addLink(tx, c.GroupID, c.PostA, c.PostB, c.Source, c.By, c.NoteA, c.NoteB, c.At)
+		return addLink(tx, c.GroupID, c.PostA, c.PostB, c.Source, c.By, [4]int64{c.NoteA, c.NoteB, c.CombinedA, c.CombinedB}, c.At)
 	})
 }
 
-func addLink(tx *sql.Tx, groupID, a, b int64, source string, by, noteA, noteB, at int64) error {
+// FeedSink is how much older a repeat of a well-answered thread is treated
+// in the Active feed, so the same question every month doesn't dominate it.
+const FeedSink = 12 * 3600
+
+// CombinedMin is how many related threads (and outside pages) a post needs
+// before it gets a combined note gathering them into one answer.
+const CombinedMin = 3
+
+// addLink links a and b. ids holds the note ids to use if new: the link
+// note on a, on b, and a combined note on a, on b.
+func addLink(tx *sql.Tx, groupID, a, b int64, source string, by int64, ids [4]int64, at int64) error {
 	if a == b {
 		return Invalid("a post can't be linked to itself")
 	}
@@ -73,10 +89,148 @@ func addLink(tx *sql.Tx, groupID, a, b int64, source string, by, noteA, noteB, a
 	default:
 		return err
 	}
-	if err := linkNote(tx, groupID, a, b, noteA, at); err != nil {
+	if err := linkNote(tx, groupID, a, b, ids[0], at); err != nil {
 		return err
 	}
-	return linkNote(tx, groupID, b, a, noteB, at)
+	if err := linkNote(tx, groupID, b, a, ids[1], at); err != nil {
+		return err
+	}
+	if err := feedWeight(tx, older, newer, at); err != nil {
+		return err
+	}
+	// Linked threads are about the same thing, so an entry written from
+	// one of them takes in the other: a repeat question joins the entry
+	// that covers it, and what it adds flows back at the next rewrite.
+	entries, err := queryIDs(tx, `SELECT DISTINCT s.entry_id FROM faq_sources s JOIN faq_entries e ON e.id = s.entry_id
+		WHERE s.post_id IN (?, ?) AND e.status = 'active'`, older, newer)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		for _, p := range []int64{older, newer} {
+			if err := addFAQSource(tx, e, p); err != nil {
+				return err
+			}
+		}
+	}
+	if err := syncCombined(tx, groupID, a, ids[2], at); err != nil {
+		return err
+	}
+	return syncCombined(tx, groupID, b, ids[3], at)
+}
+
+// feedWeight lowers a new post that repeats a well-answered thread (one
+// with real discussion, or in the FAQ) in the Active feed. It's a nudge:
+// recorded with its reason, and a mod can reverse it for good.
+func feedWeight(tx *sql.Tx, older, newer, at int64) error {
+	var comments int
+	var inFAQ bool
+	if err := tx.QueryRow(`SELECT comment_count, EXISTS (SELECT 1 FROM faq_sources s JOIN faq_entries e ON e.id = s.entry_id
+		WHERE s.post_id = posts.id AND e.status = 'active') FROM posts WHERE id = ?`, older).Scan(&comments, &inFAQ); err != nil {
+		return err
+	}
+	if comments < FAQMinComments && !inFAQ {
+		return nil
+	}
+	var n int
+	tx.QueryRow(`SELECT COUNT(*) FROM nudges WHERE kind = 'feed_weight' AND target_id = ?`, newer).Scan(&n)
+	if n > 0 {
+		return nil // already weighted, or a mod reversed it
+	}
+	if _, err := tx.Exec(`INSERT INTO nudges (post_id, kind, target_id, value, reason, created_at)
+		VALUES (?, 'feed_weight', ?, ?, ?, ?)`, newer, newer, FeedSink, fmt.Sprintf("repeats answered thread %d", older), at); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`UPDATE posts SET sink = ? WHERE id = ?`, FeedSink, newer)
+	return err
+}
+
+// syncCombined keeps a post's combined note in step with what it's linked
+// to: made (with id newID) once a post has CombinedMin related threads and
+// outside pages, its sources kept to exactly those, refreshed when they
+// change, and taken down below the threshold. A combined note a mod
+// removed stays removed. newID 0 = don't create one now.
+func syncCombined(tx *sql.Tx, groupID, host, newID, at int64) error {
+	type src struct{ post, source int64 }
+	var want []src
+	posts, err := queryIDs(tx, `SELECT CASE WHEN l.older_post_id = ?1 THEN l.newer_post_id ELSE l.older_post_id END AS other
+		FROM post_links l JOIN posts p ON p.id = (CASE WHEN l.older_post_id = ?1 THEN l.newer_post_id ELSE l.older_post_id END)
+		WHERE (l.older_post_id = ?1 OR l.newer_post_id = ?1) AND l.state = 'active' AND p.status IN ('visible', 'flagged')
+		ORDER BY other`, host)
+	if err != nil {
+		return err
+	}
+	for _, p := range posts {
+		want = append(want, src{p, 0})
+	}
+	outside, err := queryIDs(tx, `SELECT s.id FROM source_links l JOIN sources s ON s.id = l.source_id
+		WHERE l.post_id = ? AND s.status = 'active' AND s.summary != '' ORDER BY s.id`, host)
+	if err != nil {
+		return err
+	}
+	for _, s := range outside {
+		want = append(want, src{0, s})
+	}
+	var id int64
+	var state string
+	var removedBy sql.NullInt64
+	err = tx.QueryRow(`SELECT id, state, removed_by FROM notes WHERE host_post_id = ? AND kind = 'combined'`, host).Scan(&id, &state, &removedBy)
+	exists := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if len(want) < CombinedMin {
+		if exists && state == "active" {
+			_, err := tx.Exec(`UPDATE notes SET state = 'removed' WHERE id = ?`, id)
+			return err
+		}
+		return nil
+	}
+	if exists && removedBy.Valid {
+		return nil // a mod took it down
+	}
+	if !exists {
+		if newID == 0 {
+			return nil
+		}
+		id = newID
+		if _, err := tx.Exec(`INSERT INTO notes (id, host_post_id, after_comment_id, kind, created_at, updated_at)
+			VALUES (?, ?, 0, 'combined', ?, ?)`, id, host, at, at); err != nil {
+			return err
+		}
+	}
+	// Same sources as before and already showing: nothing to redo.
+	rows, err := tx.Query(`SELECT post_id, source_id FROM note_sources WHERE note_id = ? ORDER BY source_id != 0, post_id, source_id`, id)
+	if err != nil {
+		return err
+	}
+	var have []src
+	for rows.Next() {
+		var s src
+		rows.Scan(&s.post, &s.source)
+		have = append(have, s)
+	}
+	rows.Close()
+	if exists && state == "active" && slices.Equal(have, want) {
+		return nil
+	}
+	if _, err := tx.Exec(`DELETE FROM note_sources WHERE note_id = ?`, id); err != nil {
+		return err
+	}
+	for _, s := range want {
+		if _, err := tx.Exec(`INSERT INTO note_sources (note_id, group_id, post_id, source_id) VALUES (?, ?, ?, ?)`,
+			id, groupID, s.post, s.source); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE notes SET state = 'active', stale = 1 WHERE id = ?`, id); err != nil {
+		return err
+	}
+	v, err := noteVersion(tx, id)
+	if err != nil {
+		return err
+	}
+	return schedule(tx, JobNote, id, v, at, at)
 }
 
 // linkNote makes (or reactivates) the note on host that points at other,
@@ -144,11 +298,16 @@ func (c *RemoveLink) Apply(a *Applier) (any, error) {
 		if n, _ := res.RowsAffected(); n == 0 {
 			return ErrGone
 		}
-		if _, err := tx.Exec(`UPDATE notes SET state = 'removed', removed_by = ? WHERE kind = 'link' AND id IN (
+		if _, err := tx.Exec(`UPDATE notes SET state = 'removed', removed_by = ?3 WHERE kind = 'link' AND id IN (
 			SELECT n.id FROM notes n JOIN note_sources s ON s.note_id = n.id
 			WHERE (n.host_post_id = ?1 AND s.post_id = ?2) OR (n.host_post_id = ?2 AND s.post_id = ?1))`,
-			c.By, older, newer); err != nil {
+			older, newer, c.By); err != nil {
 			return err
+		}
+		for _, p := range []int64{older, newer} {
+			if err := syncCombined(tx, c.GroupID, p, 0, c.At); err != nil {
+				return err
+			}
 		}
 		if c.ByMod {
 			return modLog(tx, c.By, "unlink", "post", newer, "", c.At)
@@ -160,9 +319,11 @@ func (c *RemoveLink) Apply(a *Applier) (any, error) {
 // CheckLink is one match a check job found: link PostID to Other, using
 // these ids for the two notes if they're new.
 type CheckLink struct {
-	Other     int64
-	NoteHere  int64
-	NoteThere int64
+	Other         int64
+	NoteHere      int64
+	NoteThere     int64
+	CombinedHere  int64
+	CombinedThere int64
 }
 
 // SetCheck is a check job's result for a post. In M2 that's the older
@@ -174,6 +335,8 @@ type SetCheck struct {
 	PostID  int64
 	Version int64
 	Links   []CheckLink
+	Entries []int64 // FAQ entries that already cover this post's question
+	Sources []int64 // outside pages about the same thing
 	At      int64
 }
 
@@ -188,8 +351,29 @@ func (c *SetCheck) Apply(a *Applier) (any, error) {
 			return err
 		}
 		for _, l := range c.Links {
-			err := addLink(tx, c.GroupID, c.PostID, l.Other, "auto", 0, l.NoteHere, l.NoteThere, c.At)
+			err := addLink(tx, c.GroupID, c.PostID, l.Other, "auto", 0,
+				[4]int64{l.NoteHere, l.NoteThere, l.CombinedHere, l.CombinedThere}, c.At)
 			if err != nil && !IsInput(err) { // a candidate deleted meanwhile is just skipped
+				return err
+			}
+		}
+		// "Covered in the FAQ": the post joins the entry, which shows on
+		// the post and takes in whatever the thread adds.
+		for _, e := range c.Entries {
+			var status string
+			if tx.QueryRow(`SELECT status FROM faq_entries WHERE id = ?`, e).Scan(&status) != nil || status != "active" {
+				continue
+			}
+			if err := addFAQSource(tx, e, c.PostID); err != nil {
+				return err
+			}
+		}
+		for _, s := range c.Sources {
+			var status string
+			if tx.QueryRow(`SELECT status FROM sources WHERE id = ?`, s).Scan(&status) != nil || status != "active" {
+				continue
+			}
+			if err := linkSource(tx, c.GroupID, s, c.PostID, 0, c.At); err != nil {
 				return err
 			}
 		}
@@ -239,14 +423,20 @@ func (c *SetNote) Apply(a *Applier) (any, error) {
 
 // SetDigest stores a thread's digest: a few factual lines that search
 // reads instead of the whole thread.
+//
+// Topics are the post's topic tags from the same job (plan section 2, "Topic
+// tags"), set only when TopicsDone (the group has topics to choose from),
+// and never on a post whose author or a mod chose its topics.
 type SetDigest struct {
-	GroupID int64
-	JobID   int64
-	Worker  string
-	PostID  int64
-	Version int64
-	Digest  string
-	At      int64
+	GroupID    int64
+	JobID      int64
+	Worker     string
+	PostID     int64
+	Version    int64
+	Digest     string
+	Topics     []int64
+	TopicsDone bool
+	At         int64
 }
 
 func (c *SetDigest) Apply(a *Applier) (any, error) {
@@ -263,8 +453,13 @@ func (c *SetDigest) Apply(a *Applier) (any, error) {
 		if err != nil || !ok {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE posts SET digest = ?, digest_updated_at = ? WHERE id = ?`, nullIfEmpty(digest), c.At, c.PostID)
-		return err
+		if _, err := tx.Exec(`UPDATE posts SET digest = ?, digest_updated_at = ? WHERE id = ?`, nullIfEmpty(digest), c.At, c.PostID); err != nil {
+			return err
+		}
+		if c.TopicsDone {
+			return setTopics(tx, c.PostID, c.Topics, "auto", false)
+		}
+		return nil
 	})
 }
 

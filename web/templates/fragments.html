@@ -2,8 +2,8 @@
 {{if .Cards}}
 <ul class="factcards" data-generated="auto">
 {{range .Cards}}
-  <li><a href="/p/{{.ID}}"><strong>{{.Title}}</strong></a> <span class="meta">({{month .Date}})</span>
-    <p>{{.Statement}}</p><a class="more" href="/p/{{.ID}}">Open thread</a></li>
+  <li>{{if .Label}}<span class="tag">{{.Label}}</span> {{end}}<a href="{{.URL}}" {{if .External}}rel="nofollow noopener"{{end}}><strong>{{.Title}}</strong></a> <span class="meta">({{month .Date}})</span>
+    <p>{{.Statement}}</p><a class="more" href="{{.URL}}" {{if .External}}rel="nofollow noopener"{{end}}>{{if .External}}Open on {{.Label}}{{else if eq .Label "FAQ"}}Open the FAQ entry{{else}}Open thread{{end}}</a></li>
 {{end}}
 </ul>
 <form method="post" action="/ask/feedback" class="feedback fetch-swap">

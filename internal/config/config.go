@@ -74,6 +74,9 @@ type Config struct {
 	AIContext int      // context window in tokens (default 16384)
 	Workers   []string // cluster addresses of nodes with a model
 	AskLimit  int      // search questions per person per day (default 20)
+	// The hour (UTC, 0-23) the leader queues the nightly FAQ batch, when
+	// the model is otherwise idle. Default 8: 3-4am in US Eastern time.
+	FAQHour int
 }
 
 // Load reads and checks a config file.
@@ -84,7 +87,7 @@ func Load(path string) (*Config, error) {
 	}
 	defer f.Close()
 
-	c := &Config{NodeNum: 1, DataDir: "/var/lib/grus", SMTPPort: 587}
+	c := &Config{NodeNum: 1, DataDir: "/var/lib/grus", SMTPPort: 587, FAQHour: 8}
 	sc := bufio.NewScanner(f)
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
@@ -165,6 +168,11 @@ func (c *Config) set(key, val string) error {
 		c.Workers = append(c.Workers, val)
 	case "ask_daily_limit":
 		c.AskLimit, err = strconv.Atoi(val)
+	case "faq_hour":
+		c.FAQHour, err = strconv.Atoi(val)
+		if err == nil && (c.FAQHour < 0 || c.FAQHour > 23) {
+			err = fmt.Errorf("faq_hour must be 0 to 23")
+		}
 	default:
 		// Fail loudly: a misspelled key silently ignored is a bad afternoon.
 		return fmt.Errorf("unknown key %q", key)

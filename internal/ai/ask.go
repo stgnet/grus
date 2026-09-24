@@ -83,6 +83,24 @@ func (e *Engine) Ask(ctx context.Context, req AskRequest) ([]Card, error) {
 	type key struct{ g, p int64 }
 	seen := map[key]bool{}
 	var threads []ThreadSummary
+	// FAQ entries go first: an entry is the best summary a group has, so
+	// Ask looks there before the threads (plan section 4, "Ask and the FAQ
+	// work together"). Then the threads, then a few outside pages.
+	for _, g := range req.GroupIDs {
+		hits, err := e.Store.SearchKind(g, "faq", query, 3)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range hits {
+			en, err := e.Store.Entry(g, h.ID)
+			if err != nil {
+				return nil, err
+			}
+			if en != nil && en.Status == "active" {
+				threads = append(threads, ThreadSummary{GroupID: g, EntryID: en.ID, Title: en.Question, Date: en.UpdatedAt, Digest: en.Answer})
+			}
+		}
+	}
 	add := func(g, id int64) error {
 		if seen[key{g, id}] || len(threads) >= askWithLinked {
 			return nil
@@ -111,6 +129,25 @@ func (e *Engine) Ask(ctx context.Context, req AskRequest) ([]Card, error) {
 		for _, id := range linked {
 			if err := add(f.group, id); err != nil {
 				return nil, err
+			}
+		}
+	}
+	for _, g := range req.GroupIDs {
+		hits, err := e.Store.SearchKind(g, "source", query, 3)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range hits {
+			src, err := e.Store.Source(g, h.ID)
+			if err != nil {
+				return nil, err
+			}
+			if src != nil && src.Shown() && src.Status == "active" {
+				date := src.PublishedAt
+				if date == 0 {
+					date = src.CreatedAt
+				}
+				threads = append(threads, ThreadSummary{GroupID: g, SourceID: src.ID, Title: src.Site + ": " + src.Title, Date: date, Digest: src.Summary})
 			}
 		}
 	}

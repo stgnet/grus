@@ -1,0 +1,72 @@
+{{define "content"}}{{$d := .Data}}
+<h1>{{if $d.Root}}Questions about this site{{else}}{{.Group.Name}} FAQ{{end}}</h1>
+{{if $d.Root}}
+<p class="lead">A home for discussion groups, organized so the good answers don't scroll away. Each group keeps its own FAQ, built from its members' threads.</p>
+{{else}}
+<p class="muted">What this group's members have found, topic by topic, each with links to the discussions it comes from. <a href="/how-it-works">How the FAQ is kept up to date</a></p>
+{{end}}
+{{if and $d.CanMod $d.Suggestions}}<p class="notice">{{plural $d.Suggestions "locked entry has" "locked entries have"}} a suggested update waiting. Look for "Suggested update" below.</p>{{end}}
+
+{{if $d.Topics}}
+<nav class="toc"><strong>Contents</strong>
+<ul>{{range $d.Topics}}<li><a href="#t{{.Topic.ID}}">{{.Topic.Title}}</a>{{if .Children}}<ul>{{range .Children}}<li><a href="#t{{.Topic.ID}}">{{.Topic.Title}}</a></li>{{end}}</ul>{{end}}</li>{{end}}</ul>
+</nav>
+{{end}}
+
+{{range $d.Topics}}
+<section class="faq-topic" id="t{{.Topic.ID}}">
+  <h2><a href="/faq/t/{{.Topic.ID}}">{{.Topic.Title}}</a></h2>
+  {{template "faq-entries" (dict "E" .Entries "D" $d)}}
+  {{range .Children}}
+  <section class="faq-topic sub" id="t{{.Topic.ID}}">
+    <h3><a href="/faq/t/{{.Topic.ID}}">{{.Topic.Title}}</a></h3>
+    {{template "faq-entries" (dict "E" .Entries "D" $d)}}
+  </section>
+  {{end}}
+</section>
+{{end}}
+{{if $d.Other}}<section class="faq-topic"><h2>Other</h2>{{template "faq-entries" (dict "E" $d.Other "D" $d)}}</section>{{end}}
+{{if and $d.Empty (not $d.Root)}}<p class="muted">No entries yet. They're written from the group's discussions as they build up{{if $d.CanMod}}, or you can write them yourself{{end}}.</p>{{end}}
+
+{{if $d.Root}}
+<h2>Groups</h2>
+{{if $d.Groups}}
+<ul class="cards">
+{{range $d.Groups}}<li><a href="{{.URL}}"><strong>{{.Name}}</strong></a>{{if .Description}}<p>{{.Description}}</p>{{end}}
+  {{if .Topics}}<p class="muted">Its FAQ covers: {{range $i, $t := .Topics}}{{if $i}}, {{end}}{{$t}}{{end}}</p>{{end}}</li>{{end}}
+</ul>
+{{else}}<p class="muted">No groups yet.</p>{{end}}
+<p><a href="/how-it-works">How this site works</a></p>
+{{end}}
+
+{{if $d.CanMod}}
+<details class="tools"><summary>Edit the FAQ</summary>
+  <p><a class="button secondary" href="/faq/new">Write an entry</a></p>
+  <form method="post" action="/faq/topics" class="stack">
+    <label>New topic <input name="title" maxlength="80" required></label>
+    <label>Under <select name="parent"><option value="0">(a main topic)</option>{{range $d.AllTopics}}{{if not .ParentID}}<option value="{{.ID}}">{{.Title}}</option>{{end}}{{end}}</select></label>
+    <button class="secondary">Add topic</button>
+  </form>
+</details>
+{{end}}
+{{end}}
+
+{{define "faq-entries"}}{{$d := .D}}
+{{if .E}}
+<ul class="faq-entries">
+{{range .E}}
+  <li id="e{{.ID}}" {{if ne .Status "active"}}class="hidden-entry"{{end}}>
+    <details {{if eq (len $.E) 1}}open{{end}}>
+      <summary><strong>{{.Question}}</strong></summary>
+      <div class="answer" data-generated="{{if .UpdatedBy}}mod{{else}}auto{{end}}"><p>{{.Answer}}</p>
+      <p class="meta">{{if .Sources}}Based on {{plural .Sources "post" "posts"}} · {{end}}updated {{month .UpdatedAt}} · <a href="/faq/e/{{.ID}}">Sources and discussion</a>
+      {{if $d.CanMod}}{{if ne .Status "active"}} · hidden{{end}}{{if .Locked}} · locked{{end}}{{if .Stale}} · update due{{end}}
+        · <a href="/faq/e/{{.ID}}/edit">Edit</a>{{end}}</p>
+      {{if and $d.CanMod .Suggestion}}<p class="notice">Suggested update: {{.Suggestion}} <a href="/faq/e/{{.ID}}/edit?use=suggestion">Review</a></p>{{end}}
+      </div>
+    </details>
+  </li>
+{{end}}
+</ul>
+{{else if $d.CanMod}}<p class="muted">No entries here yet.</p>{{end}}
+{{end}}

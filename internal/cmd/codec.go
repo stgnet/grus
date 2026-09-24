@@ -46,6 +46,33 @@ var registry = map[string]func() Command{
 	"UpdateSettings": func() Command { return new(UpdateSettings) },
 	"RecordUsage":    func() Command { return new(RecordUsage) },
 	"SaveFeedback":   func() Command { return new(SaveFeedback) },
+
+	// M3: the FAQ, summaries and nudges, topics, outside sources
+	"CreateTopic":           func() Command { return new(CreateTopic) },
+	"EditTopic":             func() Command { return new(EditTopic) },
+	"CreateFAQEntry":        func() Command { return new(CreateFAQEntry) },
+	"EditFAQEntry":          func() Command { return new(EditFAQEntry) },
+	"RollbackFAQEntry":      func() Command { return new(RollbackFAQEntry) },
+	"SetFAQAnswer":          func() Command { return new(SetFAQAnswer) },
+	"AddFAQSource":          func() Command { return new(AddFAQSource) },
+	"RemoveFAQSource":       func() Command { return new(RemoveFAQSource) },
+	"AddFAQComment":         func() Command { return new(AddFAQComment) },
+	"RemoveFAQComment":      func() Command { return new(RemoveFAQComment) },
+	"SetPostTopics":         func() Command { return new(SetPostTopics) },
+	"TidyTopics":            func() Command { return new(TidyTopics) },
+	"QueueFAQ":              func() Command { return new(QueueFAQ) },
+	"SetSummary":            func() Command { return new(SetSummary) },
+	"ReverseNudge":          func() Command { return new(ReverseNudge) },
+	"RemoveNote":            func() Command { return new(RemoveNote) },
+	"AddSource":             func() Command { return new(AddSource) },
+	"SetSource":             func() Command { return new(SetSource) },
+	"AddSeeds":              func() Command { return new(AddSeeds) },
+	"ApproveSources":        func() Command { return new(ApproveSources) },
+	"RemoveSource":          func() Command { return new(RemoveSource) },
+	"RestoreSource":         func() Command { return new(RestoreSource) },
+	"AllowDomain":           func() Command { return new(AllowDomain) },
+	"DetachSource":          func() Command { return new(DetachSource) },
+	"RequestArchiveRemoval": func() Command { return new(RequestArchiveRemoval) },
 }
 
 // envelope is how a command sits in the log: its type name plus its fields

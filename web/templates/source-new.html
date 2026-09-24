@@ -1,0 +1,13 @@
+{{define "content"}}{{$f := .Data}}
+<h1>Add an outside source</h1>
+{{if $f.Added}}<p class="notice">Thanks. It shows once it's been read and summarized{{if not .Manage}}, or once a moderator has looked at it{{end}}.</p>{{end}}
+{{with $f.Post}}<p>For <a href="/p/{{.ID}}">{{.Title}}</a></p>{{end}}
+<p class="muted">A link to a page about this somewhere else: a forum thread, a service bulletin, a recall notice. It's shown as a short summary with the link, never copied.</p>
+<form method="post" action="/sources/new" class="stack">
+  <input type="hidden" name="post" value="{{$f.PostID}}">
+  <label>Link <input name="url" type="url" value="{{$f.URL}}" placeholder="https://" required></label>
+  <label>What it says (optional; needed for Facebook links) <textarea name="description" rows="3" maxlength="600">{{$f.Description}}</textarea></label>
+  <p class="muted">If you describe it, your description is shown and the page is never read. Facebook pages are never read, so describe them in a sentence or two, without names.</p>
+  <button>Add</button>
+</form>
+{{end}}

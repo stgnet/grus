@@ -5,6 +5,12 @@
 </form>
 {{if $d.Q}}
   {{if $d.Ask}}<div id="cards" class="answers" data-q="{{$d.Q}}" data-prev="{{$d.Prev}}" hidden></div>{{end}}
+  {{if $d.FAQ}}
+  <ul class="results faq-results">
+  {{range $d.FAQ}}<li><span class="tag">FAQ</span> <a href="/faq/e/{{.ID}}"><strong>{{.Question}}</strong></a>
+    <p class="about">{{excerpt .Answer 300}}</p></li>{{end}}
+  </ul>
+  {{end}}
   {{if $d.Hits}}
   <ul class="results">
   {{range $d.Hits}}
@@ -19,6 +25,13 @@
   </form>
   {{else}}
   <p>No earlier posts match.</p>
+  {{end}}
+  {{if $d.Pages}}
+  <h2 class="small">Elsewhere</h2>
+  <ul class="results">
+  {{range $d.Pages}}<li><span class="tag">{{.Site}}</span> <a href="{{.URL}}" rel="nofollow noopener"><strong>{{.Title}}</strong></a>{{if .PublishedAt}} <span class="meta">({{month .PublishedAt}})</span>{{end}}
+    <p class="about">{{.Summary}}</p></li>{{end}}
+  </ul>
   {{end}}
   <p><a class="button secondary" href="/submit?title={{$d.Q}}&amp;related={{$d.Related}}">Post this question</a></p>
 {{end}}

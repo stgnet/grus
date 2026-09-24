@@ -4,11 +4,20 @@
   {{template "status" $p}}
   <h1>{{$p.Title}}</h1>
   <p class="meta">{{$d.Author}} · {{date $p.CreatedAt}}{{if $p.EditedAt}} · edited{{end}}{{if and $p.Locked (ne $p.Origin "archive")}} · locked{{end}}</p>
-  {{if eq $p.Origin "archive"}}<p class="notice">From the Facebook group archive. Names have been removed.{{if $p.OriginURL}} <a href="{{$p.OriginURL}}" rel="nofollow noopener">View the original</a>{{end}}</p>{{end}}
+  {{if $d.Topics}}<p class="topics">{{range $d.Topics}}<a class="chip" href="/faq/t/{{.ID}}">{{.Title}}</a> {{end}}</p>{{end}}
+  {{if eq $p.Origin "archive"}}<p class="notice">From the Facebook group archive. Names have been removed.{{if $p.OriginURL}} <a href="{{$p.OriginURL}}" rel="nofollow noopener">View the original</a>{{end}} · <a href="/p/{{$p.ID}}/removal">Request removal</a></p>{{end}}
   {{if $p.Body}}<div class="body">{{text $p.Body}}</div>{{end}}
   {{template "photos" $d.Images}}
   {{template "post-actions" (dict "P" $d.PostView "D" $d)}}
 </article>
+
+{{range $d.FAQ}}
+<aside class="note faq-note" data-generated="auto">
+  <p class="note-head"><strong>In the FAQ</strong> · <a href="/faq/e/{{.ID}}">{{.Question}}</a></p>
+  <p>{{.Answer}}</p>
+  <p class="meta">Based on {{plural .Sources "post" "posts"}} · updated {{month .UpdatedAt}} · <a href="/faq/e/{{.ID}}">Open the FAQ entry</a></p>
+</aside>
+{{end}}
 
 {{range $d.Updates}}
 <article class="post update" id="u{{.Post.ID}}">
@@ -23,10 +32,40 @@
 </article>
 {{end}}
 
+{{if $d.Pages}}
+<section class="elsewhere">
+<h2>Elsewhere</h2>
+{{range $d.Pages}}{{template "page" (dict "S" . "D" $d)}}{{end}}
+</section>
+{{end}}
+
 <section class="comments">
 <h2>{{plural $p.CommentCount "comment" "comments"}}</h2>
+{{if $d.Arr.Arranged}}<p class="order-toggle muted">Long thread: answers first, the rest folded. <a href="/p/{{$p.ID}}?order=time">Show everything in order</a></p>
+{{else if $d.Plain}}<p class="order-toggle muted">Showing everything in order. <a href="/p/{{$p.ID}}">Show answers first</a></p>{{end}}
+{{with $d.Combined}}
+<aside class="note combined" data-generated="auto">
+  <p class="note-head"><strong>From {{plural (len .Sources) "related discussion" "related discussions"}}</strong></p>
+  <p>{{.Text}}</p>
+  <ol class="cites">{{range .Sources}}<li value="{{.N}}">{{if .Missing}}<span class="muted">no longer available</span>{{else}}<a href="{{.URL}}" {{if .Site}}rel="nofollow noopener"{{end}}>{{.Title}}</a> <span class="muted">({{if .Site}}{{.Site}}{{if .Date}}, {{month .Date}}{{end}}{{else}}{{month .Date}}{{end}})</span>{{end}}</li>{{end}}</ol>
+  <p class="meta">updated {{date .UpdatedAt}}{{if $d.CanMod}} <form method="post" action="/note/{{.ID}}/remove" class="inline confirm" data-confirm="Remove this combined note? It won't be written again."><button class="link">Remove</button></form>{{end}}</p>
+</aside>
+{{end}}
 {{range $d.TopNotes}}{{template "note" .}}{{end}}
-{{template "threads" (dict "P" $d.PostView "D" $d)}}
+{{with $d.Arr.Summary}}
+<aside class="note summary" data-generated="auto">
+  <p class="note-head"><strong>Summary of {{plural .Count "reply" "replies"}}</strong></p>
+  <p>{{.Text}}</p>
+  <p class="meta">updated {{date .UpdatedAt}}{{if $d.CanMod}} <form method="post" action="/note/{{.ID}}/remove" class="inline confirm" data-confirm="Remove this summary? The replies unfold, and it won't be written again."><button class="link">Remove</button></form>{{end}}</p>
+</aside>
+{{end}}
+{{template "blocks" (dict "B" $d.Arr.Answers "P" $d.PostView "D" $d)}}
+{{if $d.Arr.Folded}}
+<details class="folded"><summary>Show the {{plural $d.Arr.Summary.Count "reply" "replies"}}</summary>
+{{template "blocks" (dict "B" $d.Arr.Folded "P" $d.PostView "D" $d)}}
+</details>
+{{end}}
+{{template "blocks" (dict "B" $d.Arr.Rest "P" $d.PostView "D" $d)}}
 {{if $d.MoreNotes}}
 <details class="more-notes"><summary>{{plural (len $d.MoreNotes) "more related post" "more related posts"}}</summary>
 {{range $d.MoreNotes}}{{template "note" .}}{{end}}
@@ -34,6 +73,27 @@
 {{end}}
 {{if $d.CanComment}}{{template "comment-form" $p.ID}}{{end}}
 </section>
+
+{{if $d.IsMember}}<p class="muted"><a href="/sources/new?post={{$p.ID}}">Add an outside source</a> (a link to a page about this, anywhere on the web)</p>{{end}}
+
+{{if $d.CanTopics}}
+<details class="tools"><summary>Topics</summary>
+  {{if $d.AllTopics}}
+  <form method="post" action="/p/{{$p.ID}}/topics" class="stack">
+    <div class="topic-choices">{{range $d.AllTopics}}<label class="check"><input type="checkbox" name="topic" value="{{.ID}}" {{if hasTopic $d.Topics .ID}}checked{{end}}> {{if .ParentID}}&nbsp;&nbsp;{{end}}{{.Title}}</label>{{end}}</div>
+    <button class="secondary">Save topics</button>
+    <p class="muted">Up to three. Once you choose, they're kept as you set them.</p>
+  </form>
+  {{else}}<p class="muted">This group's FAQ has no topics yet.</p>{{end}}
+</details>
+{{end}}
+
+{{if $d.Nudges}}
+<details class="tools"><summary>How this thread is arranged</summary>
+  <ul class="plain">{{range $d.Nudges}}<li>{{.What}}{{if .Reversed}} <span class="muted">(reversed)</span>{{else}}
+    <form method="post" action="/nudge/{{.ID}}/reverse" class="inline"><button class="link">Reverse</button></form>{{end}}</li>{{end}}</ul>
+</details>
+{{end}}
 
 {{if or $d.CanLink $d.CanMove}}
 <details class="tools"><summary>Link or move this post</summary>
@@ -83,7 +143,21 @@
 {{end}}
 
 {{define "threads"}}{{$v := .P}}{{$d := .D}}
-{{range $v.Threads}}
+{{range $v.Threads}}{{template "thread" (dict "T" . "P" $v "D" $d)}}{{end}}
+{{end}}
+
+{{define "blocks"}}{{$v := .P}}{{$d := .D}}
+{{range .B}}
+  {{if .Thread}}{{template "thread" (dict "T" .Thread "P" $v "D" $d)}}
+  {{else}}{{$tb := .Tangent}}
+  <details class="tangent"><summary>{{plural $tb.Count "reply" "replies"}} about {{$tb.About}}</summary>
+    {{range $tb.Threads}}{{template "thread" (dict "T" . "P" $v "D" $d)}}{{end}}
+  </details>
+  {{end}}
+{{end}}
+{{end}}
+
+{{define "thread"}}{{$v := .P}}{{$d := .D}}{{with .T}}
   <div class="thread">
     {{if .Readable}}{{template "comment" (dict "C" .Comment "D" $d)}}{{else}}<div class="comment gone">[comment deleted]</div>{{end}}
     {{if .Replies}}<div class="replies">{{range .Replies}}{{template "comment" (dict "C" . "D" $d)}}{{end}}</div>{{end}}
@@ -98,7 +172,16 @@
     {{end}}
   </div>
   {{range .Notes}}{{template "note" .}}{{end}}
-{{end}}
+{{end}}{{end}}
+
+{{define "page"}}{{$s := .S}}{{$d := .D}}
+<aside class="note page" data-generated="auto">
+  <p class="note-head"><strong>{{$s.Site}}</strong>{{if $s.Title}} · <a href="{{$s.URL}}" rel="nofollow noopener">{{$s.Title}}</a>{{end}}{{if $s.PublishedAt}} <span class="muted">({{month $s.PublishedAt}})</span>{{end}}</p>
+  {{if eq $s.Status "gone"}}<p class="muted">This page is no longer available.</p>{{end}}
+  <p>{{$s.Summary}}</p>
+  <p class="meta">{{if eq $s.Via "described"}}described by a member · {{end}}<a href="{{$s.URL}}" rel="nofollow noopener">Open on {{$s.Site}}</a> · <a href="/sources/{{$s.ID}}/remove">Request removal</a>
+  {{if $d.CanMod}}<form method="post" action="/sources/{{$s.ID}}/detach" class="inline"><input type="hidden" name="post" value="{{$d.Post.ID}}"><button class="link">Take off this post</button></form>{{end}}</p>
+</aside>
 {{end}}
 
 {{define "comment-form"}}
@@ -122,6 +205,7 @@
 <div class="comment" id="c{{$c.ID}}">
   {{if ne $c.Status "visible"}}<p class="notice">{{if eq $c.Status "removed"}}Removed by a moderator.{{else if eq $c.Status "deleted"}}Deleted by its author.{{else if eq $c.Status "flagged"}}Flagged.{{else}}Waiting for a moderator.{{end}}</p>{{end}}
   <p class="meta">{{$c.Author}} · {{date $c.CreatedAt}}{{if $c.EditedAt}} · edited{{end}}</p>
+  {{if $c.NewerID}}<p class="superseded" data-generated="auto"><a href="#c{{$c.NewerID}}">Newer information below</a></p>{{end}}
   <div class="body">{{text $c.Body}}</div>
   {{range $c.Images}}<a href="/img/{{.Hash}}"><img class="inline-photo" src="/img/{{.Hash}}/t" alt="" loading="lazy"></a>{{end}}
   <div class="actions">
