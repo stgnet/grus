@@ -24,7 +24,9 @@ home IP takes effect quickly.
 
 Sign-in only works if the email reaches the inbox, so set these up before
 the first real user. Grus sends through an SMTP relay (your mail provider,
-`smtp_host` in grus.conf); the relay signs with DKIM.
+`smtp_host` in grus.conf); the relay signs with DKIM. To send from the VPS
+itself instead, with no mail provider, see [mail.md](mail.md): it has the
+records for that setup.
 
 **SPF** says which servers may send as `@nfb.group`. Use the include your
 provider documents, for example:

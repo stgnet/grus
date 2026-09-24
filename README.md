@@ -100,6 +100,8 @@ docs/               operations runbook, DNS records for mail
   backups, recovering from a lost VPS, and adding more nodes.
 - [docs/dns.md](docs/dns.md): DNS for the primary domain, including SPF,
   DKIM and DMARC so sign-in emails reach the inbox.
+- [docs/mail.md](docs/mail.md): sending that email from the VPS itself
+  (`deploy/install-mail.sh`), blocklists, and relaying through a service.
 
 ## License
 
