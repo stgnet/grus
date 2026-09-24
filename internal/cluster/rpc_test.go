@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -74,6 +75,22 @@ func TestRPC(t *testing.T) {
 	if _, err := client.GroupID(studioAddr, "nope"); err == nil {
 		t.Fatal("unknown group found")
 	}
+	// A follower's own Apply forwards to the leader and returns only once
+	// the follower has applied the write, so it can read it straight away.
+	if _, err := studio.Apply(&cmd.CreateGroup{GroupID: 9, Slug: "ekko", Name: "Ekko", At: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if n := groupCount(t, studioSt); n != 2 {
+		t.Fatalf("forwarded write not visible on the follower: %d groups", n)
+	}
+	// Errors keep their identity across the network.
+	if _, err := studio.Apply(&cmd.CreateGroup{GroupID: 10, Slug: "ekko", Name: "dup", At: 1}); !errors.Is(err, cmd.ErrSlugTaken) || !cmd.IsInput(err) {
+		t.Fatalf("forwarded error: %v", err)
+	}
+	if v := decodeValue([]byte("42")); v != int64(42) {
+		t.Fatalf("decodeValue: %#v", v)
+	}
+
 	// Command errors come back as errors, not as a redirect loop.
 	if _, err := client.Apply(n1Addr, &cmd.CreateGroup{GroupID: 8, Slug: "travato", Name: "dup", At: 1}); err == nil {
 		t.Fatal("duplicate slug accepted over RPC")

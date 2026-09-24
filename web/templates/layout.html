@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
+{{if .NoIndex}}<meta name="robots" content="noindex">{{end}}
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/app.js" defer></script>
 </head>
@@ -21,9 +22,20 @@
     {{end}}
   </nav>
 </header>
+{{if .Group}}
+<form method="get" action="/search" class="searchbox top-search">
+  <input type="search" name="q" placeholder="Search, or ask a question" aria-label="Search this group">
+  <button>Search</button>
+</form>
+{{end}}
 <main>
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 {{template "content" .}}
 </main>
+<footer>
+  <a href="/how-it-works">How this site works</a>
+  {{if .Group}} · <a href="/about">About this group</a>{{end}}
+  {{if .Manage}} · <a href="/settings">Group settings</a>{{end}}
+</footer>
 </body>
 </html>{{end}}

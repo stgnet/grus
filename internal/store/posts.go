@@ -25,6 +25,10 @@ type Post struct {
 	Origin         string // native | archive
 	OriginURL      string // archive posts: the original's permalink, if known
 	ThumbHash      string // first photo, for feed cards
+	Digest         string // the thread's stored factual summary ("" until written)
+	Version        int64  // edits to the post itself
+	ThreadVersion  int64  // any change in the thread
+	ContinuesID    int64  // set when this post is an Update under that post
 }
 
 // Comment is a comment as pages show it.
@@ -55,12 +59,14 @@ type Image struct {
 const postCols = `id, COALESCE(user_id, 0), is_anonymous, title, body, status, COALESCE(removed_reason, ''),
 	pinned, locked, score, comment_count, created_at, COALESCE(edited_at, 0), last_activity_at, origin, COALESCE(origin_url, ''),
 	COALESCE((SELECT blob_hash FROM images WHERE images.post_id = posts.id AND comment_id IS NULL
-	          ORDER BY sort_order LIMIT 1), '')`
+	          ORDER BY sort_order LIMIT 1), ''),
+	COALESCE(digest, ''), version, thread_version, COALESCE(continues_post_id, 0)`
 
 func scanPost(row interface{ Scan(...any) error }) (*Post, error) {
 	var p Post
 	err := row.Scan(&p.ID, &p.UserID, &p.Anonymous, &p.Title, &p.Body, &p.Status, &p.RemovedReason,
-		&p.Pinned, &p.Locked, &p.Score, &p.CommentCount, &p.CreatedAt, &p.EditedAt, &p.LastActivityAt, &p.Origin, &p.OriginURL, &p.ThumbHash)
+		&p.Pinned, &p.Locked, &p.Score, &p.CommentCount, &p.CreatedAt, &p.EditedAt, &p.LastActivityAt, &p.Origin, &p.OriginURL, &p.ThumbHash,
+		&p.Digest, &p.Version, &p.ThreadVersion, &p.ContinuesID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

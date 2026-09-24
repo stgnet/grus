@@ -97,6 +97,7 @@ func (s *Server) templateFuncs() template.FuncMap {
 		"text":    s.renderText,
 		"date":    func(unix int64) string { return shortDate(s.Now(), unix) },
 		"excerpt": excerpt,
+		"month":   func(unix int64) string { return time.Unix(unix, 0).UTC().Format("Jan 2006") },
 		// dict passes several values to a sub-template: {{template "x" (dict "A" 1 "B" 2)}}
 		"dict": func(kv ...any) map[string]any {
 			m := map[string]any{}

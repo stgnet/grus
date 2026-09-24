@@ -1,34 +1,95 @@
 {{define "content"}}
 {{$d := .Data}}{{$p := $d.Post}}
 <article class="post">
-  {{if ne $p.Status "visible"}}<p class="notice">{{if eq $p.Status "removed"}}Removed by a moderator{{if $p.RemovedReason}}: {{$p.RemovedReason}}{{end}}.{{else if eq $p.Status "deleted"}}Deleted by its author.{{else if eq $p.Status "flagged"}}Flagged as possibly breaking the group's rules.{{else}}Waiting for a moderator.{{end}}</p>{{end}}
+  {{template "status" $p}}
   <h1>{{$p.Title}}</h1>
   <p class="meta">{{$d.Author}} · {{date $p.CreatedAt}}{{if $p.EditedAt}} · edited{{end}}{{if and $p.Locked (ne $p.Origin "archive")}} · locked{{end}}</p>
   {{if eq $p.Origin "archive"}}<p class="notice">From the Facebook group archive. Names have been removed.{{if $p.OriginURL}} <a href="{{$p.OriginURL}}" rel="nofollow noopener">View the original</a>{{end}}</p>{{end}}
   {{if $p.Body}}<div class="body">{{text $p.Body}}</div>{{end}}
-  {{if $d.Images}}<div class="photos">{{range $d.Images}}<a href="/img/{{.Hash}}"><img src="/img/{{.Hash}}/t" alt="" loading="lazy" width="{{.Width}}" height="{{.Height}}"></a>{{end}}</div>{{end}}
-  <div class="actions">
-    {{if $d.CanEdit}}<a href="/p/{{$p.ID}}/edit">Edit</a>
-      <form method="post" action="/p/{{$p.ID}}/delete" class="inline confirm" data-confirm="Delete this post?"><button class="link">Delete</button></form>{{end}}
-    {{if and $d.CanMod (not $d.CanEdit)}}
-      {{if or (eq $p.Status "removed") (eq $p.Status "deleted")}}
-        <form method="post" action="/p/{{$p.ID}}/restore" class="inline"><button class="link">Restore</button></form>
-      {{else}}
-        <form method="post" action="/p/{{$p.ID}}/delete" class="inline confirm" data-confirm="Remove this post?"><input type="hidden" name="reason" value=""><button class="link">Remove</button></form>
-      {{end}}
-    {{end}}
-  </div>
+  {{template "photos" $d.Images}}
+  {{template "post-actions" (dict "P" $d.PostView "D" $d)}}
 </article>
+
+{{range $d.Updates}}
+<article class="post update" id="u{{.Post.ID}}">
+  {{template "status" .Post}}
+  <h2><span class="tag">Update</span> {{.Post.Title}}</h2>
+  <p class="meta">{{date .Post.CreatedAt}}{{if .Post.EditedAt}} · edited{{end}}</p>
+  {{if .Post.Body}}<div class="body">{{text .Post.Body}}</div>{{end}}
+  {{template "photos" .Images}}
+  {{template "post-actions" (dict "P" . "D" $d)}}
+  {{if .Threads}}{{template "threads" (dict "P" . "D" $d)}}{{end}}
+  {{if .CanComment}}{{template "comment-form" .Post.ID}}{{end}}
+</article>
+{{end}}
 
 <section class="comments">
 <h2>{{plural $p.CommentCount "comment" "comments"}}</h2>
-{{range $d.Threads}}
+{{range $d.TopNotes}}{{template "note" .}}{{end}}
+{{template "threads" (dict "P" $d.PostView "D" $d)}}
+{{if $d.MoreNotes}}
+<details class="more-notes"><summary>{{plural (len $d.MoreNotes) "more related post" "more related posts"}}</summary>
+{{range $d.MoreNotes}}{{template "note" .}}{{end}}
+</details>
+{{end}}
+{{if $d.CanComment}}{{template "comment-form" $p.ID}}{{end}}
+</section>
+
+{{if or $d.CanLink $d.CanMove}}
+<details class="tools"><summary>Link or move this post</summary>
+  {{if $d.CanLink}}
+  <form method="post" action="/p/{{$p.ID}}/link" class="stack">
+    <label>Link a related post in this group <input name="other" placeholder="Its link, or its number" required></label>
+    <button class="secondary">Link</button>
+    <p class="muted">Both posts get a short note pointing to the other.</p>
+  </form>
+  {{end}}
+  {{if $d.CanMove}}
+  <form method="post" action="/p/{{$p.ID}}/move" class="stack confirm" data-confirm="Move this post under the earlier one as an update?">
+    {{if $d.MoveChoices}}
+    <label>Make this an update to one of your earlier posts
+      <select name="under">{{range $d.MoveChoices}}<option value="{{.ID}}">{{.Title}} ({{date .CreatedAt}})</option>{{end}}</select>
+    </label>
+    {{else}}
+    <label>Make this an update to an earlier post <input name="under" placeholder="Its link, or its number" required></label>
+    {{end}}
+    <button class="secondary">Move</button>
+    <p class="muted">For "part 2" posts. It keeps its photos and comments, and can be moved back.</p>
+  </form>
+  {{end}}
+</details>
+{{end}}
+{{end}}
+
+{{define "status"}}{{if ne .Status "visible"}}<p class="notice">{{if eq .Status "removed"}}Removed by a moderator{{if .RemovedReason}}: {{.RemovedReason}}{{end}}.{{else if eq .Status "deleted"}}Deleted by its author.{{else if eq .Status "flagged"}}Flagged as possibly breaking the group's rules.{{else}}Waiting for a moderator.{{end}}</p>{{end}}{{end}}
+
+{{define "photos"}}{{if .}}<div class="photos">{{range .}}<a href="/img/{{.Hash}}"><img src="/img/{{.Hash}}/t" alt="" loading="lazy" width="{{.Width}}" height="{{.Height}}"></a>{{end}}</div>{{end}}{{end}}
+
+{{define "post-actions"}}{{$v := .P}}{{$d := .D}}{{$p := $v.Post}}
+<div class="actions">
+  {{if $v.CanEdit}}<a href="/p/{{$p.ID}}/edit">Edit</a>
+    <form method="post" action="/p/{{$p.ID}}/delete" class="inline confirm" data-confirm="Delete this post?"><button class="link">Delete</button></form>{{end}}
+  {{if and $d.CanMod (not $v.CanEdit)}}
+    {{if or (eq $p.Status "removed") (eq $p.Status "deleted")}}
+      <form method="post" action="/p/{{$p.ID}}/restore" class="inline"><button class="link">Restore</button></form>
+    {{else}}
+      <form method="post" action="/p/{{$p.ID}}/delete" class="inline confirm" data-confirm="Remove this post?"><input type="hidden" name="reason" value=""><button class="link">Remove</button></form>
+    {{end}}
+  {{end}}
+  {{if and $p.ContinuesID (or $v.CanEdit $d.CanMod)}}
+    <form method="post" action="/p/{{$p.ID}}/moveout" class="inline"><button class="link">Move back out</button></form>
+  {{end}}
+</div>
+{{end}}
+
+{{define "threads"}}{{$v := .P}}{{$d := .D}}
+{{range $v.Threads}}
   <div class="thread">
     {{if .Readable}}{{template "comment" (dict "C" .Comment "D" $d)}}{{else}}<div class="comment gone">[comment deleted]</div>{{end}}
     {{if .Replies}}<div class="replies">{{range .Replies}}{{template "comment" (dict "C" . "D" $d)}}{{end}}</div>{{end}}
-    {{if and $d.CanComment .Readable}}
+    {{if and $v.CanComment .Readable}}
     <details class="reply"><summary>Reply</summary>
-      <form method="post" action="/p/{{$p.ID}}/comment" enctype="multipart/form-data" class="stack resize">
+      <form method="post" action="/p/{{$v.Post.ID}}/comment" enctype="multipart/form-data" class="stack resize">
         <input type="hidden" name="parent" value="{{.Comment.ID}}">
         <textarea name="body" rows="3" required></textarea>
         <button>Reply</button>
@@ -36,15 +97,25 @@
     </details>
     {{end}}
   </div>
+  {{range .Notes}}{{template "note" .}}{{end}}
 {{end}}
-{{if $d.CanComment}}
-<form method="post" action="/p/{{$p.ID}}/comment" enctype="multipart/form-data" class="stack resize">
+{{end}}
+
+{{define "comment-form"}}
+<form method="post" action="/p/{{.}}/comment" enctype="multipart/form-data" class="stack resize">
   <label>Add a comment <textarea name="body" rows="4"></textarea></label>
   <label class="muted">Photo (optional) <input type="file" name="photo" accept="image/*"></label>
   <button>Comment</button>
 </form>
 {{end}}
-</section>
+
+{{define "note"}}
+<aside class="note" data-generated="auto">
+  <p class="note-head"><strong>{{.Heading}}</strong> · <a href="{{.URL}}">{{.Title}}</a> <span class="muted">({{month .Date}})</span></p>
+  {{if .Text}}<p>{{.Text}}</p>{{end}}
+  <p class="meta">{{if .Text}}updated {{date .UpdatedAt}} · {{end}}<a href="{{.URL}}">Jump to post</a>
+  {{if .CanRemove}}<form method="post" action="/p/{{.HostPostID}}/unlink" class="inline confirm" data-confirm="Remove this link? It won't be linked again automatically."><input type="hidden" name="other" value="{{.SourcePostID}}"><button class="link">Remove link</button></form>{{end}}</p>
+</aside>
 {{end}}
 
 {{define "comment"}}{{$c := .C}}{{$d := .D}}

@@ -1,10 +1,14 @@
-// The site works without JavaScript. This file only makes two things nicer:
+// The site works without JavaScript. This file only makes a few things nicer:
 //
 // 1. Photos are shrunk in the browser to at most 2048px before upload, so a
 //    12 MB phone photo costs a few hundred KB of cellular data instead. The
 //    server re-processes every photo anyway (orientation, metadata, size), so
 //    this is purely about upload size.
 // 2. Delete and Remove buttons ask "are you sure?".
+// 3. Search: quick answers (fact cards) are fetched after the page shows its
+//    plain results, and "Not what I was looking for" posts in place.
+// 4. While writing a post, earlier posts that may answer it appear under
+//    the title, each with a "Link to this" box.
 (function () {
   "use strict";
   var MAX = 2048;
@@ -29,10 +33,76 @@
     }).catch(function () { return file; });
   }
 
+  function post(url, fields) {
+    var body = new URLSearchParams();
+    Object.keys(fields).forEach(function (k) { body.append(k, fields[k]); });
+    return fetch(url, { method: "POST", body: body, credentials: "same-origin" }).then(function (r) {
+      if (!r.ok) { throw new Error(r.status); }
+      return r.text();
+    });
+  }
+
+  // Quick answers. The server answers within its own time limit with
+  // either the cards or one plain line; the page never shows a spinner
+  // longer than that, and never an error.
+  var cards = document.getElementById("cards");
+  if (cards && window.fetch) {
+    var soft = "Quick answers aren't available right now. These posts match your search.";
+    var done = false;
+    var fallback = setTimeout(function () {
+      if (!done) { done = true; cards.innerHTML = '<p class="soft">' + soft + "</p>"; cards.hidden = false; }
+    }, 10000);
+    cards.innerHTML = '<p class="muted">Looking for quick answers…</p>';
+    cards.hidden = false;
+    post("/ask", { q: cards.getAttribute("data-q"), prev: cards.getAttribute("data-prev") || "" }).then(function (html) {
+      if (done) { return; }
+      done = true;
+      clearTimeout(fallback);
+      cards.innerHTML = html; // server-rendered and escaped
+      cards.hidden = html.trim() === "";
+    }).catch(function () {
+      if (done) { return; }
+      done = true;
+      clearTimeout(fallback);
+      cards.innerHTML = '<p class="soft">' + soft + "</p>";
+    });
+  }
+
+  // "These earlier posts may answer this", under the title while writing.
+  var similar = document.getElementById("similar");
+  var source = similar && document.getElementById(similar.getAttribute("data-source"));
+  if (similar && source && window.fetch) {
+    var timer = null, last = "";
+    var refresh = function () {
+      var q = source.value.trim();
+      if (q === last) { return; }
+      last = q;
+      if (q.length < 8) { similar.innerHTML = ""; return; }
+      // Keep what's already ticked across refreshes.
+      var ticked = {};
+      similar.querySelectorAll("input[name=link]:checked").forEach(function (i) { ticked[i.value] = true; });
+      fetch("/similar?q=" + encodeURIComponent(q), { credentials: "same-origin" }).then(function (r) { return r.text(); }).then(function (html) {
+        if (source.value.trim() !== q) { return; }
+        similar.innerHTML = html;
+        similar.querySelectorAll("input[name=link]").forEach(function (i) { if (ticked[i.value]) { i.checked = true; } });
+      }).catch(function () {});
+    };
+    source.addEventListener("input", function () { clearTimeout(timer); timer = setTimeout(refresh, 400); });
+    refresh();
+  }
+
   document.addEventListener("submit", function (e) {
     var form = e.target;
     if (form.classList.contains("confirm") && !window.confirm(form.getAttribute("data-confirm") || "Are you sure?")) {
       e.preventDefault();
+      return;
+    }
+    if (form.classList.contains("fetch-swap") && window.fetch) {
+      // Small forms whose answer replaces them in place.
+      e.preventDefault();
+      var fields = {};
+      new FormData(form).forEach(function (v, k) { fields[k] = v; });
+      post(form.action, fields).then(function (html) { form.outerHTML = html; }).catch(function () { form.submit(); });
       return;
     }
     if (!form.classList.contains("resize") || !window.fetch || !window.FormData) {

@@ -1,7 +1,16 @@
 {{define "content"}}
 <h1>New post</h1>
 <form method="post" action="/submit" enctype="multipart/form-data" class="stack resize">
-  <label>Title <input name="title" value="{{.Data.Title}}" maxlength="300" required autofocus></label>
+  <label>Title <input name="title" id="title" value="{{.Data.Title}}" maxlength="300" required autofocus></label>
+  {{if .Data.Related}}
+  <fieldset class="similar">
+    <legend>Link your post to the closest earlier threads</legend>
+    {{range .Data.Related}}
+    <label class="check"><input type="checkbox" name="link" value="{{.ID}}" checked> {{.Title}} <span class="meta">({{date .Date}})</span></label>
+    {{end}}
+  </fieldset>
+  {{end}}
+  <div id="similar" data-source="title"></div>
   <label>Text (optional) <textarea name="body" rows="8">{{.Data.Body}}</textarea></label>
   <label>Photos (up to 10) <input type="file" name="photos" accept="image/*" multiple></label>
   <button>Post</button>

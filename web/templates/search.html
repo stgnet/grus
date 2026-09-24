@@ -1,0 +1,25 @@
+{{define "content"}}{{$d := .Data}}
+<form method="get" action="/search" class="searchbox">
+  <input type="search" name="q" value="{{$d.Q}}" placeholder="Search, or ask a question" aria-label="Search" required>
+  <button>Search</button>
+</form>
+{{if $d.Q}}
+  {{if $d.Ask}}<div id="cards" class="answers" data-q="{{$d.Q}}" data-prev="{{$d.Prev}}" hidden></div>{{end}}
+  {{if $d.Hits}}
+  <ul class="results">
+  {{range $d.Hits}}
+    <li><a href="/p/{{.ID}}"><strong>{{.Title}}</strong></a> <span class="meta">{{date .Date}} · {{plural .Comments "comment" "comments"}}</span>
+      {{if .About}}<p class="about">{{.About}}</p>{{end}}</li>
+  {{end}}
+  </ul>
+  <form method="get" action="/search" class="searchbox refine">
+    <input type="hidden" name="prev" value="{{$d.Q}}">
+    <input type="search" name="q" placeholder="Not it? Add detail, like the year or when it happens" aria-label="Refine the search">
+    <button class="secondary">Refine</button>
+  </form>
+  {{else}}
+  <p>No earlier posts match.</p>
+  {{end}}
+  <p><a class="button secondary" href="/submit?title={{$d.Q}}&amp;related={{$d.Related}}">Post this question</a></p>
+{{end}}
+{{end}}

@@ -151,6 +151,14 @@ func (c *CreatePost) Apply(a *Applier) (any, error) {
 		if err := insertImages(tx, c.PostID, nil, c.UserID, c.Images, c.At); err != nil {
 			return err
 		}
+		// Check it now (links to older posts; moderation from M5), and
+		// write its digest once the first replies settle.
+		if err := schedule(tx, JobCheck, c.PostID, 1, c.At, c.At); err != nil {
+			return err
+		}
+		if err := schedule(tx, JobDigest, c.PostID, 1, c.At+QuietPeriod, c.At); err != nil {
+			return err
+		}
 		if status != "visible" {
 			return nil // not searchable until it's shown
 		}
@@ -186,6 +194,9 @@ func (c *EditPost) Apply(a *Applier) (any, error) {
 		}
 		if _, err := tx.Exec(`UPDATE posts SET title = ?, body = ?, edited_at = ? WHERE id = ?`,
 			c.Title, c.Body, c.At, c.PostID); err != nil {
+			return err
+		}
+		if err := postEdited(tx, c.GroupID, c.PostID, c.At); err != nil {
 			return err
 		}
 		if status == "visible" || status == "flagged" {
@@ -269,6 +280,9 @@ func (c *CreateComment) Apply(a *Applier) (any, error) {
 			c.At, c.PostID); err != nil {
 			return err
 		}
+		if err := threadChanged(tx, c.GroupID, c.PostID, c.At); err != nil {
+			return err
+		}
 		return ftsPut(tx, "comment", c.CommentID, c.PostID, "", c.Body)
 	})
 }
@@ -299,7 +313,10 @@ func (c *EditComment) Apply(a *Applier) (any, error) {
 		if err := saveRevision(tx, "comment", c.CommentID, nil, body, c.EditorID, c.At); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`UPDATE comments SET body = ?, edited_at = ? WHERE id = ?`, c.Body, c.At, c.CommentID); err != nil {
+		if _, err := tx.Exec(`UPDATE comments SET body = ?, edited_at = ?, version = version + 1 WHERE id = ?`, c.Body, c.At, c.CommentID); err != nil {
+			return err
+		}
+		if err := threadChanged(tx, c.GroupID, postID, c.At); err != nil {
 			return err
 		}
 		if status == "visible" || status == "flagged" {
@@ -345,6 +362,9 @@ func (c *SoftDelete) Apply(a *Applier) (any, error) {
 			return err
 		}
 		if err := ftsDel(tx, c.ID); err != nil {
+			return err
+		}
+		if err := threadChanged(tx, c.GroupID, threadOf(tx, c.Kind, c.ID), c.At); err != nil {
 			return err
 		}
 		if c.Kind == "comment" && (was == "visible" || was == "flagged") {
@@ -395,6 +415,9 @@ func (c *Restore) Apply(a *Applier) (any, error) {
 		if err := ftsPut(tx, c.Kind, c.ID, postID, title.String, body); err != nil {
 			return err
 		}
+		if err := threadChanged(tx, c.GroupID, postID, c.At); err != nil {
+			return err
+		}
 		if c.Kind == "comment" && was != "flagged" {
 			if _, err := tx.Exec(`UPDATE posts SET comment_count = comment_count + 1 WHERE id = ?`, postID); err != nil {
 				return err
@@ -402,6 +425,16 @@ func (c *Restore) Apply(a *Applier) (any, error) {
 		}
 		return modLog(tx, c.By, "restore", c.Kind, c.ID, "", c.At)
 	})
+}
+
+// threadOf is the post a post or comment belongs to.
+func threadOf(tx *sql.Tx, kind string, id int64) int64 {
+	if kind == "post" {
+		return id
+	}
+	var postID int64
+	tx.QueryRow(`SELECT post_id FROM comments WHERE id = ?`, id).Scan(&postID)
+	return postID
 }
 
 func itemTable(kind string) (string, error) {

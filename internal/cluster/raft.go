@@ -40,6 +40,7 @@ type Node struct {
 	peers  []config.Peer
 	done   chan struct{}
 	rpc    *subListener
+	client *Client // forwards writes to the leader
 }
 
 // RPCListener is where the internal HTTP API's connections arrive (see
@@ -123,7 +124,7 @@ func Start(o Options, st *store.Store) (*Node, error) {
 		return nil, err
 	}
 	n := &Node{raft: r, trans: trans, boltDB: bolt, peers: o.Peers, done: make(chan struct{}),
-		rpc: &subListener{m: mux, ch: mux.rpc, addr: hostAddr(o.Advertise)}}
+		rpc: &subListener{m: mux, ch: mux.rpc, addr: hostAddr(o.Advertise)}, client: NewClient(o.TLS)}
 
 	if o.Bootstrap {
 		// Only the very first start creates the cluster; after that the
@@ -179,27 +180,64 @@ func (n *Node) keepPeers() {
 	}
 }
 
-// ErrNotLeader means this node can't accept writes right now. In M0 only
-// the VPS serves web traffic and it's the only voter, so it's always the
-// leader once it has started; forwarding writes from other nodes comes with
-// multiple VPS nodes (M7).
+// ErrNotLeader means there's no leader to take a write right now (an
+// election is under way, or this node can't reach the others).
 var ErrNotLeader = errors.New("this node is not the cluster leader")
 
 // Apply submits a command and waits until it's committed and applied here.
+//
+// Only the leader can append to the log. On any other node (the Studio's
+// worker, or a second VPS) Apply forwards the command to the leader over
+// the cluster port, then waits until this node has applied it too. That
+// wait is what makes a forwarded write read-your-own-write: the page or job
+// that submitted it reads its own local copy next, and must see the change.
 func (n *Node) Apply(c cmd.Command) (any, error) {
-	data, err := cmd.Encode(c)
+	v, _, err := n.applyHere(c)
+	if !errors.Is(err, ErrNotLeader) {
+		return v, err
+	}
+	leader := n.LeaderAddr()
+	if leader == "" {
+		// Usually a brief gap during an election.
+		if n.WaitLeader(5*time.Second) != nil {
+			return nil, ErrNotLeader
+		}
+		leader = n.LeaderAddr()
+	}
+	raw, index, err := n.client.apply(leader, c)
+	if index > 0 {
+		n.waitApplied(index, 10*time.Second)
+	}
 	if err != nil {
 		return nil, err
 	}
+	return decodeValue(raw), nil
+}
+
+// applyHere appends a command to the log, which works only on the leader.
+// It returns the command's log index along with its result.
+func (n *Node) applyHere(c cmd.Command) (any, uint64, error) {
+	data, err := cmd.Encode(c)
+	if err != nil {
+		return nil, 0, err
+	}
 	f := n.raft.Apply(data, 10*time.Second)
 	if err := f.Error(); err != nil {
-		if errors.Is(err, raft.ErrNotLeader) {
-			return nil, ErrNotLeader
+		if errors.Is(err, raft.ErrNotLeader) || errors.Is(err, raft.ErrLeadershipLost) {
+			return nil, 0, ErrNotLeader
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	res := f.Response().(result)
-	return res.value, res.err
+	return res.value, f.Index(), res.err
+}
+
+// waitApplied waits until this node has applied the log up to index.
+func (n *Node) waitApplied(index uint64, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for n.raft.AppliedIndex() < index && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // IsLeader reports whether this node is the leader right now.

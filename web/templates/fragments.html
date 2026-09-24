@@ -1,0 +1,33 @@
+{{define "cards"}}
+{{if .Cards}}
+<ul class="factcards" data-generated="auto">
+{{range .Cards}}
+  <li><a href="/p/{{.ID}}"><strong>{{.Title}}</strong></a> <span class="meta">({{month .Date}})</span>
+    <p>{{.Statement}}</p><a class="more" href="/p/{{.ID}}">Open thread</a></li>
+{{end}}
+</ul>
+<form method="post" action="/ask/feedback" class="feedback fetch-swap">
+  <input type="hidden" name="q" value="{{.Q}}"><input type="hidden" name="cited" value="{{.CitedIDs}}">
+  <button class="link">Not what I was looking for</button> <span class="muted">(saves this search and these results, so the answers can be improved)</span>
+</form>
+{{else if .Soft}}
+<p class="soft">{{.Soft}}</p>
+{{end}}
+{{end}}
+
+{{define "feedback-saved"}}<p class="muted">Thanks. This search was saved so the answers can be improved.</p>{{end}}
+
+{{define "similar"}}
+{{if .Hits}}
+<fieldset class="similar">
+  <legend>These earlier posts may answer this</legend>
+  {{range .Hits}}
+  <div class="similar-item">
+    <a href="/p/{{.ID}}" target="_blank" rel="noopener"><strong>{{.Title}}</strong></a> <span class="meta">{{date .Date}} · {{plural .Comments "comment" "comments"}}</span>
+    {{if .About}}<p class="about">{{.About}}</p>{{end}}
+    <label class="check"><input type="checkbox" name="link" value="{{.ID}}"> Link to this</label>
+  </div>
+  {{end}}
+</fieldset>
+{{end}}
+{{end}}

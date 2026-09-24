@@ -49,3 +49,11 @@ mail_from = login@nfb.group
 
 # Accounts with these emails become site operators when they sign in.
 operator = scott@stg.net
+
+# AI (plan section 9). The VPS runs no model: searches and background jobs
+# go to the nodes listed here (their cluster addresses). Without a worker,
+# search shows plain results and nothing is summarized or linked; the site
+# works the same otherwise.
+worker = studio.example.net:7946
+# Quick answers per member per day (0 = the default, 20).
+# ask_daily_limit = 20

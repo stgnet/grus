@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stgnet/grus/internal/ai"
 	"github.com/stgnet/grus/internal/auth"
 	"github.com/stgnet/grus/internal/blob"
 	"github.com/stgnet/grus/internal/cluster"
@@ -45,9 +46,17 @@ type Server struct {
 	Limiter    *auth.SendLimiter
 	Now        func() time.Time // replaced in tests
 
-	pages    map[string]*template.Template
-	homeMux  *http.ServeMux // the bare primary domain: sign-in, home, admin
-	groupMux *http.ServeMux // any group's host
+	// AI: where searches run (nil when no node has a model), usage
+	// counting, and the per-person daily question limit.
+	AI       *ai.Pool
+	Meter    *ai.Meter
+	AskLimit int
+
+	pages     map[string]*template.Template
+	fragments *template.Template // pieces of pages the scripts fetch
+	asks      askCounter
+	homeMux   *http.ServeMux // the bare primary domain: sign-in, home, admin
+	groupMux  *http.ServeMux // any group's host
 }
 
 // New sets up the templates and routes.
@@ -86,6 +95,7 @@ func New(s *Server) (*Server, error) {
 	h.HandleFunc("POST /admin/groups", s.adminCreateGroup)
 	h.HandleFunc("POST /admin/domains", s.adminDomain)
 	h.HandleFunc("POST /admin/aliases", s.adminAlias)
+	h.HandleFunc("GET /how-it-works", s.howItWorks)
 	h.Handle("GET /static/", staticHandler)
 	h.HandleFunc("/", s.notFound)
 	s.homeMux = h
@@ -108,6 +118,17 @@ func New(s *Server) (*Server, error) {
 	g.HandleFunc("POST /c/{id}/edit", s.editComment)
 	g.HandleFunc("POST /c/{id}/delete", s.deleteComment)
 	g.HandleFunc("POST /c/{id}/restore", s.restoreComment)
+	g.HandleFunc("POST /p/{id}/link", s.linkPost)
+	g.HandleFunc("POST /p/{id}/unlink", s.unlinkPost)
+	g.HandleFunc("POST /p/{id}/move", s.movePost)
+	g.HandleFunc("POST /p/{id}/moveout", s.moveOutPost)
+	g.HandleFunc("GET /search", s.searchPage)
+	g.HandleFunc("POST /ask", s.ask)
+	g.HandleFunc("POST /ask/feedback", s.askFeedback)
+	g.HandleFunc("GET /similar", s.similar)
+	g.HandleFunc("GET /settings", s.settingsForm)
+	g.HandleFunc("POST /settings", s.settingsSave)
+	g.HandleFunc("GET /how-it-works", s.howItWorks)
 	g.HandleFunc("GET /img/{hash}", s.serveImage)
 	g.HandleFunc("GET /img/{hash}/t", s.serveImage)
 	g.HandleFunc("GET /login", s.groupLogin)
@@ -161,7 +182,7 @@ func (s *Server) loadPages() error {
 	}
 	for _, n := range names {
 		name := strings.TrimSuffix(strings.TrimPrefix(n, "templates/"), ".html")
-		if name == "layout" {
+		if name == "layout" || name == "fragments" {
 			continue
 		}
 		t, err := template.New(name).Funcs(s.templateFuncs()).ParseFS(webfiles.Files, "templates/layout.html", n)
@@ -170,7 +191,9 @@ func (s *Server) loadPages() error {
 		}
 		s.pages[name] = t
 	}
-	return nil
+	var err2 error
+	s.fragments, err2 = template.New("fragments").Funcs(s.templateFuncs()).ParseFS(webfiles.Files, "templates/fragments.html")
+	return err2
 }
 
 // page is what every template gets.
@@ -180,6 +203,8 @@ type page struct {
 	HomeURL  string // the primary's home page
 	LoginURL string // sign-in, coming back to this page
 	Group    *store.Group
+	Manage   bool // show the group's Settings link
+	NoIndex  bool // ask search engines not to list this page
 	Error    string
 	Data     any // the page's own data
 }

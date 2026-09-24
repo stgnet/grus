@@ -32,6 +32,20 @@
   <button>Add alias</button>
 </form>
 
+<h2>AI</h2>
+<p>Quick answers in search are {{if .Data.SearchUp}}<strong>available</strong>{{else}}<strong>not available</strong> (no worker is answering){{end}}.
+Job queue: {{.Data.QueueDue}} ready to run, {{.Data.QueueLater}} waiting for threads to settle.</p>
+{{if .Data.AI}}
+<table>
+  <tr><th>Day</th><th>Searches</th><th>Fell back: no worker</th><th>too slow</th><th>daily limit</th><th>error</th><th>Jobs (failed)</th><th>Model time</th><th>Tokens in / out</th></tr>
+  {{range .Data.AI}}<tr><td>{{.Day}}</td><td>{{.Searches}}</td><td>{{.NoWorker}}</td><td>{{.Timeout}}</td><td>{{.Limit}}</td><td>{{.Errors}}</td>
+    <td>{{.Jobs}} ({{.JobFailures}})</td><td>{{printf "%.0f" .ModelSeconds}}s</td><td>{{.InputTokens}} / {{.OutputTokens}}</td></tr>{{end}}
+</table>
+<p class="muted">Searches that fell back showed plain results with the line "Quick answers aren't available right now". Many "no worker" or "too slow" means it's time for another worker.</p>
+{{else}}
+<p class="muted">No AI activity recorded in the last two weeks.</p>
+{{end}}
+
 {{if .Data.Cluster}}
 <h2>Cluster</h2>
 <table>{{range $k, $v := .Data.Cluster}}<tr><th>{{$k}}</th><td><code>{{$v}}</code></td></tr>{{end}}</table>

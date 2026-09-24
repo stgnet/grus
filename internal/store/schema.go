@@ -117,6 +117,22 @@ CREATE TABLE certs (
   updated_at INTEGER NOT NULL
 );
 `,
+	// 2: M2 AI usage, counted per day per node, for the admin page and the
+	// cost limits. No question text, no user ids: just how much work, and
+	// how often search had to fall back to plain results (by cause).
+	`
+CREATE TABLE ai_usage (
+  day           TEXT NOT NULL,  -- YYYY-MM-DD, UTC
+  node          TEXT NOT NULL,
+  purpose       TEXT NOT NULL,  -- ask | check | digest | note | faq | ...
+  calls         INTEGER NOT NULL DEFAULT 0,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  seconds       REAL    NOT NULL DEFAULT 0,
+  failures      INTEGER NOT NULL DEFAULT 0, -- for ask: soft fails
+  PRIMARY KEY (day, node, purpose)
+);
+`,
 }
 
 var groupMigrations = []string{
@@ -272,5 +288,97 @@ CREATE UNIQUE INDEX posts_origin    ON posts(origin_ref) WHERE origin_ref IS NOT
 CREATE UNIQUE INDEX comments_origin ON comments(origin_ref) WHERE origin_ref IS NOT NULL;
 -- An archive thread's original permalink, shown as "view the original".
 ALTER TABLE posts ADD COLUMN origin_url TEXT;
+`,
+	// 3: M2 search, link notes, digests, and the AI job queue.
+	`
+-- version counts edits to the post itself; thread_version counts any change
+-- in the thread (the post, its comments). AI results carry the version they
+-- were computed from, and a result for an older version is thrown away, so
+-- a slow worker can never overwrite newer content.
+ALTER TABLE posts    ADD COLUMN version        INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE posts    ADD COLUMN thread_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE comments ADD COLUMN version        INTEGER NOT NULL DEFAULT 1;
+CREATE INDEX posts_continues ON posts(continues_post_id) WHERE continues_post_id IS NOT NULL;
+
+-- That two posts are about the same thing. The text shown on each side is a
+-- note (below). Ids grow with time, so the smaller id is the older post and
+-- a pair can't be stored twice. A rejected pair stays, so it's never linked
+-- again automatically.
+CREATE TABLE post_links (
+  older_post_id INTEGER NOT NULL,
+  newer_post_id INTEGER NOT NULL,
+  source        TEXT NOT NULL CHECK (source IN ('auto', 'author', 'mod')),
+  created_by    INTEGER,
+  state         TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'rejected')),
+  created_at    INTEGER NOT NULL,
+  PRIMARY KEY (older_post_id, newer_post_id),
+  CHECK (older_post_id < newer_post_id)
+);
+CREATE INDEX post_links_newer ON post_links(newer_post_id);
+
+-- Every system-written text in a thread. after_comment_id 0 = the top of
+-- the thread. text is '' until a worker first writes it.
+CREATE TABLE notes (
+  id               INTEGER PRIMARY KEY,
+  host_post_id     INTEGER NOT NULL,
+  after_comment_id INTEGER NOT NULL DEFAULT 0,
+  kind             TEXT NOT NULL CHECK (kind IN ('link', 'summary', 'combined')),
+  text             TEXT NOT NULL DEFAULT '',
+  stale            INTEGER NOT NULL DEFAULT 1,
+  state            TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'removed')),
+  removed_by       INTEGER,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL
+);
+CREATE INDEX notes_host ON notes(host_post_id, state);
+
+-- What a note is written from. group_id lets a note cite a sister group
+-- (M4); 0 in comment_id / source_id means "not a comment" / "not an
+-- outside source" (0 rather than NULL, so the primary key works).
+CREATE TABLE note_sources (
+  note_id    INTEGER NOT NULL,
+  group_id   INTEGER NOT NULL,
+  post_id    INTEGER NOT NULL,
+  comment_id INTEGER NOT NULL DEFAULT 0,
+  source_id  INTEGER NOT NULL DEFAULT 0,
+  covers     INTEGER NOT NULL DEFAULT 0, -- 1 = a summary folds this comment under itself
+  PRIMARY KEY (note_id, group_id, post_id, comment_id, source_id)
+);
+CREATE INDEX note_sources_post ON note_sources(group_id, post_id);
+
+-- The AI work queue. A job is created by the same command as the change
+-- that needs it, so it can't be lost. There's one row per (kind, ref_id):
+-- more changes before it runs just push run_after back (debouncing), and a
+-- finished job is re-opened, not duplicated. Workers claim jobs through the
+-- leader with a lease, so each runs once, and a crashed worker's job is
+-- picked up again when its lease runs out.
+CREATE TABLE jobs (
+  id            INTEGER PRIMARY KEY,
+  kind          TEXT NOT NULL,     -- check | digest | note
+  ref_id        INTEGER NOT NULL,  -- the post, or the note
+  ref_version   INTEGER NOT NULL,
+  run_after     INTEGER NOT NULL,
+  pending_since INTEGER NOT NULL,  -- when it last went from done to waiting
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  claimed_by    TEXT,
+  lease_until   INTEGER,
+  done_at       INTEGER,
+  last_run_at   INTEGER,
+  last_error    TEXT,
+  created_at    INTEGER NOT NULL,
+  UNIQUE (kind, ref_id)
+);
+CREATE INDEX jobs_due ON jobs(done_at, run_after);
+
+-- Only written when someone taps "not what I was looking for" under search
+-- results; the link says so. Everything else about a search is counted,
+-- never stored.
+CREATE TABLE ai_feedback (
+  id         INTEGER PRIMARY KEY,
+  user_id    INTEGER NOT NULL,
+  question   TEXT NOT NULL,
+  cited_ids  TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `,
 }

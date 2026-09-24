@@ -48,7 +48,9 @@ func (c *greq) member() bool                 { return auth.IsMember(c.v) }
 
 // page starts a page for this group.
 func (c *greq) page(title string, data any) *page {
-	return &page{Title: title, User: c.u, Group: c.g, Data: data}
+	return &page{Title: title, User: c.u, Group: c.g, Data: data, Manage: auth.CanManage(c.v),
+		// Groups aren't listed by search engines unless their owners say so.
+		NoIndex: !c.st.AllowIndexing || c.st.Visibility != "public"}
 }
 
 // writer checks that the request can write in this group: signed in, with a

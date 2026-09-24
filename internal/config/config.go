@@ -63,6 +63,17 @@ type Config struct {
 	// Operators: emails whose accounts get the site operator flag when they
 	// sign in.
 	Operators []string
+
+	// AI (plan section 9). A node with ai_url runs a model: it works the
+	// background job queue and answers searches (the Studio). Web nodes list
+	// those nodes as `worker` lines (their cluster addresses) to send
+	// searches to them; a node that has a model and serves pages uses its
+	// own too.
+	AIURL     string   // Ollama, e.g. http://127.0.0.1:11434
+	AIModel   string   // the model name in Ollama (pick one with `grus bench-llm`)
+	AIContext int      // context window in tokens (default 16384)
+	Workers   []string // cluster addresses of nodes with a model
+	AskLimit  int      // search questions per person per day (default 20)
 }
 
 // Load reads and checks a config file.
@@ -144,6 +155,16 @@ func (c *Config) set(key, val string) error {
 		c.MailFrom = val
 	case "operator":
 		c.Operators = append(c.Operators, strings.ToLower(val))
+	case "ai_url":
+		c.AIURL = val
+	case "ai_model":
+		c.AIModel = val
+	case "ai_context":
+		c.AIContext, err = strconv.Atoi(val)
+	case "worker":
+		c.Workers = append(c.Workers, val)
+	case "ask_daily_limit":
+		c.AskLimit, err = strconv.Atoi(val)
 	default:
 		// Fail loudly: a misspelled key silently ignored is a bad afternoon.
 		return fmt.Errorf("unknown key %q", key)
@@ -174,6 +195,9 @@ func (c *Config) check() error {
 	}
 	if c.TLSCA == "" || c.TLSCert == "" || c.TLSKey == "" {
 		return fmt.Errorf("tls_ca, tls_cert and tls_key are required (see `grus ca`)")
+	}
+	if c.AIURL != "" && c.AIModel == "" {
+		return fmt.Errorf("ai_url is set but ai_model isn't")
 	}
 	if c.MailFrom == "" {
 		c.MailFrom = "login@" + c.PrimaryDomain

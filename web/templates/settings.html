@@ -1,0 +1,12 @@
+{{define "content"}}{{$s := .Data.Settings}}
+<h1>Group settings</h1>
+<form method="post" action="/settings" class="stack">
+  <label>Name <input name="name" value="{{$s.Name}}" maxlength="100" required></label>
+  <label>Description <textarea name="description" rows="3" maxlength="2000">{{$s.Description}}</textarea></label>
+  <label>Rules, one per line <textarea name="rules" rows="6" maxlength="5000">{{$s.Rules}}</textarea></label>
+  <label class="check"><input type="checkbox" name="ai_enabled" {{if $s.AIEnabled}}checked{{end}}> Use AI in this group</label>
+  <p class="muted">Links between related posts, thread summaries, quick answers in search, and the FAQ. It all runs on this site's own computers; no post is sent to an outside AI service. <a href="/how-it-works">How this site works</a></p>
+  <label class="check"><input type="checkbox" name="allow_indexing" {{if $s.AllowIndexing}}checked{{end}}> Let search engines list this group's posts</label>
+  <button>Save</button>
+</form>
+{{end}}

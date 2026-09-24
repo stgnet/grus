@@ -78,3 +78,9 @@ func CanRead(v Viewer, visibility string, item *Item) bool {
 		return false
 	}
 }
+
+// CanManage: may change the group's settings (its owners, and the site
+// operator).
+func CanManage(v Viewer) bool {
+	return v.Operator || (v.member() && v.Role == "owner")
+}

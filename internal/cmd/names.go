@@ -45,6 +45,23 @@ func Invalid(format string, args ...any) error {
 	return &InputError{msg: fmt.Sprintf(format, args...)}
 }
 
+// sentinels are the errors callers test for with errors.Is.
+var sentinels = []error{ErrSlugTaken, ErrHandleTaken, ErrLoginDead, ErrNotFound, ErrGone, ErrLocked, ErrNotMember}
+
+// Remote rebuilds a command's error after it crossed the network (a write
+// forwarded to the leader), so errors.Is and IsInput still work on it.
+func Remote(msg string, input bool) error {
+	if !input {
+		return errors.New(msg)
+	}
+	for _, s := range sentinels {
+		if prefix, ok := strings.CutSuffix(msg, s.Error()); ok {
+			return fmt.Errorf("%s%w", prefix, s)
+		}
+	}
+	return &InputError{msg: msg}
+}
+
 // IsInput reports whether err is the person's to fix: an InputError or one of
 // the sentinel errors above.
 func IsInput(err error) bool {

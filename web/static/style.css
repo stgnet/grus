@@ -59,3 +59,34 @@ code { font-size: .85rem; word-break: break-all; }
 .notice { background: color-mix(in srgb, var(--accent) 10%, transparent); padding: .4rem .6rem; border-radius: .35rem; font-size: .9rem; }
 button.secondary { background: none; color: var(--accent); border: 1px solid var(--accent); }
 button:disabled { opacity: .6; }
+
+/* Search, quick answers, and notes. System-written text (fact cards,
+   notes) is set apart from members' words: a tinted card with no author
+   or avatar, so it never reads like a member talking. */
+.searchbox { display: flex; gap: .4rem; margin: .8rem 0; }
+.searchbox input { flex: 1; min-width: 0; }
+.top-search { max-width: 42rem; margin: .6rem auto 0; padding: 0 1rem; }
+.results { list-style: none; padding: 0; }
+.results li { border-bottom: 1px solid var(--line); padding: .6rem 0; }
+.about { margin: .2rem 0 0; color: var(--muted); font-size: .95rem; }
+.factcards { list-style: none; padding: 0; margin: .5rem 0 1rem; }
+.factcards li, .note { background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: .35rem;
+  padding: .6rem .8rem; margin: .5rem 0; }
+.factcards p, .note p { margin: .2rem 0; }
+.factcards .more { font-size: .9rem; }
+.soft { color: var(--muted); font-size: .95rem; }
+.feedback { font-size: .85rem; margin-bottom: 1rem; }
+.note-head { font-size: .95rem; }
+.more-notes summary, .tools summary { cursor: pointer; color: var(--accent); font-size: .9rem; margin: .6rem 0; }
+.similar { border: 1px solid var(--line); border-radius: .35rem; padding: .4rem .8rem; }
+.similar legend { font-size: .9rem; color: var(--muted); }
+.similar-item { padding: .3rem 0; border-bottom: 1px solid var(--line); }
+.similar-item:last-child { border-bottom: 0; }
+label.check { flex-direction: row; align-items: center; gap: .4rem; font-size: .95rem; }
+.update { border-top: 2px solid var(--line); margin-top: 1.5rem; padding-top: .5rem; }
+.update h2 { font-size: 1.3rem; }
+select { font: inherit; padding: .4rem; border: 1px solid var(--line); border-radius: .35rem; background: var(--bg); color: var(--fg); }
+footer { max-width: 42rem; margin: 2rem auto; padding: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+.prose h2 { font-size: 1.2rem; margin-top: 1.5rem; }
+a.button.secondary { background: none; color: var(--accent); border: 1px solid var(--accent); }

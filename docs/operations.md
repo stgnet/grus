@@ -114,6 +114,35 @@ Sessions on the old domain don't carry over yet (people sign in again once);
 the invisible cross-domain bounce is planned with custom-domain sign-in in
 M7.
 
+## 7. The model (AI)
+
+Everything the model does is optional: with no worker reachable, search
+shows plain results with one line saying quick answers aren't available,
+and summaries and link notes wait in the job queue until a worker is back.
+
+1. On the Studio, install Ollama and pull two or three candidate models.
+2. Pick one on real content (plan section 9, "Choosing the model"):
+
+   ```sh
+   grus bench-llm -model <name> -n 20 -questions questions.json travato.json
+   ```
+
+   It loads the archive into a throwaway database, runs digests, link
+   checks and link notes through the same code the site uses, and reports
+   runs per hour. With a questions file (`[{"q": "...", "expect":
+   ["ref"]}]`, refs from the archive) it also runs searches and reports how
+   often an expected thread made the top three and how long 90% of
+   searches took. The site gives up on a search after 8 seconds, so that
+   number needs to be comfortably under it.
+3. Set `ai_url`, `ai_model` and `ai_context` in the Studio's grus.conf and
+   `worker = <studio cluster address>` in the VPS's, then restart both.
+4. `/admin` shows, per day, how many model calls each kind of work made,
+   tokens in and out, seconds, soft fails by cause, and the job queue.
+
+Group owners turn AI off for their group on the group's Settings page.
+With it off, no job runs for that group and search never asks the model
+about it. Nothing is ever sent to an outside AI service.
+
 ## Retention
 
 The leader submits a `Purge` command once a day. It removes expired sign-in

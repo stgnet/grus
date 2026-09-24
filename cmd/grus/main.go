@@ -7,6 +7,7 @@
 //	grus backup  -config ... -to <dir>          consistent copy of every database
 //	grus recover -config ...                    make this node the only voter (disaster runbook)
 //	grus import-archive -config ... -group <slug> <file>   load a knowledge base as archive threads
+//	grus bench-llm -model <name> <archive.json>            measure a model on real threads
 //
 // See docs/operations.md for how they fit together.
 package main
@@ -25,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/stgnet/grus/internal/ai"
 	"github.com/stgnet/grus/internal/blob"
 	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/cmd"
@@ -55,6 +57,8 @@ func main() {
 		err = recoverCmd(os.Args[2:])
 	case "import-archive":
 		err = importArchive(os.Args[2:])
+	case "bench-llm":
+		err = benchLLM(os.Args[2:])
 	case "version":
 		fmt.Println("grus", version)
 	default:
@@ -73,6 +77,7 @@ func usage() {
   grus backup  -config <file> -to <dir>
   grus recover -config <file>
   grus import-archive -config <file> -group <slug> [-n] <archive.json>
+  grus bench-llm -model <name> [-url ...] [-n 20] [-questions q.json] <archive.json>
   grus version`)
 	os.Exit(2)
 }
@@ -147,12 +152,38 @@ func serve(args []string) error {
 		return err
 	}
 	client := cluster.NewClient(opts.TLS)
-	rpc := &http.Server{Handler: cluster.RPCHandler(node, st, blobs), ReadHeaderTimeout: 10 * time.Second}
+	rpcMux := cluster.RPCHandler(node, st, blobs)
+	go syncBlobs(ctx, node, st, blobs, client, c.Peers)
+	go gcBlobs(ctx, st, blobs)
+
+	// One id generator for everything this node creates: two generators
+	// with the same node number could hand out the same id.
+	gen := ids.New(c.NodeNum)
+
+	// AI (plan section 9). Usage is counted on every node and reported to
+	// the replicated daily totals. A node with a model runs the job queue
+	// and answers searches; every web node routes searches through a pool
+	// of the nodes that have one.
+	meter := &ai.Meter{}
+	go meter.Report(ctx, node, c.NodeID, 5*time.Minute)
+	var pool *ai.Pool
+	var engine *ai.Engine
+	if c.AIURL != "" {
+		engine = &ai.Engine{LLM: ai.NewOllama(c.AIURL, c.AIModel, c.AIContext), Store: st, Meter: meter}
+		engine.Handler(rpcMux, node.AppliedIndex)
+		w := &ai.Worker{Engine: engine, Log: node, IDs: gen, Name: c.NodeID, Now: time.Now}
+		go w.Run(ctx)
+		log.Printf("ai: model %s at %s", c.AIModel, c.AIURL)
+	}
+	if engine != nil || len(c.Workers) > 0 {
+		pool = &ai.Pool{Local: engine, Workers: c.Workers, Client: client, Applied: node.AppliedIndex}
+		go pool.Poll(ctx)
+	}
+
+	rpc := &http.Server{Handler: rpcMux, ReadHeaderTimeout: 10 * time.Second}
 	// The listener closes with the node (it shares the cluster port with
 	// Raft), which ends this Serve; nothing to shut down separately.
 	go rpc.Serve(node.RPCListener())
-	go syncBlobs(ctx, node, st, blobs, client, c.Peers)
-	go gcBlobs(ctx, st, blobs)
 
 	if c.HTTPAddr == "" && c.HTTPSAddr == "" {
 		// The Studio: a live full copy, serving no web pages.
@@ -164,7 +195,7 @@ func serve(args []string) error {
 	srv, err := web.New(&web.Server{
 		Store: st,
 		Log:   node,
-		IDs:   ids.New(c.NodeNum),
+		IDs:   gen,
 		Mail: &mail.Mailer{Host: c.SMTPHost, Port: c.SMTPPort, User: c.SMTPUser, Pass: c.SMTPPass,
 			From: c.MailFrom, Dev: os.Stderr},
 		Dev:        c.Dev,
@@ -172,6 +203,9 @@ func serve(args []string) error {
 		IsOperator: c.IsOperator,
 		Blobs:      blobs,
 		PushBlob:   pushBlob(node, client, blobs, c.Peers),
+		AI:         pool,
+		Meter:      meter,
+		AskLimit:   c.AskLimit,
 	})
 	if err != nil {
 		return err

@@ -18,6 +18,11 @@ type adminData struct {
 	Domains []store.Domain
 	Cluster map[string]string
 	Form    map[string]string // values to refill after an error
+
+	AI         []*aiDay
+	QueueDue   int  // AI jobs waiting to run now
+	QueueLater int  // scheduled for later (waiting for a thread to go quiet)
+	SearchUp   bool // a worker is answering searches
 }
 
 type adminGroup struct {
@@ -69,7 +74,65 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, u *store.Us
 			d.Cluster[k] = all[k]
 		}
 	}
+	if err := s.adminAI(&d); err != nil {
+		s.serverError(w, r, err)
+		return
+	}
 	s.render(w, r, status, "admin", &page{Title: "Admin", User: u, Error: msg, Data: d})
+}
+
+// aiDay is one day of AI activity, for the admin page: how much searching,
+// how often search had to fall back to plain results and why (the signal
+// that it's time for more capacity), and how much background work ran.
+type aiDay struct {
+	Day                       string
+	Searches                  int64
+	NoWorker, Timeout, Limit  int64
+	Errors                    int64
+	Jobs                      int64
+	JobFailures               int64
+	ModelSeconds              float64
+	InputTokens, OutputTokens int64
+}
+
+func (s *Server) adminAI(d *adminData) error {
+	since := s.Now().UTC().AddDate(0, 0, -13).Format("2006-01-02")
+	rows, err := s.Store.AIUsage(since)
+	if err != nil {
+		return err
+	}
+	byDay := map[string]*aiDay{}
+	for _, r := range rows {
+		a := byDay[r.Day]
+		if a == nil {
+			a = &aiDay{Day: r.Day}
+			byDay[r.Day] = a
+			d.AI = append(d.AI, a)
+		}
+		switch r.Purpose {
+		case "search":
+			a.Searches += r.Calls
+		case "ask_soft_fail_no_worker":
+			a.NoWorker += r.Calls
+		case "ask_soft_fail_timeout":
+			a.Timeout += r.Calls
+		case "ask_soft_fail_limit":
+			a.Limit += r.Calls
+		case "ask_soft_fail_error":
+			a.Errors += r.Calls
+		case "ask":
+			// the two model calls behind each search
+		default:
+			a.Jobs += r.Calls
+			a.JobFailures += r.Failures
+		}
+		a.ModelSeconds += r.Seconds
+		a.InputTokens += r.InputTokens
+		a.OutputTokens += r.OutputTokens
+	}
+	d.QueueDue, d.QueueLater, err = s.Store.QueueDepth(s.Now().Unix())
+	d.SearchUp = s.AI != nil && s.AI.Available()
+	return err
 }
 
 // adminFail shows a command's error on the admin page. The operator sees

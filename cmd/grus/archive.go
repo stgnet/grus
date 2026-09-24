@@ -210,7 +210,7 @@ func convertThread(t archiveThread, names *regexp.Regexp, gen *ids.Generator, ph
 	}
 	p := &cmd.ImportPost{
 		PostID: gen.Next(), OriginRef: t.Ref, Title: title, Body: body,
-		CreatedAt: int64(t.Created), LastActivity: int64(t.Created),
+		CreatedAt: int64(t.Created), LastActivity: int64(t.Created), At: time.Now().Unix(),
 	}
 	// Only web links become "View the original"; anything else in the
 	// field is dropped rather than rendered.

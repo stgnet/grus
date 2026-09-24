@@ -25,6 +25,7 @@ type ImportPost struct {
 	LastActivity int64
 	Images       []Image
 	Comments     []ArchiveComment
+	At           int64 // when the import ran, for scheduling its AI work
 }
 
 // ArchiveComment is one comment in an imported thread. ParentRef names the
@@ -44,9 +45,12 @@ func (c *ImportPost) Apply(a *Applier) (any, error) {
 	}
 	var postID int64
 	err := a.Group(c.GroupID, func(tx *sql.Tx) error {
-		err := tx.QueryRow(`SELECT id FROM posts WHERE origin_ref = ?`, c.OriginRef).Scan(&postID)
+		var oldTitle, oldBody, status string
+		isNew, postChanged, threadChanges := false, false, false
+		err := tx.QueryRow(`SELECT id, title, body, status FROM posts WHERE origin_ref = ?`, c.OriginRef).Scan(&postID, &oldTitle, &oldBody, &status)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
+			isNew = true
 			postID = c.PostID
 			if _, err := tx.Exec(`INSERT INTO posts (id, user_id, title, body, created_at, last_activity_at, locked, origin, origin_ref, origin_url)
 				VALUES (?, NULL, ?, ?, ?, ?, 1, 'archive', ?, ?)`, postID, c.Title, c.Body, c.CreatedAt, c.LastActivity,
@@ -55,7 +59,12 @@ func (c *ImportPost) Apply(a *Applier) (any, error) {
 			}
 		case err != nil:
 			return err
+		case status != "visible" && status != "flagged":
+			// Taken down (a removal request, or a mod): a re-import must
+			// not bring it back.
+			return nil
 		default:
+			postChanged = oldTitle != c.Title || oldBody != c.Body
 			if _, err := tx.Exec(`UPDATE posts SET title = ?, body = ?, last_activity_at = ?, origin_url = ? WHERE id = ?`,
 				c.Title, c.Body, c.LastActivity, nullIfEmpty(c.Permalink), postID); err != nil {
 				return err
@@ -76,7 +85,8 @@ func (c *ImportPost) Apply(a *Applier) (any, error) {
 		ids := map[string]int64{} // origin ref -> comment id, for parents
 		for _, cm := range c.Comments {
 			var id int64
-			err := tx.QueryRow(`SELECT id FROM comments WHERE origin_ref = ?`, cm.OriginRef).Scan(&id)
+			var oldBody, cstatus string
+			err := tx.QueryRow(`SELECT id, body, status FROM comments WHERE origin_ref = ?`, cm.OriginRef).Scan(&id, &oldBody, &cstatus)
 			var parent any
 			if pid, ok := ids[cm.ParentRef]; ok {
 				parent = pid
@@ -84,13 +94,18 @@ func (c *ImportPost) Apply(a *Applier) (any, error) {
 			switch {
 			case errors.Is(err, sql.ErrNoRows):
 				id = cm.ID
+				threadChanges = true
 				if _, err := tx.Exec(`INSERT INTO comments (id, post_id, parent_id, user_id, body, created_at, origin_ref)
 					VALUES (?, ?, ?, NULL, ?, ?, ?)`, id, postID, parent, cm.Body, cm.CreatedAt, cm.OriginRef); err != nil {
 					return err
 				}
 			case err != nil:
 				return err
+			case cstatus != "visible" && cstatus != "flagged":
+				ids[cm.OriginRef] = id
+				continue // taken down; leave it that way
 			default:
+				threadChanges = threadChanges || oldBody != cm.Body
 				if _, err := tx.Exec(`UPDATE comments SET body = ?, parent_id = ? WHERE id = ?`, cm.Body, parent, id); err != nil {
 					return err
 				}
@@ -106,9 +121,25 @@ func (c *ImportPost) Apply(a *Applier) (any, error) {
 				return err
 			}
 		}
-		_, err = tx.Exec(`UPDATE posts SET comment_count =
-			(SELECT COUNT(*) FROM comments WHERE post_id = ?1 AND status IN ('visible', 'flagged')) WHERE id = ?1`, postID)
-		return err
+		if _, err := tx.Exec(`UPDATE posts SET comment_count =
+			(SELECT COUNT(*) FROM comments WHERE post_id = ?1 AND status IN ('visible', 'flagged')) WHERE id = ?1`, postID); err != nil {
+			return err
+		}
+		// Archive threads go through the same pipeline as new posts (checked
+		// for links, digested), and a re-import only queues work for what
+		// actually changed.
+		switch {
+		case isNew:
+			if err := schedule(tx, JobCheck, postID, 1, c.At, c.At); err != nil {
+				return err
+			}
+			return schedule(tx, JobDigest, postID, 1, c.At, c.At)
+		case postChanged:
+			return postEdited(tx, c.GroupID, postID, c.At)
+		case threadChanges:
+			return threadChanged(tx, c.GroupID, postID, c.At)
+		}
+		return nil
 	})
 	return postID, err
 }

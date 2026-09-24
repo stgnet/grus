@@ -1,6 +1,9 @@
 package cmd
 
-import "database/sql"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // Purge hard-deletes everything whose retention has run out (plan section 6,
 // "Deleting: hidden now, purged later"). The leader submits one a day with
@@ -78,6 +81,24 @@ func (c *Purge) Apply(a *Applier) (any, error) {
 				// references them.
 				`DELETE FROM images WHERE post_id NOT IN (SELECT id FROM posts)
 				   OR (comment_id IS NOT NULL AND comment_id NOT IN (SELECT id FROM comments))`,
+				// Search rows, links, notes and queued AI work for posts
+				// that are gone. (A deleted post's notes already stopped
+				// showing when it was deleted.)
+				`DELETE FROM search_fts WHERE post_id NOT IN (SELECT id FROM posts)`,
+				`DELETE FROM post_links WHERE older_post_id NOT IN (SELECT id FROM posts)
+				   OR newer_post_id NOT IN (SELECT id FROM posts)`,
+				// (Sources in other groups, from M4, are checked against
+				// that group's own posts, when it purges.)
+				fmt.Sprintf(`DELETE FROM note_sources WHERE (group_id = %d AND post_id NOT IN (SELECT id FROM posts))
+				   OR note_id IN (SELECT id FROM notes WHERE host_post_id NOT IN (SELECT id FROM posts))`, id),
+				`DELETE FROM notes WHERE host_post_id NOT IN (SELECT id FROM posts)
+				   OR (kind = 'link' AND id NOT IN (SELECT note_id FROM note_sources))`,
+				`DELETE FROM jobs WHERE (kind IN ('check', 'digest') AND ref_id NOT IN (SELECT id FROM posts))
+				   OR (kind = 'note' AND ref_id NOT IN (SELECT id FROM notes))`,
+				`UPDATE posts SET continues_post_id = NULL, continued_at = NULL
+				   WHERE continues_post_id IS NOT NULL AND continues_post_id NOT IN (SELECT id FROM posts)`,
+				// "Not what I was looking for" searches are kept 180 days.
+				`DELETE FROM ai_feedback WHERE created_at < ?1 - 180 * 86400`,
 			} {
 				if _, err := tx.Exec(q, c.Before); err != nil {
 					return err

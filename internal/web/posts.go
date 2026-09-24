@@ -26,14 +26,31 @@ const (
 
 type submitData struct {
 	Title, Body string
+	// Related are threads to link the new post to, ticked already: the
+	// closest matches when it came from "Post this question".
+	Related []searchHit
 }
 
 func (s *Server) submitForm(w http.ResponseWriter, r *http.Request) {
 	c := s.group(w, r)
-	if c == nil || !s.writer(w, r, c, "/submit") {
+	back := "/submit" // after signing in, back here with the same prefill
+	if r.URL.RawQuery != "" {
+		back += "?" + r.URL.RawQuery
+	}
+	if c == nil || !s.writer(w, r, c, back) {
 		return
 	}
-	s.render(w, r, http.StatusOK, "submit", c.page("New post", submitData{}))
+	d := submitData{Title: strings.TrimSpace(r.URL.Query().Get("title"))}
+	if len(d.Title) > cmd.MaxTitleLen {
+		d.Title = d.Title[:cmd.MaxTitleLen]
+	}
+	for _, id := range relatedIDs(r.URL.Query().Get("related")) {
+		p, err := s.Store.Post(c.g.ID, id)
+		if err == nil && p != nil && p.Status == "visible" {
+			d.Related = append(d.Related, searchHit{ID: p.ID, Title: p.Title, Date: p.CreatedAt, Comments: p.CommentCount})
+		}
+	}
+	s.render(w, r, http.StatusOK, "submit", c.page("New post", d))
 }
 
 // submitPost creates a post. Photos are processed and stored first (and
@@ -72,6 +89,19 @@ func (s *Server) submitPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.serverError(w, r, err)
 		return
+	}
+	// "Link to this": each ticked earlier post gets linked, with notes on
+	// both sides written by the next worker pass.
+	for i, v := range r.PostForm["link"] {
+		other := postRef(v)
+		if i == 5 || other == 0 {
+			break
+		}
+		_, err := s.Log.Apply(&cmd.AddLink{GroupID: c.g.ID, PostA: id, PostB: other, Source: "author", By: c.u.ID,
+			NoteA: s.IDs.Next(), NoteB: s.IDs.Next(), At: s.Now().Unix()})
+		if err != nil && !cmd.IsInput(err) {
+			log.Printf("link new post %d to %d: %v", id, other, err)
+		}
 	}
 	http.Redirect(w, r, fmt.Sprintf("/p/%d", id), http.StatusSeeOther)
 }
@@ -115,31 +145,6 @@ func (s *Server) storePhotos(files []*multipart.FileHeader) ([]cmd.Image, error)
 	return out, nil
 }
 
-// thread is one top-level comment and its replies, as the post page shows.
-type thread struct {
-	Comment  commentView
-	Replies  []commentView
-	Readable bool // false: a placeholder kept so its replies have a parent
-}
-
-type commentView struct {
-	store.Comment
-	Author  string
-	Images  []store.Image
-	CanEdit bool
-}
-
-type postData struct {
-	Post       store.Post
-	Author     string
-	Images     []store.Image
-	Threads    []thread
-	CanEdit    bool
-	CanMod     bool
-	CanComment bool
-	IsMember   bool
-}
-
 // loadPost reads a post and applies the read rule to it. It writes a 404
 // and returns nil when the viewer may not see it.
 func (s *Server) loadPost(w http.ResponseWriter, r *http.Request, c *greq) *store.Post {
@@ -158,88 +163,6 @@ func (s *Server) loadPost(w http.ResponseWriter, r *http.Request, c *greq) *stor
 		return nil
 	}
 	return p
-}
-
-func (s *Server) postPage(w http.ResponseWriter, r *http.Request) {
-	c := s.group(w, r)
-	if c == nil {
-		return
-	}
-	if !c.canRead(nil) {
-		// A private group: the name and the sign-in box, not the post.
-		s.render(w, r, http.StatusOK, "group", c.page(c.g.Name, feedData{Settings: c.st}))
-		return
-	}
-	p := s.loadPost(w, r, c)
-	if p == nil {
-		return
-	}
-	d, err := s.postData(c, p)
-	if err != nil {
-		s.serverError(w, r, err)
-		return
-	}
-	s.render(w, r, http.StatusOK, "post", c.page(p.Title, d))
-}
-
-func (s *Server) postData(c *greq, p *store.Post) (*postData, error) {
-	comments, err := s.Store.Comments(c.g.ID, p.ID)
-	if err != nil {
-		return nil, err
-	}
-	images, err := s.Store.Images(c.g.ID, p.ID)
-	if err != nil {
-		return nil, err
-	}
-	names, err := s.authorNames([]store.Post{*p}, comments)
-	if err != nil {
-		return nil, err
-	}
-	d := &postData{Post: *p, Author: authorOf(names, p.UserID, p.Anonymous), CanMod: c.mod(), IsMember: c.member()}
-	d.CanEdit = c.u != nil && p.UserID == c.u.ID
-	d.CanComment = !p.Locked && (p.Status == "visible" || p.Status == "flagged")
-
-	byComment := map[int64][]store.Image{}
-	for _, im := range images {
-		if im.CommentID == 0 {
-			d.Images = append(d.Images, im)
-		} else {
-			byComment[im.CommentID] = append(byComment[im.CommentID], im)
-		}
-	}
-	view := func(cm store.Comment) commentView {
-		return commentView{Comment: cm, Author: authorOf(names, cm.UserID, cm.Anonymous),
-			Images: byComment[cm.ID], CanEdit: c.u != nil && cm.UserID == c.u.ID}
-	}
-	readable := func(cm store.Comment) bool {
-		return c.canRead(&auth.Item{AuthorID: cm.UserID, Status: cm.Status})
-	}
-
-	// Top-level comments in order, each with its readable replies.
-	index := map[int64]int{}
-	for _, cm := range comments {
-		if cm.ParentID == 0 {
-			index[cm.ID] = len(d.Threads)
-			d.Threads = append(d.Threads, thread{Comment: view(cm), Readable: readable(cm)})
-		}
-	}
-	for _, cm := range comments {
-		if cm.ParentID == 0 || !readable(cm) {
-			continue
-		}
-		if i, ok := index[cm.ParentID]; ok {
-			d.Threads[i].Replies = append(d.Threads[i].Replies, view(cm))
-		}
-	}
-	// Drop unreadable comments unless their replies need them as a header.
-	kept := d.Threads[:0]
-	for _, t := range d.Threads {
-		if t.Readable || len(t.Replies) > 0 {
-			kept = append(kept, t)
-		}
-	}
-	d.Threads = kept
-	return d, nil
 }
 
 func (s *Server) editPostForm(w http.ResponseWriter, r *http.Request) {
