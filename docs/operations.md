@@ -35,12 +35,18 @@ node's key leaks, make a new CA and reissue every node's certificate.
 ## 2. The VPS
 
 ```sh
-go build -o grus ./cmd/grus        # or CGO_ENABLED=0 for a fully static binary
-sudo deploy/install-service.sh     # user, directories, unit, example config
+make                               # builds ./grus (static; needs Go, see go.mod)
+sudo make install                  # user, directories, systemd unit, example config
 sudoedit /etc/grus/grus.conf       # from deploy/grus.conf.example
 sudo systemctl enable --now grus
 journalctl -u grus -f
 ```
+
+Build as yourself and install with sudo, as two steps (`install` never
+builds). To upgrade later: `git pull && make && sudo make install`, which
+keeps the config and restarts the service. If the VPS has no Go, run
+`make dist` elsewhere and copy `dist/grus-linux-amd64` to `./grus` in the
+checkout before `sudo make install`.
 
 Open ports 80 and 443 to everyone, and the cluster port (7946) to the
 Studio. The first start (with `bootstrap = true`) creates the cluster and
@@ -49,12 +55,15 @@ email to reach `/admin`.
 
 ## 3. The Studio
 
-Build for macOS (`GOOS=darwin GOARCH=arm64 go build -o grus ./cmd/grus`),
-install to `/usr/local/bin`, write `/etc/grus/grus.conf` from
-`deploy/studio.conf.example`, and load `deploy/com.stgnet.grus.plist` with
-launchd. Keep its `data_dir` on the Studio's own disk: SQLite needs local
-file locking, which network shares don't reliably provide. The NAS gets
-the backups.
+In a checkout on the Studio, `make` then `sudo make install`. The first
+run installs the binary, the directories and the launchd job, and puts
+`deploy/studio.conf.example` at `/etc/grus/grus.conf`; edit that, add the
+certificates, and run `sudo make install` again to start it. The job runs
+as the account that ran sudo (the Studio's node binds no low ports, so it
+needs no service account), and logs to `/usr/local/var/log/grus/grus.log`.
+Keep its `data_dir` on the Studio's own disk: SQLite needs local file
+locking, which network shares don't reliably provide. The NAS gets the
+backups.
 
 The Studio's config has `full = true` and `join = <VPS cluster address>`.
 On its first start it registers itself in the node map through the VPS;

@@ -52,7 +52,7 @@ checks nothing acknowledged is lost).
 ## Try it on a laptop
 
 ```sh
-go build -o grus ./cmd/grus
+make                    # or: go build -o grus ./cmd/grus
 ./grus ca init -dir certs && ./grus ca issue -dir certs n1
 cat > dev.conf <<EOF
 node_id = n1
