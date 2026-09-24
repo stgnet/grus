@@ -2,31 +2,34 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
-	"slices"
 	"time"
 
 	"github.com/stgnet/grus/internal/blob"
 	"github.com/stgnet/grus/internal/cluster"
-	"github.com/stgnet/grus/internal/config"
 	"github.com/stgnet/grus/internal/store"
 )
 
-// Photos travel between nodes outside the Raft log (they'd make it huge).
-// Three pieces keep every node's blob directory complete:
+// Photos travel between nodes outside the Raft logs (they'd make them
+// huge). Four pieces keep each node's blob directory complete for the
+// groups it holds:
 //
-//   - pushBlob: the node that receives an upload copies it to the leader
-//     and its configured peers before the post is written, so a photo has
-//     more than one copy from the start.
-//   - syncBlobs: every node regularly looks for photos its databases refer
-//     to but its disk doesn't have (it was offline, or is new) and fetches
-//     them from the leader, or from a peer if it is the leader.
-//   - gcBlobs: once a day, each node deletes photos nothing refers to any
-//     more (their posts were purged).
+//   - pushBlob: the node that receives an upload copies it to the other
+//     nodes holding the group (and full-copy nodes) before the post is
+//     written, so a photo has more than one copy from the start.
+//   - syncBlobs: every node regularly looks for photos its own group files
+//     refer to but its disk doesn't have (it was offline, or the group was
+//     just placed on it) and fetches them from the other nodes.
+//   - fetchNow: a page asks for a photo that syncBlobs hasn't fetched yet;
+//     it's fetched on the spot, from a node holding the group.
+//   - gcBlobs: once a day, each node deletes photos none of its group
+//     files refer to any more (their posts were purged, or the group was
+//     taken off the node).
 
-func pushBlob(node *cluster.Node, client *cluster.Client, blobs *blob.Store, peers []config.Peer) func(string) {
-	return func(hash string) {
-		for _, addr := range blobSources(node, peers) {
+func pushBlob(node *cluster.Node, client *cluster.Client, blobs *blob.Store) func(int64, string) {
+	return func(groupID int64, hash string) {
+		for _, addr := range node.BlobPeers(groupID) {
 			for _, thumb := range []bool{false, true} {
 				data, err := blobs.Read(hash, thumb)
 				if err == nil {
@@ -42,25 +45,19 @@ func pushBlob(node *cluster.Node, client *cluster.Client, blobs *blob.Store, pee
 	}
 }
 
-// blobSources is the other nodes this one knows about: the leader (unless
-// it's us) and the peers in our config. Only the leader's config lists
-// peers, so a follower talks to the leader, and the leader to everyone.
-func blobSources(node *cluster.Node, peers []config.Peer) []string {
-	var out []string
-	if !node.IsLeader() {
-		if a := node.LeaderAddr(); a != "" {
-			out = append(out, a)
+func fetchNow(node *cluster.Node, client *cluster.Client, blobs *blob.Store) func(int64, string) error {
+	return func(groupID int64, hash string) error {
+		err := errors.New("no other node has it")
+		for _, addr := range node.BlobPeers(groupID) {
+			if err = fetchBlob(client, blobs, addr, hash); err == nil {
+				return nil
+			}
 		}
+		return err
 	}
-	for _, p := range peers {
-		if !slices.Contains(out, p.Addr) {
-			out = append(out, p.Addr)
-		}
-	}
-	return out
 }
 
-func syncBlobs(ctx context.Context, node *cluster.Node, st *store.Store, blobs *blob.Store, client *cluster.Client, peers []config.Peer) {
+func syncBlobs(ctx context.Context, node *cluster.Node, st *store.Store, blobs *blob.Store, client *cluster.Client) {
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
 	for {
@@ -74,7 +71,7 @@ func syncBlobs(ctx context.Context, node *cluster.Node, st *store.Store, blobs *
 			log.Printf("blob sync: %v", err)
 			continue
 		}
-		sources := blobSources(node, peers)
+		sources := node.BlobPeers(0)
 		for hash := range want {
 			if blobs.Has(hash) || ctx.Err() != nil {
 				continue

@@ -1,16 +1,23 @@
 # Operations
 
 The starting setup (plan section 8): one VPS serves everything and is the
-cluster's only voter, so it's always the leader. The Studio is a non-voting
-member with a live full copy, reached over mutual TLS on one port. Losing
-the Studio changes nothing for users; losing the VPS is handled by
-"Recovering from a lost VPS" below.
+only voter, so it leads every log. The Studio is a non-voting member with a
+live full copy, reached over mutual TLS on one port. Losing the Studio
+changes nothing for users; losing the VPS is handled by "Recovering from a
+lost VPS" below. Section 12 covers adding more nodes.
 
 ```
 VPS (n1)    voter, leader     site.db + every group file, HTTPS for every host
-   │  mTLS :7946, replicated log ↓
-Studio      non-voter         the same files, live; daily backups to the NAS
+   │  mTLS :7946, one replicated log per file ↓
+Studio      full, non-voter   the same files, live; daily backups to the NAS
 ```
+
+Each file has its own log (plan section 8, "Who holds what"): site.db's,
+which every node follows, the root FAQ's, which every node follows too, and
+one per group, followed only by the nodes the group is placed on. The node
+map in site.db says which nodes there are and which groups each holds; every
+node reads it and starts or stops its group logs to match, and each log's
+leader keeps the log's membership matching it.
 
 ## 1. The cluster CA (once, on your own machine)
 
@@ -49,12 +56,14 @@ launchd. Keep its `data_dir` on the Studio's own disk: SQLite needs local
 file locking, which network shares don't reliably provide. The NAS gets
 the backups.
 
-The Studio needs no join step. The VPS's config lists it (`peer = studio
-host:port`), and whenever the VPS is leader it adds any listed peer that's
-missing. A brand-new or long-offline Studio receives a snapshot of every
-database, then streams changes.
+The Studio's config has `full = true` and `join = <VPS cluster address>`.
+On its first start it registers itself in the node map through the VPS;
+the site log's leader then adds it, and, being a full node, it's placed on
+every group, whose leaders add it to their logs. A brand-new or
+long-offline Studio receives a snapshot of each file, then streams changes.
 
-The admin page's Cluster section shows `latest_configuration`, which
+The admin page's Cluster section shows `logs` (every log running on the
+node, marked where it leads), `latest_configuration` of the site log, which
 should list the Studio as a Nonvoter, and `applied_index`.
 
 ## 4. Backups
@@ -80,25 +89,29 @@ To load the Travato knowledge base, see [archive-format.md](archive-format.md).
 
 ## 5. Recovering from a lost VPS
 
-This was drilled once for M0: `TestReplicateAndRecover` in
-`internal/cluster` runs it on every CI run, and it was also run by hand
-with two real nodes.
+`TestReplicateAndRecover` in `internal/cluster` runs this drill on every CI
+run, and `TestPlacementAndFailover` kills a group's leader among three
+voters and checks the other two carry on.
 
 1. Stop grus on the Studio (so its files are still).
 2. Copy the Studio's whole `data_dir` (including `raft/`) to the new VPS.
 3. Issue the new VPS a certificate if it has a new id
    (`grus ca issue -dir ./cluster n2`), and write its `grus.conf`: its own
-   `node_id`, `advertise`, certificate, and `peer = studio ...`.
-   `bootstrap` doesn't matter; the copied state already exists.
+   `node_id`, `advertise`, certificate, and `voter = true`. `bootstrap`
+   doesn't matter; the copied state already exists.
 4. On the new VPS: `grus recover -config /etc/grus/grus.conf`. This rewrites
-   the cluster membership so the new VPS is the only voter, keeping every
-   database and the log.
-5. Start grus on the new VPS, point DNS (`nfb.group`, `*.nfb.group`) at it,
-   and start the Studio again. The new leader re-adds the Studio as a
-   non-voter and it catches up.
+   every log's membership so the new VPS is its only voter, keeping every
+   database and log.
+5. Start grus on the new VPS. Its first act, as the leader, is to take the
+   lost voters out of the node map and take over their groups (otherwise
+   the leader would add them straight back and wait for them). Point DNS
+   (`nfb.group`, `*.nfb.group`) at it, and start the Studio again; the new
+   leaders re-add it as a non-voter and it catches up.
 
 Nothing is lost but writes the Studio hadn't received when the VPS died
-(normally under a second's worth).
+(normally under a second's worth). With more than one VPS, losing one
+isn't a recovery at all: the others hold a majority of each log's voters
+and carry on. `recover` is for when the voters are gone.
 
 ## 6. Changing the primary domain
 
@@ -222,16 +235,51 @@ them, join approvals, and what mods did with your posts. Authors are told
 when something of theirs is hidden or removed unless the group turns off
 "notify_hidden" (quiet hiding).
 
-Email is off for everyone until they turn it on at `/profile`. The leader
-checks every 5 minutes and sends each person one email with whatever has
-waited 10 minutes unread; the daily digest (the day's top new posts in
-each of their groups) goes at `digest_hour` UTC, default 12. Both go
-through the same SMTP relay as sign-in links. If the leader changes
-between sending and recording, a batch can go twice; nothing is lost.
+Email is off for everyone until they turn it on at `/profile`. Each
+group's email is sent by the node leading that group's log: every 5
+minutes it sends each person one email with whatever has waited 10 minutes
+unread, and the daily digest (the day's top new posts in each of their
+groups) goes at `digest_hour` UTC, default 12. When one node leads every
+group, as in the starting setup, that's one email per person for all
+their groups. Both go through the same SMTP relay as sign-in links, so
+every node that can lead a group needs the SMTP settings. If the leader
+changes between sending and recording, a batch can go twice; nothing is
+lost.
 
 ## Retention
 
-The leader submits a `Purge` command once a day. It removes expired sign-in
+The site log's leader submits a `Purge` command once a day, which sends
+each group's part to that group's log. It removes expired sign-in
 links and sessions, the personal details of accounts deleted more than 30
 days ago, and posts, comments and old versions past their `purge_after`,
 except anything under legal hold. Every node applies the same purge.
+
+## 12. More nodes
+
+A second or third VPS: issue it a certificate, and give it a config with
+`voter = true` and `join = <an existing node's cluster address>`. It
+registers itself on first start and becomes a voter of the site log once
+it has caught up. New groups are placed on the first three voters (by
+node id); a group with three voters survives losing any one of them.
+
+A small VPS that holds only a few groups: neither `voter` nor `full`, and
+a `join` line. It holds nothing until groups are placed on it. For now
+placement is a command (`cmd.PlaceGroup`, `cmd.UnplaceGroup`); the admin
+page gets buttons for it in M8. A node a group is placed on copies it from
+the group's leader (a snapshot, then the stream), and a node it's taken
+off deletes its copy.
+
+Every node answers for every host name: a request for a group this node
+doesn't hold is passed over the cluster port to one that does, and the
+pages that gather from every group (the home page, notifications) go to a
+full node when this one isn't. So DNS can point everything at any node, and
+moving a group needs no DNS change. Writes work the same from anywhere:
+they're forwarded to the leader of the command's log.
+
+Photos follow their groups: the node that receives one pushes it to the
+other nodes holding the group, and a node fetches any it's missing, on a
+page view or within a minute otherwise.
+
+A node that's gone for good is taken out of the map with
+`cmd.RemoveNode` (with a replacement for any group it was the only voter
+of); the logs' leaders then drop it from their membership.

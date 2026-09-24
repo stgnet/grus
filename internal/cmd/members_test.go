@@ -6,8 +6,8 @@ import (
 
 func TestJoinPoliciesAndInvites(t *testing.T) {
 	st := newStore(t)
-	idx := uint64(0)
-	run := func(c Command) (any, error) { idx++; return Run(st, idx, c) }
+	d := &Direct{Store: st}
+	run := d.Apply
 	must := func(c Command) any {
 		t.Helper()
 		v, err := run(c)
@@ -91,8 +91,8 @@ func TestJoinPoliciesAndInvites(t *testing.T) {
 
 func TestAnonymousAndReveal(t *testing.T) {
 	st := newStore(t)
-	idx := uint64(0)
-	run := func(c Command) (any, error) { idx++; return Run(st, idx, c) }
+	d := &Direct{Store: st}
+	run := d.Apply
 	run(&CreateGroup{GroupID: 1, Slug: "travato", Name: "Travato", OwnerID: 1, At: 10})
 	run(&JoinGroup{GroupID: 1, UserID: 2, At: 10})
 	if _, err := run(&CreatePost{GroupID: 1, PostID: 100, UserID: 2, Title: "Embarrassing", Anonymous: true, At: 11}); !IsInput(err) {
@@ -119,8 +119,8 @@ func TestAnonymousAndReveal(t *testing.T) {
 
 func TestSisterPairing(t *testing.T) {
 	st := newStore(t)
-	idx := uint64(0)
-	run := func(c Command) (any, error) { idx++; return Run(st, idx, c) }
+	d := &Direct{Store: st}
+	run := d.Apply
 	run(&CreateGroup{GroupID: 1, Slug: "travato", Name: "Travato", At: 10})
 	run(&CreateGroup{GroupID: 2, Slug: "promaster", Name: "ProMaster", At: 10})
 	if _, err := run(&ProposeSister{GroupID: 1, Other: 1, At: 11}); !IsInput(err) {

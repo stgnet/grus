@@ -87,3 +87,75 @@ func (s *Store) Replace(src string) error {
 	s.site, err = openDB(s.sitePath(), siteMigrations)
 	return err
 }
+
+// From M7 each file has its own log, so each log's Raft snapshot is one
+// file: CopyFile and ReplaceFile are CopyTo and Replace for a single file.
+// groupID 0 means site.db.
+
+// CopyFile writes a consistent copy of one file to dst (which must not
+// exist), with VACUUM INTO as CopyTo does.
+func (s *Store) CopyFile(groupID int64, dst string) error {
+	db := s.Site()
+	if groupID != 0 {
+		var err error
+		if db, err = s.Group(groupID); err != nil {
+			return err
+		}
+	}
+	return vacuumInto(db, dst)
+}
+
+// ReplaceFile swaps one file for the copy at src, which must be on the same
+// filesystem (the move is a rename). As with Replace, a reader holding the
+// old handle gets an error for that one query.
+func (s *Store) ReplaceFile(groupID int64, src string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := s.sitePath()
+	if groupID != 0 {
+		path = s.groupPath(groupID)
+		if db := s.groups[groupID]; db != nil {
+			db.Close()
+			delete(s.groups, groupID)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			return err
+		}
+	} else if err := s.site.Close(); err != nil {
+		return err
+	}
+	if err := removeDB(path); err != nil {
+		return err
+	}
+	if err := os.Rename(src, path); err != nil {
+		return err
+	}
+	if groupID != 0 {
+		return nil // opened again on first use
+	}
+	var err error
+	s.site, err = openDB(path, siteMigrations)
+	return err
+}
+
+// DropGroup deletes this node's copy of a group, when the group is taken
+// off the node. The other copies are untouched; this is the local file only.
+func (s *Store) DropGroup(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if db := s.groups[id]; db != nil {
+		db.Close()
+		delete(s.groups, id)
+	}
+	return os.RemoveAll(filepath.Dir(s.groupPath(id)))
+}
+
+// removeDB removes a SQLite file and its WAL files.
+func removeDB(path string) error {
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.Remove(path + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}

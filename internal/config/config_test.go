@@ -18,8 +18,12 @@ func TestExamplesLoad(t *testing.T) {
 		}
 	}
 	c, _ := Load("../../deploy/grus.conf.example")
-	if len(c.Peers) != 1 || c.Peers[0].ID != "studio" || c.Peers[0].Addr != "studio.example.net:7946" {
-		t.Errorf("peers: %+v", c.Peers)
+	if !c.Voter || !c.Bootstrap {
+		t.Errorf("the VPS example should bootstrap as a voter: %+v", c)
+	}
+	s, _ := Load("../../deploy/studio.conf.example")
+	if !s.Full || s.Voter || len(s.Join) != 1 || s.Join[0] != "vps1.nfb.group:7946" {
+		t.Errorf("studio: full %v voter %v join %v", s.Full, s.Voter, s.Join)
 	}
 	if !c.IsOperator("Scott@stg.net") {
 		t.Error("operator match should ignore case")

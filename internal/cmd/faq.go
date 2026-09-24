@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sort"
 	"strings"
+
+	"github.com/stgnet/grus/internal/store"
 )
 
 // The group FAQ (plan section 4): topics and entries, each entry a question
@@ -34,7 +36,7 @@ const (
 // like any other, so the same FAQ code runs it, but it's not in the groups
 // table, so it has no address, no members, and no feed. Real group ids are
 // time-based and far larger, so they never collide with it.
-const RootGroupID = 1
+const RootGroupID = store.RootGroupID
 
 // NewTopic asks CreateFAQEntry to file the entry under a topic that doesn't
 // exist yet.
@@ -761,33 +763,37 @@ type QueueFAQ struct {
 }
 
 func (c *QueueFAQ) Apply(a *Applier) (any, error) {
-	rows, err := a.Store.Site().Query(`SELECT id FROM groups WHERE status = 'active' ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	var groups []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
+	// It's on the site log, which knows every group; each group's part
+	// runs in that group's own log.
+	return nil, a.Site(func(tx *sql.Tx) error {
+		groups, err := groupIDs(tx, `WHERE status = 'active'`)
+		if err != nil {
+			return err
 		}
-		groups = append(groups, id)
-	}
-	rows.Close()
-	for _, g := range groups {
-		err := a.Group(g, func(tx *sql.Tx) error {
-			var on bool
-			if err := tx.QueryRow(`SELECT ai_enabled FROM settings WHERE id = 1`).Scan(&on); err != nil || !on {
+		for _, g := range groups {
+			if err := send(tx, &QueueGroupFAQ{GroupID: g, Weekly: c.Weekly, At: c.At}, c.At); err != nil {
 				return err
 			}
-			return queueFAQ(tx, c.Weekly, c.At)
-		})
-		if err != nil {
-			return nil, err
 		}
-	}
-	return nil, nil
+		return nil
+	})
+}
+
+// QueueGroupFAQ is one group's part of the nightly batch.
+type QueueGroupFAQ struct {
+	GroupID int64
+	Weekly  bool
+	At      int64
+}
+
+func (c *QueueGroupFAQ) Apply(a *Applier) (any, error) {
+	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
+		var on bool
+		if err := tx.QueryRow(`SELECT ai_enabled FROM settings WHERE id = 1`).Scan(&on); err != nil || !on {
+			return err
+		}
+		return queueFAQ(tx, c.Weekly, c.At)
+	})
 }
 
 func queueFAQ(tx *sql.Tx, weekly bool, at int64) error {

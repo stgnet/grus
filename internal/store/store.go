@@ -66,15 +66,44 @@ func (s *Store) Site() *sql.DB {
 	return s.site
 }
 
-// Group returns a group's database, creating the file if it doesn't exist
-// yet. Only the CreateGroup command should be creating it; readers check
-// the groups table first.
+// ErrNoGroupFile means this node doesn't hold the group: its file isn't
+// here (M7: a node holds only the groups placed on it).
+var ErrNoGroupFile = errors.New("this node doesn't hold that group")
+
+// Group returns a group's database for reading, or ErrNoGroupFile when this
+// node has no copy of it. It never creates the file: a page that asks about
+// a group this node doesn't hold must not leave an empty file behind, which
+// would look like a real (empty) copy.
 func (s *Store) Group(id int64) (*sql.DB, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if db := s.groups[id]; db != nil {
 		return db, nil
 	}
+	if _, err := os.Stat(s.groupPath(id)); err != nil && id != RootGroupID {
+		return nil, ErrNoGroupFile
+	}
+	// (Every node holds the root FAQ's file, so it may be created here:
+	// an empty one is its true state until an operator writes to it.)
+	return s.openGroupLocked(id)
+}
+
+// RootGroupID is the group file behind the root FAQ (cmd.RootGroupID has
+// the story); every node holds it.
+const RootGroupID = 1
+
+// GroupOrCreate is Group for the log applier: it creates the file when a
+// group's log writes to it for the first time.
+func (s *Store) GroupOrCreate(id int64) (*sql.DB, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if db := s.groups[id]; db != nil {
+		return db, nil
+	}
+	return s.openGroupLocked(id)
+}
+
+func (s *Store) openGroupLocked(id int64) (*sql.DB, error) {
 	p := s.groupPath(id)
 	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		return nil, err
@@ -182,29 +211,63 @@ func AppliedIndex(q interface {
 	return idx, err
 }
 
-// MaxApplied is the highest applied index across every file. The local
-// (non-Raft) log starts counting after it.
-func (s *Store) MaxApplied() (uint64, error) {
-	max, err := AppliedIndex(s.Site())
+// OutboxItem is a follow-up command waiting in a file's outbox.
+type OutboxItem struct {
+	ID      int64
+	Target  int64 // 0 = site.db's log, else a group's
+	Command []byte
+}
+
+// Outbox lists the oldest waiting follow-ups in site.db's outbox (groupID
+// 0) or a group's.
+func (s *Store) Outbox(groupID int64, limit int) ([]OutboxItem, error) {
+	db := s.Site()
+	if groupID != 0 {
+		var err error
+		if db, err = s.Group(groupID); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := db.Query(`SELECT id, target, command FROM outbox ORDER BY id LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OutboxItem
+	for rows.Next() {
+		var o OutboxItem
+		if err := rows.Scan(&o.ID, &o.Target, &o.Command); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// HasGroup reports whether this node has a file for the group (without
+// creating one, which Group would).
+func (s *Store) HasGroup(id int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.groups[id] != nil {
+		return true
+	}
+	_, err := os.Stat(s.groupPath(id))
+	return err == nil
+}
+
+// FileApplied is the last index of its own log applied to site.db
+// (groupID 0) or a group's file; 0 for a group file that doesn't exist.
+func (s *Store) FileApplied(groupID int64) (uint64, error) {
+	if groupID == 0 {
+		return AppliedIndex(s.Site())
+	}
+	if !s.HasGroup(groupID) {
+		return 0, nil
+	}
+	db, err := s.Group(groupID)
 	if err != nil {
 		return 0, err
 	}
-	ids, err := s.GroupFileIDs()
-	if err != nil {
-		return 0, err
-	}
-	for _, id := range ids {
-		db, err := s.Group(id)
-		if err != nil {
-			return 0, err
-		}
-		idx, err := AppliedIndex(db)
-		if err != nil {
-			return 0, err
-		}
-		if idx > max {
-			max = idx
-		}
-	}
-	return max, nil
+	return AppliedIndex(db)
 }

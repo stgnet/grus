@@ -30,36 +30,42 @@ type Command interface {
 	Apply(a *Applier) (any, error)
 }
 
-// Applier gives a command transactions on the databases it writes, and makes
-// applying idempotent.
+// Applier gives a command a transaction on the one file its log is for,
+// and makes applying idempotent.
 //
 // Why idempotent: the SQLite files persist across restarts, but the Raft log
 // may hand a node entries it applied before a crash (its record of "applied
-// up to" lives in memory). So each file stores the index of the last log
-// entry applied to it, updated in the same transaction as the change. An
-// entry at or below that index has already been applied to that file and is
-// skipped. Because the index is per file, a command that writes two files
-// (CreateGroup writes site.db and the new group's file) is completed
-// correctly even if the node stopped between the two.
+// up to" lives in memory). So each file stores the index of the last entry
+// of its log applied to it, updated in the same transaction as the change.
+// An entry at or below that index has already been applied and is skipped.
+// (So a command gets one transaction: a second one on the same file would
+// be skipped as already applied.)
 //
-// One consequence to keep in mind when writing a command that reads one
-// file while writing another: during a replay after a restart, the file it
-// reads may already be ahead (later entries applied). Only read what a later
-// entry can't change in a way that matters, like "which groups exist".
+// Which file: a command on the site log may only use Site, and one on a
+// group's log only that group's file (see logs.go for why). Anything else
+// is a bug in the command, reported as an error rather than silently
+// making copies that differ.
 type Applier struct {
 	Store *store.Store
-	Index uint64 // the log index of the command being applied
+	Log   LogID  // the log the command came from
+	Index uint64 // its index in that log
 }
 
 // Site runs fn in a transaction on site.db.
 func (a *Applier) Site(fn func(tx *sql.Tx) error) error {
+	if a.Log != SiteLog {
+		return fmt.Errorf("a command on log %s tried to write site.db", a.Log)
+	}
 	return a.inTx(a.Store.Site(), fn)
 }
 
 // Group runs fn in a transaction on a group's file, creating the file if
 // it doesn't exist yet.
 func (a *Applier) Group(groupID int64, fn func(tx *sql.Tx) error) error {
-	db, err := a.Store.Group(groupID)
+	if a.Log != LogID(groupID) {
+		return fmt.Errorf("a command on log %s tried to write group %d's file", a.Log, groupID)
+	}
+	db, err := a.Store.GroupOrCreate(groupID)
 	if err != nil {
 		return err
 	}
@@ -89,9 +95,12 @@ func (a *Applier) inTx(db *sql.DB, fn func(tx *sql.Tx) error) error {
 	return tx.Commit()
 }
 
-// Run applies c as log entry index. The log implementations call this.
-func Run(st *store.Store, index uint64, c Command) (any, error) {
-	v, err := c.Apply(&Applier{Store: st, Index: index})
+// Run applies c as entry index of log. The log implementations call this.
+func Run(st *store.Store, log LogID, index uint64, c Command) (any, error) {
+	if LogOf(c) != log {
+		return nil, fmt.Errorf("%s belongs to log %s, not %s", nameOf(c), LogOf(c), log)
+	}
+	v, err := c.Apply(&Applier{Store: st, Log: log, Index: index})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", nameOf(c), err)
 	}

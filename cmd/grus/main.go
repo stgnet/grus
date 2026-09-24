@@ -5,7 +5,7 @@
 //	grus ca init  -dir /etc/grus/cluster        make the cluster CA (once)
 //	grus ca issue -dir /etc/grus/cluster <id>   make a node's certificate
 //	grus backup  -config ... -to <dir>          consistent copy of every database
-//	grus recover -config ...                    make this node the only voter (disaster runbook)
+//	grus recover -config ...                    make this node every log's only voter (disaster runbook)
 //	grus import-archive -config ... -group <slug> <file>   load a knowledge base as archive threads
 //	grus bench-llm -model <name> <archive.json>            measure a model on real threads
 //
@@ -101,7 +101,7 @@ func clusterOptions(c *config.Config) (cluster.Options, error) {
 	}
 	return cluster.Options{
 		ID: c.NodeID, Listen: c.ClusterAddr, Advertise: c.Advertise, TLS: t,
-		Bootstrap: c.Bootstrap, Peers: c.Peers,
+		Bootstrap: c.Bootstrap, Voter: c.Voter, Full: c.Full, Join: c.Join,
 	}, nil
 }
 
@@ -146,16 +146,17 @@ func serve(args []string) error {
 	go purgeDaily(ctx, node)
 	go faqNightly(ctx, node, c.FAQHour)
 
-	// Photos live on disk beside the databases, outside the Raft log.
-	// Every node, including a copy-only Studio, serves them to the others
-	// on the cluster port and keeps its own set complete (blobs.go).
+	// Photos live on disk beside the databases, outside the Raft logs.
+	// Every node serves them to the others on the cluster port and keeps
+	// its own set complete for the groups it holds (blobs.go).
 	blobs, err := blob.Open(filepath.Join(c.DataDir, "blobs"))
 	if err != nil {
 		return err
 	}
 	client := cluster.NewClient(opts.TLS)
-	rpcMux := cluster.RPCHandler(node, st, blobs)
-	go syncBlobs(ctx, node, st, blobs, client, c.Peers)
+	rpcMux := node.RPC()
+	cluster.ServeBlobs(rpcMux, blobs)
+	go syncBlobs(ctx, node, st, blobs, client)
 	go gcBlobs(ctx, st, blobs)
 
 	// One id generator for everything this node creates: two generators
@@ -184,18 +185,6 @@ func serve(args []string) error {
 		go pool.Poll(ctx)
 	}
 
-	rpc := &http.Server{Handler: rpcMux, ReadHeaderTimeout: 10 * time.Second}
-	// The listener closes with the node (it shares the cluster port with
-	// Raft), which ends this Serve; nothing to shut down separately.
-	go rpc.Serve(node.RPCListener())
-
-	if c.HTTPAddr == "" && c.HTTPSAddr == "" {
-		// The Studio: a live full copy, serving no web pages.
-		log.Printf("no http_addr or https_addr: running as a copy only")
-		<-ctx.Done()
-		return nil
-	}
-
 	srv, err := web.New(&web.Server{
 		Store: st,
 		Log:   node,
@@ -206,7 +195,12 @@ func serve(args []string) error {
 		PortSuffix: portSuffix(c),
 		IsOperator: c.IsOperator,
 		Blobs:      blobs,
-		PushBlob:   pushBlob(node, client, blobs, c.Peers),
+		PushBlob:   pushBlob(node, client, blobs),
+		FetchBlob:  fetchNow(node, client, blobs),
+		Holds:      node.Holds,
+		HoldsAll:   node.HoldsAll,
+		PassOn:     node.PassOn,
+		Leads:      node.Leads,
 		AI:         pool,
 		Meter:      meter,
 		AskLimit:   c.AskLimit,
@@ -214,8 +208,19 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Notification emails and the digest go out from the leader only.
-	go srv.RunMail(ctx, node.IsLeader, c.DigestHour)
+	// Other nodes pass this one requests for groups it holds (and they
+	// don't), on the cluster port.
+	node.ServeWeb(srv.Handler())
+	// Notification emails and the digest go out from each group's leader.
+	go srv.RunMail(ctx, c.DigestHour)
+
+	if c.HTTPAddr == "" && c.HTTPSAddr == "" {
+		// The Studio: a live full copy, serving pages only when another
+		// node passes them on.
+		log.Printf("no http_addr or https_addr: serving other nodes only")
+		<-ctx.Done()
+		return nil
+	}
 	return listen(ctx, c, srv)
 }
 
@@ -278,9 +283,10 @@ func listen(ctx context.Context, c *config.Config, srv *web.Server) error {
 	return nil
 }
 
-// purgeDaily has the leader submit a Purge once a day (and shortly after
-// start), which hard-deletes whatever's past its retention on every node.
-// Only the leader submits it, so it happens once per day, not once per node.
+// purgeDaily has the site log's leader submit a Purge once a day (and
+// shortly after start), which hard-deletes whatever's past its retention on
+// every node; it sends each group's part to that group's log. Only the
+// leader submits it, so it happens once per day, not once per node.
 func purgeDaily(ctx context.Context, node *cluster.Node) {
 	var last time.Time
 	tick := time.NewTicker(time.Hour)
@@ -389,7 +395,8 @@ func backup(args []string) error {
 }
 
 // recoverCmd is the disaster runbook's key step: with the server stopped,
-// make this node the cluster's only voter, keeping its data and log.
+// make this node the only voter of every log it has, keeping its data and
+// logs. Its next start takes the lost voters out of the node map.
 func recoverCmd(args []string) error {
 	c, _, err := loadConfig(args, "recover", nil)
 	if err != nil {
@@ -407,6 +414,6 @@ func recoverCmd(args []string) error {
 	if err := cluster.Recover(opts, st); err != nil {
 		return err
 	}
-	fmt.Printf("recovered: %s is now the only voter; start it with `grus serve`\n", c.NodeID)
+	fmt.Printf("recovered: %s is now the only voter; start it with `grus serve`, and it takes over from the lost voters\n", c.NodeID)
 	return nil
 }

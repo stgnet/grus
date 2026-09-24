@@ -104,6 +104,21 @@ var registry = map[string]func() Command{
 	"MarkEmailed":    func() Command { return new(MarkEmailed) },
 	"SetNotifyPrefs": func() Command { return new(SetNotifyPrefs) },
 	"DigestSent":     func() Command { return new(DigestSent) },
+
+	// M7: one log per file
+	"OutboxDone":      func() Command { return new(OutboxDone) },
+	"ModLogEntry":     func() Command { return new(ModLogEntry) },
+	"InitGroup":       func() Command { return new(InitGroup) },
+	"MirrorGroup":     func() Command { return new(MirrorGroup) },
+	"DropSisterLinks": func() Command { return new(DropSisterLinks) },
+	"PutSisterSide":   func() Command { return new(PutSisterSide) },
+	"ShowSisterNotes": func() Command { return new(ShowSisterNotes) },
+	"PurgeGroup":      func() Command { return new(PurgeGroup) },
+	"QueueGroupFAQ":   func() Command { return new(QueueGroupFAQ) },
+	"RegisterNode":    func() Command { return new(RegisterNode) },
+	"RemoveNode":      func() Command { return new(RemoveNode) },
+	"PlaceGroup":      func() Command { return new(PlaceGroup) },
+	"UnplaceGroup":    func() Command { return new(UnplaceGroup) },
 }
 
 // envelope is how a command sits in the log: its type name plus its fields

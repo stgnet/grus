@@ -23,28 +23,23 @@ type Log interface {
 }
 
 // Local applies commands directly to one store, with no replication. Tests
-// and single-shot tools use it; a running server always uses Raft.
-type Local struct {
-	mu    sync.Mutex
-	st    *store.Store
-	index uint64
-}
-
-// NewLocal returns a Local log that continues numbering after whatever the
-// store has already applied.
-func NewLocal(st *store.Store) (*Local, error) {
-	idx, err := st.MaxApplied()
-	if err != nil {
-		return nil, err
-	}
-	return &Local{st: st, index: idx}, nil
-}
-
-// Apply runs one command. Commands are applied one at a time, as they are
+// and single-shot tools use it; a running server always uses Raft. It's
+// cmd.Direct with a lock: commands are applied one at a time, as they are
 // by Raft, so Apply code never has to think about concurrency.
+type Local struct {
+	mu sync.Mutex
+	d  cmd.Direct
+}
+
+// NewLocal returns a Local log over st, continuing each log's numbering
+// after whatever its file has already applied.
+func NewLocal(st *store.Store) (*Local, error) {
+	return &Local{d: cmd.Direct{Store: st}}, nil
+}
+
+// Apply runs one command, and the follow-ups it sends to other logs.
 func (l *Local) Apply(c cmd.Command) (any, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.index++
-	return cmd.Run(l.st, l.index, c)
+	return l.d.Apply(c)
 }

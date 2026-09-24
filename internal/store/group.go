@@ -30,6 +30,8 @@ type Membership struct {
 	Role        string // owner | mod | member
 	Status      string // active | pending | banned
 	BannedUntil int64  // 0 = permanent (when banned)
+	// DigestSentAt: when this group was last in the member's daily digest.
+	DigestSentAt int64
 }
 
 // GroupSettings reads a group's settings.
@@ -60,7 +62,7 @@ func (s *Store) Membership(groupID, userID int64) (*Membership, error) {
 		return nil, err
 	}
 	var m Membership
-	err = db.QueryRow(`SELECT role, status, banned_until FROM memberships WHERE user_id = ?`, userID).Scan(&m.Role, &m.Status, &m.BannedUntil)
+	err = db.QueryRow(`SELECT role, status, banned_until, digest_sent_at FROM memberships WHERE user_id = ?`, userID).Scan(&m.Role, &m.Status, &m.BannedUntil, &m.DigestSentAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

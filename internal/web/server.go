@@ -37,10 +37,26 @@ type Server struct {
 	PortSuffix string
 
 	// Photos. PushBlob (optional) copies a newly stored photo to the other
-	// nodes before the post that uses it is written, so every photo exists
-	// in at least two places from the start.
-	Blobs    *blob.Store
-	PushBlob func(hash string)
+	// nodes that hold its group before the post that uses it is written, so
+	// every photo exists in at least two places from the start. FetchBlob
+	// (optional) gets a photo this node should have but doesn't yet (it's
+	// still being copied here) from a node that has it.
+	Blobs     *blob.Store
+	PushBlob  func(groupID int64, hash string)
+	FetchBlob func(groupID int64, hash string) error
+
+	// M7: a node may hold only some of the groups. Holds says whether this
+	// node has a live copy of a group; HoldsAll whether it has them all.
+	// PassOn serves a request from another node that holds the group
+	// (groupID 0: one holding every group), reporting false when it
+	// couldn't, and the page is then served here from what this node has.
+	// Leads says whether this node sends a group's emails (its log's
+	// leader does). All nil means one node with everything: tests, and a
+	// single-node site.
+	Holds    func(groupID int64) bool
+	HoldsAll func() bool
+	PassOn   func(w http.ResponseWriter, r *http.Request, groupID int64) bool
+	Leads    func(groupID int64) bool
 
 	IsOperator func(email string) bool // from the config file
 	Limiter    *auth.SendLimiter
@@ -231,6 +247,21 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	// Pass the request on to a node with the data, when this one hasn't
+	// got it: a group it doesn't hold, or a page that gathers from every
+	// group when it doesn't hold them all.
+	if s.PassOn != nil {
+		switch {
+		case rt.kind == siteGroup && s.Holds != nil && !s.Holds(rt.group.ID):
+			if s.PassOn(w, r, rt.group.ID) {
+				return
+			}
+		case rt.kind == siteHome && gathers(r.URL.Path) && s.HoldsAll != nil && !s.HoldsAll():
+			if s.PassOn(w, r, 0) {
+				return
+			}
+		}
+	}
 	switch rt.kind {
 	case siteRedirect:
 		// 301 keeps the path, so every old link still lands on the same page.
@@ -243,6 +274,15 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.render(w, withRoute(r, rt), http.StatusNotFound, "notfound", &page{Title: "No such group"})
 	}
 }
+
+// gathers reports whether a page on the bare primary domain reads from
+// every group's file (rather than site.db, which every node has).
+func gathers(path string) bool {
+	return path == "/" || path == "/notifications"
+}
+
+// leads says whether this node sends a group's emails.
+func (s *Server) leads(groupID int64) bool { return s.Leads == nil || s.Leads(groupID) }
 
 // loadPages parses each page template together with the shared layout.
 func (s *Server) loadPages() error {

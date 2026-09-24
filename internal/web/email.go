@@ -15,11 +15,16 @@ import (
 // Email for notifications and the daily digest (plan section 5). Both are
 // off until someone turns them on at /profile.
 //
-// Sending is a side effect outside the replicated log, so only the leader
-// does it, and it records what it sent with a command (MarkEmailed,
-// DigestSent) so a new leader carries on where the old one stopped. If
-// the leader dies between sending and recording, the next one sends that
-// batch again: a rare duplicate email is better than a lost one.
+// Sending is a side effect outside the replicated log, so for each group
+// only its log's leader does it, and it records what it sent with a
+// command on that group's log (MarkEmailed, DigestSent), so a new leader
+// carries on where the old one stopped. If the leader dies between sending
+// and recording, the next one sends that batch again: a rare duplicate
+// email is better than a lost one.
+//
+// One node usually leads every group, and then a person gets one email for
+// all their groups. When groups are led from different nodes, each node
+// sends its own groups' part.
 
 const (
 	emailEvery = 5 * time.Minute
@@ -33,8 +38,8 @@ const (
 )
 
 // RunMail sends notification emails every few minutes, and the daily
-// digest at digestHour UTC, while this node is the leader.
-func (s *Server) RunMail(ctx context.Context, isLeader func() bool, digestHour int) {
+// digest at digestHour UTC, for the groups this node leads.
+func (s *Server) RunMail(ctx context.Context, digestHour int) {
 	tick := time.NewTicker(emailEvery)
 	defer tick.Stop()
 	for {
@@ -42,9 +47,6 @@ func (s *Server) RunMail(ctx context.Context, isLeader func() bool, digestHour i
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-		}
-		if !isLeader() {
-			continue
 		}
 		if err := s.SendNotices(); err != nil {
 			log.Printf("notification email: %v", err)
@@ -88,6 +90,9 @@ func (s *Server) SendNotices() error {
 	now := s.Now().Unix()
 	for i := range groups {
 		g := &groups[i]
+		if !s.leads(g.ID) {
+			continue
+		}
 		list, err := s.Store.PendingEmail(g.ID, now-emailQuiet, want)
 		if err != nil || len(list) == 0 {
 			continue
@@ -135,6 +140,8 @@ func (s *Server) SendNotices() error {
 // SendDigests sends the daily digest to everyone who asked for it and
 // hasn't had one today: each of their groups' top new posts of the last
 // day, and how many notifications are waiting. Nothing new, no email.
+// "Today" is kept per group (on the membership), since a group's digest
+// is sent by whichever node leads it.
 func (s *Server) SendDigests() error {
 	users, err := s.Store.EmailUsers()
 	if err != nil {
@@ -156,10 +163,10 @@ func (s *Server) SendDigests() error {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
 		u := users[id]
-		if u.Digest != cmd.DigestDaily || now-u.DigestSentAt < digestGap {
+		if u.Digest != cmd.DigestDaily {
 			continue
 		}
-		body, err := s.digestBody(u, groups, primary, now)
+		body, due, err := s.digestBody(u, groups, primary, now)
 		if err != nil {
 			return err
 		}
@@ -169,28 +176,37 @@ func (s *Server) SendDigests() error {
 				continue
 			}
 		}
-		if _, err := s.Log.Apply(&cmd.DigestSent{UserID: id, At: now}); err != nil {
-			return err
+		for _, g := range due {
+			if _, err := s.Log.Apply(&cmd.DigestSent{GroupID: g, UserID: id, At: now}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-// digestBody is one person's digest text, or "" when there's nothing new.
-func (s *Server) digestBody(u *store.User, groups []store.Group, primary string, now int64) (string, error) {
+// digestBody is one person's digest text, or "" when there's nothing new,
+// and the groups it covered (this node leads them, and they haven't had
+// today's digest yet), to be marked as sent.
+func (s *Server) digestBody(u *store.User, groups []store.Group, primary string, now int64) (string, []int64, error) {
 	var b strings.Builder
+	var due []int64
 	unread := 0
 	for i := range groups {
 		g := &groups[i]
-		m, err := s.Store.Membership(g.ID, u.ID)
-		if err != nil || m == nil || m.Status != "active" {
-			continue // not a member, or the group's file isn't on this node
+		if !s.leads(g.ID) {
+			continue
 		}
+		m, err := s.Store.Membership(g.ID, u.ID)
+		if err != nil || m == nil || m.Status != "active" || now-m.DigestSentAt < digestGap {
+			continue // not a member, the group's file isn't here, or sent today
+		}
+		due = append(due, g.ID)
 		n, _ := s.Store.UnreadCount(g.ID, u.ID)
 		unread += n
 		posts, err := s.Store.NewTopPosts(g.ID, now-86400, 5)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		if len(posts) == 0 {
 			continue
@@ -203,13 +219,13 @@ func (s *Server) digestBody(u *store.User, groups []store.Group, primary string,
 		b.WriteString("\n")
 	}
 	if b.Len() == 0 && unread == 0 {
-		return "", nil
+		return "", due, nil
 	}
 	if unread > 0 {
 		fmt.Fprintf(&b, "You have %s: %s\n\n", plural(unread, "unread notification", "unread notifications"),
 			s.primaryURL(primary, "/notifications"))
 	}
-	return b.String(), nil
+	return b.String(), due, nil
 }
 
 func (s *Server) emailFooter(primary string) string {

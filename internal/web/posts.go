@@ -81,7 +81,7 @@ func (s *Server) submitPost(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusBadRequest, "submit", c.errPage("New post", fmt.Sprintf("A post can have up to %d photos.", cmd.MaxImagesPerPost), d))
 		return
 	}
-	images, err := s.storePhotos(files)
+	images, err := s.storePhotos(c.g.ID, files)
 	if err != nil {
 		s.render(w, r, http.StatusBadRequest, "submit", c.errPage("New post", err.Error(), d))
 		return
@@ -122,7 +122,7 @@ func (c *greq) errPage(title, msg string, data any) *page {
 
 // storePhotos processes uploaded photos (re-encoded, metadata stripped,
 // resized), stores them, and returns them ready for a command.
-func (s *Server) storePhotos(files []*multipart.FileHeader) ([]cmd.Image, error) {
+func (s *Server) storePhotos(groupID int64, files []*multipart.FileHeader) ([]cmd.Image, error) {
 	var out []cmd.Image
 	for _, fh := range files {
 		if fh.Size == 0 {
@@ -146,7 +146,7 @@ func (s *Server) storePhotos(files []*multipart.FileHeader) ([]cmd.Image, error)
 			return nil, err
 		}
 		if s.PushBlob != nil {
-			s.PushBlob(hash)
+			s.PushBlob(groupID, hash)
 		}
 		out = append(out, cmd.Image{ID: s.IDs.Next(), Hash: hash, Width: res.Width, Height: res.Height, Bytes: len(res.Full)})
 	}
@@ -313,7 +313,7 @@ func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
 	}
 	var image *cmd.Image
 	if r.MultipartForm != nil && len(r.MultipartForm.File["photo"]) > 0 {
-		imgs, err := s.storePhotos(r.MultipartForm.File["photo"][:1])
+		imgs, err := s.storePhotos(c.g.ID, r.MultipartForm.File["photo"][:1])
 		if err != nil {
 			s.render(w, r, http.StatusBadRequest, "message", c.page("Photo problem", message{Title: "Photo problem", Text: err.Error()}))
 			return
@@ -486,8 +486,14 @@ func (s *Server) serveImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f, err := s.Blobs.Open(hash, thumb)
+	if err != nil && s.FetchBlob != nil {
+		// Not on this node yet (it's still being copied here): fetch it
+		// now from a node that has it, rather than show a broken image.
+		if ferr := s.FetchBlob(c.g.ID, hash); ferr == nil {
+			f, err = s.Blobs.Open(hash, thumb)
+		}
+	}
 	if err != nil {
-		// Not on this node yet (it's still being copied here).
 		log.Printf("image %s missing locally: %v", hash, err)
 		http.NotFound(w, r)
 		return

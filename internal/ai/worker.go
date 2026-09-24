@@ -184,9 +184,17 @@ func (w *Worker) RunJob(ctx context.Context, groupID int64, j store.Job) (cmd.Co
 				if err != nil {
 					return nil, err
 				}
-				if o != nil {
+				// Which sides may carry a note is decided here, from
+				// site.db as this node sees it, and carried in the command
+				// (a group's command can't read site.db; cmd/logs.go).
+				link, citeHere, citeThere, err := cmd.SisterRule(st.Site(), groupID, m.Group)
+				if err != nil {
+					return nil, err
+				}
+				if o != nil && link {
 					res.Sisters = append(res.Sisters, cmd.SisterMatch{Group: m.Group, Post: o.ID, Version: o.ThreadVersion,
-						Title: o.Title, Date: o.CreatedAt, NoteHere: w.IDs.Next(), NoteThere: w.IDs.Next()})
+						Title: o.Title, Date: o.CreatedAt, NoteHere: w.IDs.Next(), NoteThere: w.IDs.Next(),
+						CiteHere: citeHere, CiteThere: citeThere})
 				}
 			}
 		}

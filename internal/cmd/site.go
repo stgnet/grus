@@ -63,6 +63,8 @@ type AddHostAlias struct {
 	At      int64
 }
 
+func (*AddHostAlias) siteLog() {}
+
 func (c *AddHostAlias) Apply(a *Applier) (any, error) {
 	if err := ValidDomain(c.Host); err != nil {
 		return nil, err
@@ -84,8 +86,9 @@ func (c *AddHostAlias) Apply(a *Applier) (any, error) {
 	})
 }
 
-// CreateGroup adds a group to the site's list and creates its own database
-// file with its settings. OwnerID (if set) becomes the group's first owner.
+// CreateGroup adds a group to the site's list and places it on nodes; its
+// own file gets its settings and first owner (OwnerID, if set) from the
+// InitGroup this sends to the new group's log.
 type CreateGroup struct {
 	GroupID     int64
 	Slug        string
@@ -110,7 +113,7 @@ func (c *CreateGroup) Apply(a *Applier) (any, error) {
 	if vis != "public" && vis != "private" && vis != "hidden" {
 		return nil, Invalid("visibility must be public, private or hidden")
 	}
-	err := a.Site(func(tx *sql.Tx) error {
+	return nil, a.Site(func(tx *sql.Tx) error {
 		var n int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM groups WHERE slug = ?`, c.Slug).Scan(&n); err != nil {
 			return err
@@ -118,30 +121,19 @@ func (c *CreateGroup) Apply(a *Applier) (any, error) {
 		if n > 0 {
 			return ErrSlugTaken
 		}
-		_, err := tx.Exec(`INSERT INTO groups (id, slug, name, visibility, created_at) VALUES (?, ?, ?, ?, ?)`,
-			c.GroupID, c.Slug, c.Name, vis, c.At)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	// A second transaction, on the group's own file. If the node stops
-	// between the two, replaying this entry skips the part site.db already
-	// has and does this part (see Applier).
-	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
-		// A private group's FAQ starts private too.
-		if _, err := tx.Exec(`INSERT INTO settings (id, name, description, visibility, public_faq) VALUES (1, ?, ?, ?, ?)`,
-			c.Name, c.Description, vis, vis == "public"); err != nil {
+		if _, err := tx.Exec(`INSERT INTO groups (id, slug, name, visibility, created_at) VALUES (?, ?, ?, ?, ?)`,
+			c.GroupID, c.Slug, c.Name, vis, c.At); err != nil {
 			return err
 		}
-		if c.OwnerID != 0 {
-			_, err := tx.Exec(`INSERT INTO memberships (user_id, role, status, created_at) VALUES (?, 'owner', 'active', ?)`,
-				c.OwnerID, c.At)
+		if err := placeNewGroup(tx, c.GroupID, c.At); err != nil {
 			return err
 		}
-		return nil
+		return send(tx, &InitGroup{GroupID: c.GroupID, Name: c.Name, Description: c.Description,
+			Visibility: vis, OwnerID: c.OwnerID, At: c.At}, c.At)
 	})
 }
+
+func (*CreateGroup) siteLog() {}
 
 // PutCert stores a certificate or the ACME account key (autocert's cache).
 type PutCert struct {

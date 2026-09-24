@@ -1,7 +1,8 @@
 # The Studio in the starting setup: a live, full copy of everything, as a
-# non-voting member. It serves no web traffic in M0 (no http_addr or
-# https_addr), and the VPS's leader adds it to the cluster by itself (the
-# VPS's "peer" line), so it has no bootstrap and no peers here.
+# non-voting member. It serves no web traffic of its own (no http_addr or
+# https_addr); a VPS may still pass it a page for a group the VPS doesn't
+# hold. It registers through the VPS on its first start, and each log's
+# leader then adds it.
 
 node_id  = studio
 node_num = 2
@@ -13,6 +14,10 @@ primary_domain = nfb.group
 
 cluster_addr = :7946
 advertise    = studio.example.net:7946
+# Holds every group, as a non-voter: its home connection can drop without
+# stalling anything.
+full         = true
+join         = vps1.nfb.group:7946
 
 tls_ca   = /etc/grus/cluster/ca.crt
 tls_cert = /etc/grus/cluster/studio.crt

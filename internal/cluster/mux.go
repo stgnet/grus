@@ -4,42 +4,68 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/raft"
+
+	"github.com/stgnet/grus/internal/cmd"
 )
 
-// One port carries two kinds of node-to-node traffic:
+// One port carries all node-to-node traffic:
 //
-//   - Raft's own protocol (log replication, votes, snapshots), and
-//   - a small internal HTTP API ("RPC" below): fetching photo blobs, and
-//     submitting commands to the leader from tools like import-archive.
+//   - Raft's own protocol (log replication, votes, snapshots) for each log
+//     this node follows: site.db's, and one per group it holds, and
+//   - a small internal HTTP API ("RPC" below): submitting commands to a
+//     log's leader, fetching photos, passing on web requests for a group
+//     this node doesn't hold.
 //
 // They're told apart by TLS ALPN, the protocol name a client offers during
-// the handshake: an HTTP client asks for rpcProto; Raft's dialer asks for
-// nothing. So there's one port to open and one certificate check for both,
-// and nothing else to configure.
-const rpcProto = "grus-rpc"
+// the handshake: an HTTP client asks for rpcProto, and a Raft connection
+// for one log asks for raftProto(log), "grus-raft/site" or "grus-raft/g42".
+// So there's one port to open and one certificate check for everything,
+// and each log's Raft instance only ever sees its own connections.
+const (
+	rpcProto        = "grus-rpc"
+	raftProtoPrefix = "grus-raft/"
+)
+
+func raftProto(log cmd.LogID) string { return raftProtoPrefix + log.String() }
 
 // muxListener accepts TLS connections on the cluster port and hands each to
-// Raft or to the RPC server.
+// the listener registered for its protocol.
 type muxListener struct {
 	ln   net.Listener
-	raft chan net.Conn
-	rpc  chan net.Conn
+	mu   sync.Mutex
+	subs map[string]*subListener // by ALPN protocol
 	done chan struct{}
 	once sync.Once
 }
 
 func newMux(listen string, conf *tls.Config) (*muxListener, error) {
 	sconf := conf.Clone()
-	sconf.NextProtos = []string{rpcProto}
+	sconf.NextProtos = nil
+	// A TLS server normally has a fixed list of protocols it speaks, but
+	// ours depends on which logs this node holds right now, which changes
+	// as groups are placed. So pick per connection: agree to whichever of
+	// our protocols the client asked for. (An unknown log still completes
+	// the handshake; route then hangs up, as nobody's listening for it.)
+	sconf.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		for _, p := range hello.SupportedProtos {
+			if p == rpcProto || strings.HasPrefix(p, raftProtoPrefix) {
+				c := conf.Clone()
+				c.NextProtos = []string{p}
+				return c, nil
+			}
+		}
+		return nil, nil // no protocol we know: route closes it
+	}
 	ln, err := tls.Listen("tcp", listen, sconf)
 	if err != nil {
 		return nil, err
 	}
-	m := &muxListener{ln: ln, raft: make(chan net.Conn), rpc: make(chan net.Conn), done: make(chan struct{})}
+	m := &muxListener{ln: ln, subs: map[string]*subListener{}, done: make(chan struct{})}
 	go m.acceptLoop()
 	return m, nil
 }
@@ -64,19 +90,40 @@ func (m *muxListener) route(c *tls.Conn) {
 		return
 	}
 	c.SetDeadline(time.Time{})
-	ch, conn := m.raft, net.Conn(c)
-	if c.ConnectionState().NegotiatedProtocol == rpcProto {
+	proto := c.ConnectionState().NegotiatedProtocol
+	m.mu.Lock()
+	sub := m.subs[proto]
+	m.mu.Unlock()
+	if sub == nil {
+		// A log this node doesn't follow (yet, or any more). The other
+		// side's Raft retries, which is right: it may be a moment early.
+		c.Close()
+		return
+	}
+	conn := net.Conn(c)
+	if proto == rpcProto {
 		// net/http treats a *tls.Conn with an ALPN protocol it doesn't
 		// know as "someone else's protocol" and hangs up. Hiding the TLS
 		// type makes it serve plain HTTP/1.1 over the already-secured
 		// connection, which is what we want.
-		ch, conn = m.rpc, plainConn{c}
+		conn = plainConn{c}
 	}
 	select {
-	case ch <- conn:
+	case sub.ch <- conn:
+	case <-sub.done:
+		c.Close()
 	case <-m.done:
 		c.Close()
 	}
+}
+
+// listen registers a listener for one protocol.
+func (m *muxListener) listen(proto string, addr net.Addr) *subListener {
+	l := &subListener{m: m, proto: proto, ch: make(chan net.Conn), done: make(chan struct{}), addr: addr}
+	m.mu.Lock()
+	m.subs[proto] = l
+	m.mu.Unlock()
+	return l
 }
 
 func (m *muxListener) Close() error {
@@ -91,11 +138,16 @@ func (m *muxListener) Close() error {
 // plainConn is a connection with its TLS type hidden (see route).
 type plainConn struct{ net.Conn }
 
-// subListener is one side of the mux, as a net.Listener.
+// subListener is one protocol's side of the mux, as a net.Listener.
+// Closing it stops only that protocol (one log's Raft leaving this node),
+// not the port.
 type subListener struct {
-	m    *muxListener
-	ch   chan net.Conn
-	addr net.Addr
+	m     *muxListener
+	proto string
+	ch    chan net.Conn
+	done  chan struct{}
+	once  sync.Once
+	addr  net.Addr
 }
 
 var errClosed = errors.New("listener closed")
@@ -104,25 +156,40 @@ func (l *subListener) Accept() (net.Conn, error) {
 	select {
 	case c := <-l.ch:
 		return c, nil
+	case <-l.done:
+		return nil, errClosed
 	case <-l.m.done:
 		return nil, errClosed
 	}
 }
 
-func (l *subListener) Close() error   { return l.m.Close() }
+func (l *subListener) Close() error {
+	l.once.Do(func() {
+		close(l.done)
+		l.m.mu.Lock()
+		if l.m.subs[l.proto] == l {
+			delete(l.m.subs, l.proto)
+		}
+		l.m.mu.Unlock()
+	})
+	return nil
+}
+
 func (l *subListener) Addr() net.Addr { return l.addr }
 
-// tlsStream is Raft's network layer over mutual TLS: the Raft side of the
-// mux for incoming connections, and a Dial for outgoing ones.
+// tlsStream is one log's Raft network layer over mutual TLS: its side of
+// the mux for incoming connections, and a Dial that asks the far end for
+// the same log.
 type tlsStream struct {
 	*subListener
 	conf *tls.Config
 }
 
-func newTLSStream(m *muxListener, advertise string, conf *tls.Config) *tlsStream {
+func newTLSStream(m *muxListener, log cmd.LogID, advertise string, conf *tls.Config) *tlsStream {
+	proto := raftProto(log)
 	dconf := conf.Clone()
-	dconf.NextProtos = nil // no ALPN: that's how the far end knows it's Raft
-	return &tlsStream{subListener: &subListener{m: m, ch: m.raft, addr: hostAddr(advertise)}, conf: dconf}
+	dconf.NextProtos = []string{proto}
+	return &tlsStream{subListener: m.listen(proto, hostAddr(advertise)), conf: dconf}
 }
 
 // Dial connects to another node. The address is host:port and the host is

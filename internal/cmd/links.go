@@ -361,17 +361,9 @@ type SetCheck struct {
 }
 
 func (c *SetCheck) Apply(a *Applier) (any, error) {
-	plans, err := sisterPlans(a, c.GroupID, c.Sisters)
-	if err != nil {
-		return nil, err
-	}
-	var kept []sisterPlan
-	var hidden []sisterRef
-	var title string
-	var created, threadVersion int64
-	err = a.Group(c.GroupID, func(tx *sql.Tx) error {
-		var current int64
-		var status string
+	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
+		var current, created, threadVersion int64
+		var status, title string
 		if err := tx.QueryRow(`SELECT version, thread_version, title, created_at, status FROM posts WHERE id = ?`, c.PostID).
 			Scan(&current, &threadVersion, &title, &created, &status); err != nil {
 			return notFoundGone(err)
@@ -380,13 +372,20 @@ func (c *SetCheck) Apply(a *Applier) (any, error) {
 		if err != nil || !ok {
 			return err
 		}
-		if hidden, err = applyVerdict(tx, c.GroupID, "post", c.PostID, c.Verdict, c.Category, c.Reason, c.At); err != nil {
+		hidden, err := applyVerdict(tx, c.GroupID, "post", c.PostID, c.Verdict, c.Category, c.Reason, c.At)
+		if err != nil {
 			return err
 		}
+		// (Hidden now, its notes in sister groups were taken down by
+		// changeStatus.)
 		if len(hidden) > 0 || c.Verdict == VerdictViolation || !shown(status) {
 			return nil // hidden or held: no links to it (yet)
 		}
-		if kept, err = sisterHere(tx, c.PostID, plans, c.At); err != nil {
+		kept, err := sisterHere(tx, c.PostID, c.Sisters, c.At)
+		if err != nil {
+			return err
+		}
+		if err := sendSisterSides(tx, c.GroupID, c.PostID, title, created, threadVersion, kept, c.At); err != nil {
 			return err
 		}
 		for _, l := range c.Links {
@@ -418,17 +417,6 @@ func (c *SetCheck) Apply(a *Applier) (any, error) {
 		}
 		return nil
 	})
-	// On a replay after a crash, this group's part may already be done, and
-	// then kept is empty and the sister groups' parts are skipped too, even
-	// if the crash came between them. That loses at most a few links on the
-	// other side, which the next check of that group's posts finds again.
-	if err == nil && len(hidden) > 0 {
-		err = showSisterNotes(a, c.GroupID, c.PostID, hidden, false)
-	}
-	if err != nil || len(kept) == 0 {
-		return nil, err
-	}
-	return nil, sisterThere(a, c.GroupID, c.PostID, title, created, threadVersion, kept, c.At)
 }
 
 // SetNote is a note job's result: new text, or "no meaningful change",

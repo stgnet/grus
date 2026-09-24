@@ -334,3 +334,33 @@ func TestPrivateAndHiddenGroups(t *testing.T) {
 		t.Fatal("hidden group listed on the home page")
 	}
 }
+
+// TestPassOn checks which requests a node that doesn't hold everything
+// passes on: a group's pages when it doesn't hold that group, and the home
+// page and notifications (which gather from every group) when it doesn't
+// hold them all. Sign-in stays local: it only needs site.db.
+func TestPassOn(t *testing.T) {
+	s := newSite(t)
+	var passed []int64
+	s.srv.Holds = func(id int64) bool { return false }
+	s.srv.HoldsAll = func() bool { return false }
+	s.srv.PassOn = func(w http.ResponseWriter, r *http.Request, id int64) bool {
+		passed = append(passed, id)
+		w.WriteHeader(299)
+		return true
+	}
+	b := s.browser()
+	expect(t, b.do("GET", "https://travato.nfb.group/", nil), 299, "")
+	expect(t, b.do("GET", "https://nfb.group/", nil), 299, "")
+	if len(passed) != 2 || passed[0] != 42 || passed[1] != 0 {
+		t.Fatalf("passed on: %v", passed)
+	}
+	if code := b.do("GET", "https://nfb.group/login", nil).Code; code != 200 {
+		t.Fatalf("sign-in page: %d", code)
+	}
+	// When no node could take it, the page is served here.
+	s.srv.PassOn = func(http.ResponseWriter, *http.Request, int64) bool { return false }
+	if code := b.do("GET", "https://travato.nfb.group/", nil).Code; code != 200 {
+		t.Fatalf("fallback: %d", code)
+	}
+}

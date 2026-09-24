@@ -169,6 +169,42 @@ CREATE TABLE group_pairs (
 UPDATE users SET notify_email = 0;
 ALTER TABLE users ADD COLUMN digest_sent_at INTEGER NOT NULL DEFAULT 0;
 `,
+	// 5: M7 one log per file: this file's outbox, and the node map.
+	`
+-- Follow-up commands for other logs, written by a command in the same
+-- transaction and relayed by this log's leader (internal/cmd/logs.go).
+CREATE TABLE outbox (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  target     INTEGER NOT NULL, -- 0 = site.db's log, else a group's
+  command    BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+-- The nodes of the cluster. voter: counts toward quorum for site.db and
+-- the groups placed on it (a VPS); full: holds every group, as a
+-- non-voter (the Studio).
+CREATE TABLE nodes (
+  id         TEXT PRIMARY KEY,
+  addr       TEXT NOT NULL,     -- cluster host:port
+  voter      INTEGER NOT NULL DEFAULT 0,
+  full       INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- Which nodes hold which group, and whether each votes in the group's
+-- log. bootstrap: one of the group's first voters, which starts the
+-- group's log if it has none (a host added later joins the running log
+-- instead, added by its leader).
+CREATE TABLE group_hosts (
+  group_id   INTEGER NOT NULL,
+  node_id    TEXT NOT NULL,
+  voter      INTEGER NOT NULL DEFAULT 0,
+  bootstrap  INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (group_id, node_id)
+);
+`,
 }
 
 var groupMigrations = []string{
@@ -684,5 +720,16 @@ CREATE TABLE notifications (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX notifications_user ON notifications(user_id, read_at);
+`,
+	// 8: M7 this file's outbox (see site migration 5), and when each
+	// member last had this group's digest.
+	`
+CREATE TABLE outbox (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  target     INTEGER NOT NULL,
+  command    BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+ALTER TABLE memberships ADD COLUMN digest_sent_at INTEGER NOT NULL DEFAULT 0;
 `,
 }

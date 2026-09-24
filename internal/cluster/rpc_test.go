@@ -3,12 +3,10 @@ package cluster
 import (
 	"bytes"
 	"errors"
-	"net/http"
 	"testing"
 
 	"github.com/stgnet/grus/internal/blob"
 	"github.com/stgnet/grus/internal/cmd"
-	"github.com/stgnet/grus/internal/config"
 )
 
 // TestRPC runs the internal API on the same port as Raft (split by ALPN)
@@ -18,29 +16,22 @@ func TestRPC(t *testing.T) {
 	caDir := testCA(t, "n1", "studio")
 	n1Addr, studioAddr := freeAddr(t), freeAddr(t)
 
-	studioSt := openStore(t, t.TempDir())
-	studioOpts := opts(t, caDir, "studio", "studio", studioAddr)
-	studio, err := Start(studioOpts, studioSt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer studio.Shutdown()
-
 	n1St := openStore(t, t.TempDir())
 	o := opts(t, caDir, "n1", "n1", n1Addr)
-	o.Bootstrap = true
-	o.Peers = []config.Peer{{ID: "studio", Addr: studioAddr}}
-	n1, err := Start(o, n1St)
-	if err != nil {
-		t.Fatal(err)
-	}
+	o.Bootstrap, o.Voter = true, true
+	n1 := startNode(t, o, n1St)
 	defer n1.Shutdown()
-	waitFor(t, "n1 to lead", n1.IsLeader)
+
+	studioSt := openStore(t, t.TempDir())
+	studioOpts := opts(t, caDir, "studio", "studio", studioAddr)
+	studioOpts.Full, studioOpts.Join = true, []string{n1Addr}
+	studio := startNode(t, studioOpts, studioSt)
+	defer studio.Shutdown()
 
 	n1Blobs, _ := blob.Open(t.TempDir())
 	studioBlobs, _ := blob.Open(t.TempDir())
-	go http.Serve(n1.RPCListener(), RPCHandler(n1, n1St, n1Blobs))
-	go http.Serve(studio.RPCListener(), RPCHandler(studio, studioSt, studioBlobs))
+	ServeBlobs(n1.RPC(), n1Blobs)
+	ServeBlobs(studio.RPC(), studioBlobs)
 
 	client := NewClient(studioOpts.TLS)
 

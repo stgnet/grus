@@ -231,15 +231,18 @@ func (c *SetNotifyPrefs) Apply(a *Applier) (any, error) {
 	})
 }
 
-// DigestSent records when someone's daily digest went out.
+// DigestSent records when someone's daily digest went out with a group in
+// it. It's per group, on the group's log, because each group's part is
+// sent by the node leading that group.
 type DigestSent struct {
-	UserID int64
-	At     int64
+	GroupID int64
+	UserID  int64
+	At      int64
 }
 
 func (c *DigestSent) Apply(a *Applier) (any, error) {
-	return nil, a.Site(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE users SET digest_sent_at = ? WHERE id = ?`, c.At, c.UserID)
+	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE memberships SET digest_sent_at = ? WHERE user_id = ?`, c.At, c.UserID)
 		return err
 	})
 }

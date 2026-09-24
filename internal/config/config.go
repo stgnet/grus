@@ -1,7 +1,8 @@
 // Package config reads grus.conf.
 //
 // The format is deliberately plain: one "key = value" per line, "#" starts a
-// comment, and keys that take a list (peer, operator) are simply repeated.
+// comment, and keys that take a list (join, operator, worker) are simply
+// repeated.
 // It's easier to read and edit on a server than JSON, and it keeps secrets
 // like the SMTP password out of the process arguments where `ps` shows them.
 //
@@ -16,13 +17,6 @@ import (
 	"strconv"
 	"strings"
 )
-
-// Peer is another node the leader keeps in the cluster as a non-voter
-// (in M0, that's the Studio's full copy).
-type Peer struct {
-	ID   string // stable Raft id, e.g. "studio"
-	Addr string // host:port of its cluster port, resolved on every connect
-}
 
 // Config is everything a node needs to start. Zero values are filled in by
 // Load with the defaults noted beside each field.
@@ -44,13 +38,15 @@ type Config struct {
 	ACMEEmail string // contact address given to Let's Encrypt
 
 	// Cluster.
-	ClusterAddr string // listen address for node-to-node mTLS, e.g. ":7946"
-	Advertise   string // host:port other nodes use to reach this one
-	Bootstrap   bool   // first start of the first voter creates the cluster
-	Peers       []Peer // non-voters the leader keeps in the cluster
-	TLSCA       string // cluster CA certificate (made by `grus ca init`)
-	TLSCert     string // this node's certificate (made by `grus ca issue`)
-	TLSKey      string // this node's key
+	ClusterAddr string   // listen address for node-to-node mTLS, e.g. ":7946"
+	Advertise   string   // host:port other nodes use to reach this one
+	Bootstrap   bool     // first start of the first node creates the cluster (implies voter)
+	Voter       bool     // votes in the site log; new groups are placed on it (a VPS)
+	Full        bool     // holds every group as a non-voter (the Studio)
+	Join        []string // other nodes' cluster addresses, to register through
+	TLSCA       string   // cluster CA certificate (made by `grus ca init`)
+	TLSCert     string   // this node's certificate (made by `grus ca issue`)
+	TLSKey      string   // this node's key
 
 	// Mail. With no SMTPHost, login emails are written to the log instead
 	// of sent, which is what you want on a laptop.
@@ -136,13 +132,16 @@ func (c *Config) set(key, val string) error {
 		c.Advertise = val
 	case "bootstrap":
 		c.Bootstrap, err = strconv.ParseBool(val)
-	case "peer":
-		// peer = studio studio.example.com:7946
-		id, addr, ok := strings.Cut(val, " ")
-		if !ok {
-			return fmt.Errorf("peer: expected \"<id> <host:port>\"")
+	case "voter":
+		c.Voter, err = strconv.ParseBool(val)
+	case "full":
+		c.Full, err = strconv.ParseBool(val)
+	case "join":
+		// join = vps1.nfb.group:7946
+		if _, _, err := net.SplitHostPort(val); err != nil {
+			return fmt.Errorf("join: %v", err)
 		}
-		c.Peers = append(c.Peers, Peer{ID: id, Addr: strings.TrimSpace(addr)})
+		c.Join = append(c.Join, val)
 	case "tls_ca":
 		c.TLSCA = val
 	case "tls_cert":
@@ -214,6 +213,13 @@ func (c *Config) check() error {
 	}
 	if c.AIURL != "" && c.AIModel == "" {
 		return fmt.Errorf("ai_url is set but ai_model isn't")
+	}
+	if c.Bootstrap {
+		// The node that creates the cluster is its first voter.
+		c.Voter = true
+	}
+	if !c.Bootstrap && len(c.Join) == 0 {
+		return fmt.Errorf("a node that doesn't bootstrap the cluster needs a join address")
 	}
 	if c.MailFrom == "" {
 		c.MailFrom = "login@" + c.PrimaryDomain

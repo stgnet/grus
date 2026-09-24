@@ -86,10 +86,9 @@ func (it *item) table() string {
 
 // changeStatus moves an item between visible, flagged, auto_hidden and
 // held, keeping the search index, the post's comment count, and the
-// thread's derived work (digest, notes, FAQ) in step. For a post, it
-// returns the sister-group posts whose notes must be hidden or shown
-// again after the transaction (showSisterNotes), since that's another
-// group's file.
+// thread's derived work (digest, notes, FAQ) in step. For a post whose
+// shown-ness changes, it sends the sister groups word to hide (or show
+// again) their notes written from it, and returns those sister posts.
 func changeStatus(tx *sql.Tx, groupID int64, it *item, to string, at int64) ([]sisterRef, error) {
 	was := it.status
 	if was == to {
@@ -124,7 +123,13 @@ func changeStatus(tx *sql.Tx, groupID int64, it *item, to string, at int64) ([]s
 		}
 	}
 	if it.kind == "post" && shown(was) != shown(to) {
-		return sisterRefs(tx, it.id)
+		// Notes in sister groups written from this post go (or come
+		// back) with it.
+		refs, err := sisterRefs(tx, it.id)
+		if err != nil {
+			return nil, err
+		}
+		return refs, sendSisterNotes(tx, groupID, it.id, refs, shown(to), at)
 	}
 	return nil, nil
 }
@@ -243,7 +248,6 @@ type Approve struct {
 }
 
 func (c *Approve) Apply(a *Applier) (any, error) {
-	var refs []sisterRef
 	err := a.Group(c.GroupID, func(tx *sql.Tx) error {
 		it, err := loadItem(tx, c.Kind, c.ID)
 		if err != nil {
@@ -255,7 +259,7 @@ func (c *Approve) Apply(a *Applier) (any, error) {
 		var by sql.NullString
 		tx.QueryRow(`SELECT flagged_by FROM `+it.table()+` WHERE id = ?`, c.ID).Scan(&by)
 		wasHeld := it.status == "held"
-		if refs, err = changeStatus(tx, c.GroupID, it, "visible", c.At); err != nil {
+		if _, err = changeStatus(tx, c.GroupID, it, "visible", c.At); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`UPDATE `+it.table()+` SET ai_cleared = 1, flagged_by = NULL, flag_category = NULL, flag_reason = NULL
@@ -287,10 +291,7 @@ func (c *Approve) Apply(a *Applier) (any, error) {
 		}
 		return modLog(tx, c.By, action, c.Kind, c.ID, "", c.At)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return nil, showSisterNotes(a, c.GroupID, c.ID, refs, true)
+	return nil, err
 }
 
 // Report is a member reporting an item. It counts like an AI flag: the
@@ -367,7 +368,6 @@ func (c *Vote) Apply(a *Applier) (any, error) {
 	if c.Vote != "keep" && c.Vote != "hide" {
 		return nil, Invalid("a vote is keep or hide")
 	}
-	var refs []sisterRef
 	var result string
 	err := a.Group(c.GroupID, func(tx *sql.Tx) error {
 		it, err := loadItem(tx, c.Kind, c.ID)
@@ -392,7 +392,7 @@ func (c *Vote) Apply(a *Applier) (any, error) {
 		}
 		switch {
 		case hides >= threshold && hides > keeps:
-			if refs, err = changeStatus(tx, c.GroupID, it, "auto_hidden", c.At); err != nil {
+			if _, err = changeStatus(tx, c.GroupID, it, "auto_hidden", c.At); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(`UPDATE `+it.table()+` SET flagged_by = 'vote' WHERE id = ?`, c.ID); err != nil {
@@ -416,7 +416,7 @@ func (c *Vote) Apply(a *Applier) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return result, showSisterNotes(a, c.GroupID, c.ID, refs, false)
+	return result, nil
 }
 
 // canVote is the voting rule. "Someone they're arguing with" is read

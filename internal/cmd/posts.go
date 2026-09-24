@@ -349,7 +349,6 @@ func (c *SoftDelete) Apply(a *Applier) (any, error) {
 	if c.ByMod {
 		status, keep = "removed", ModRemoveKeep
 	}
-	var sisters []sisterRef
 	err := a.Group(c.GroupID, func(tx *sql.Tx) error {
 		table, err := itemTable(c.Kind)
 		if err != nil {
@@ -378,8 +377,13 @@ func (c *SoftDelete) Apply(a *Applier) (any, error) {
 				return err
 			}
 		}
-		if c.Kind == "post" {
-			if sisters, err = sisterRefs(tx, c.ID); err != nil {
+		if c.Kind == "post" && (was == "visible" || was == "flagged") {
+			// Notes in sister groups written from this post stop showing too.
+			refs, err := sisterRefs(tx, c.ID)
+			if err != nil {
+				return err
+			}
+			if err := sendSisterNotes(tx, c.GroupID, c.ID, refs, false, c.At); err != nil {
 				return err
 			}
 		}
@@ -403,11 +407,7 @@ func (c *SoftDelete) Apply(a *Applier) (any, error) {
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	// Notes in sister groups written from this post stop showing too.
-	return nil, showSisterNotes(a, c.GroupID, c.ID, sisters, false)
+	return nil, err
 }
 
 // Restore undoes a SoftDelete (mods only), any time before the purge.
@@ -420,7 +420,6 @@ type Restore struct {
 }
 
 func (c *Restore) Apply(a *Applier) (any, error) {
-	var sisters []sisterRef
 	err := a.Group(c.GroupID, func(tx *sql.Tx) error {
 		table, err := itemTable(c.Kind)
 		if err != nil {
@@ -455,16 +454,17 @@ func (c *Restore) Apply(a *Applier) (any, error) {
 			}
 		}
 		if c.Kind == "post" {
-			if sisters, err = sisterRefs(tx, c.ID); err != nil {
+			refs, err := sisterRefs(tx, c.ID)
+			if err != nil {
+				return err
+			}
+			if err := sendSisterNotes(tx, c.GroupID, c.ID, refs, true, c.At); err != nil {
 				return err
 			}
 		}
 		return modLog(tx, c.By, "restore", c.Kind, c.ID, "", c.At)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return nil, showSisterNotes(a, c.GroupID, c.ID, sisters, true)
+	return nil, err
 }
 
 // threadOf is the post a post or comment belongs to.

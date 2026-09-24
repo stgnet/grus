@@ -3,7 +3,6 @@ package cmd
 import (
 	"database/sql"
 	"errors"
-	"slices"
 	"strings"
 
 	"github.com/stgnet/grus/internal/auth"
@@ -16,11 +15,12 @@ import (
 // the groups' own files, each note in the group that shows it, so a node
 // holding one group can show a note citing the other without holding it.
 //
-// Commands that write two groups' files do it as two transactions, one per
-// file, and never read the other group's file: in M7 a node may hold only
-// one of them. What they need to know about the other group (visibility,
-// "Use AI", whether the pair is active) comes from site.db, which every
-// node holds.
+// The pairing commands are on the site log. What they change in the
+// groups' own files (the mod log lines, taking links down) is sent to each
+// group's log (see logs.go). A check that links two posts writes its own
+// side and sends the other side the same way. What a check needs to know
+// about the other group (visibility, "Use AI", whether the pair is active)
+// is looked up by the worker in site.db and carried in the command.
 
 // MaxSisterTopics caps the topic words that limit a pairing.
 const MaxSisterTopics = 200
@@ -107,7 +107,6 @@ func (c *ProposeSister) Apply(a *Applier) (any, error) {
 			state = "active" // they asked us: this is a yes
 			_, err = tx.Exec(`UPDATE group_pairs SET state = 'active', decided_by = ?, updated_at = ? WHERE group_a = ? AND group_b = ?`,
 				c.By, c.At, ga, gb)
-			return err
 		case err == nil || errors.Is(err, sql.ErrNoRows):
 			state = "proposed"
 			_, err = tx.Exec(`INSERT INTO group_pairs (group_a, group_b, proposed_by_group, topics, state, proposed_by, created_at, updated_at)
@@ -115,18 +114,20 @@ func (c *ProposeSister) Apply(a *Applier) (any, error) {
 				ON CONFLICT (group_a, group_b) DO UPDATE SET proposed_by_group = excluded.proposed_by_group, topics = excluded.topics,
 				  state = 'proposed', proposed_by = excluded.proposed_by, decided_by = NULL, updated_at = excluded.updated_at`,
 				ga, gb, c.GroupID, topics, c.By, c.At, c.At)
-			return err
-		default:
+		}
+		if err != nil {
 			return err
 		}
+		return send(tx, &ModLogEntry{GroupID: c.GroupID, By: c.By, Action: "sister_" + state, TargetType: "group",
+			TargetID: c.Other, Reason: topics, At: c.At}, c.At)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return state, a.Group(c.GroupID, func(tx *sql.Tx) error {
-		return modLog(tx, c.By, "sister_"+state, "group", c.Other, topics, c.At)
-	})
+	return state, nil
 }
+
+func (*ProposeSister) siteLog() {}
 
 // AnswerSister is an owner of GroupID answering Other's proposal.
 type AnswerSister struct {
@@ -161,15 +162,13 @@ func (c *AnswerSister) Apply(a *Applier) (any, error) {
 				}
 			}
 		}
-		return nil
+		return send(tx, &ModLogEntry{GroupID: c.GroupID, By: c.By, Action: "sister_" + map[bool]string{true: "accept", false: "decline"}[c.Accept],
+			TargetType: "group", TargetID: c.Other, At: c.At}, c.At)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
-		return modLog(tx, c.By, "sister_"+map[bool]string{true: "accept", false: "decline"}[c.Accept], "group", c.Other, "", c.At)
-	})
+	return nil, err
 }
+
+func (*AnswerSister) siteLog() {}
 
 // EndSister ends a pairing (or withdraws a proposal), from either side,
 // and takes down every link between the two groups.
@@ -182,41 +181,25 @@ type EndSister struct {
 
 func (c *EndSister) Apply(a *Applier) (any, error) {
 	ga, gb := pairKey(c.GroupID, c.Other)
-	err := a.Site(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE group_pairs SET state = 'ended', decided_by = ?, updated_at = ? WHERE group_a = ? AND group_b = ?`,
-			c.By, c.At, ga, gb)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	// Each side's links and notes to the other. A rejected link stays
-	// rejected (a mod said no to it; pairing again doesn't undo that).
-	for _, pair := range [][2]int64{{c.GroupID, c.Other}, {c.Other, c.GroupID}} {
-		here, there := pair[0], pair[1]
-		err := a.Group(here, func(tx *sql.Tx) error {
-			if _, err := tx.Exec(`DELETE FROM sister_links WHERE other_group = ? AND state = 'active'`, there); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(`UPDATE notes SET state = 'removed' WHERE kind = 'link' AND state = 'active'
-				AND id IN (SELECT note_id FROM note_sources WHERE group_id = ?)`, there); err != nil {
-				return err
-			}
-			if here == c.GroupID {
-				return modLog(tx, c.By, "sister_end", "group", there, "", c.At)
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
+	return nil, a.Site(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE group_pairs SET state = 'ended', decided_by = ?, updated_at = ? WHERE group_a = ? AND group_b = ?`,
+			c.By, c.At, ga, gb); err != nil {
+			return err
 		}
-	}
-	return nil, nil
+		// Each side's links and notes to the other come down.
+		if err := send(tx, &DropSisterLinks{GroupID: c.GroupID, Other: c.Other, By: c.By, At: c.At}, c.At); err != nil {
+			return err
+		}
+		return send(tx, &DropSisterLinks{GroupID: c.Other, Other: c.GroupID, At: c.At}, c.At)
+	})
 }
 
+func (*EndSister) siteLog() {}
+
 // SisterMatch is one post in a sister group that a check job found to be
-// about the same thing: the note ids to use on each side, and the other
-// thread's version as the worker read it.
+// about the same thing: the note ids to use on each side, the other
+// thread's version as the worker read it, and which sides may carry a
+// note (from SisterRule, looked up by the worker when it read site.db).
 type SisterMatch struct {
 	Group     int64
 	Post      int64
@@ -225,72 +208,53 @@ type SisterMatch struct {
 	Date      int64
 	NoteHere  int64
 	NoteThere int64
+	CiteHere  bool // a note on this post, citing the other
+	CiteThere bool // a note on the other post, citing this one
 }
 
-// Sister links are SetCheck's cross-group part, in three steps:
-//
-//  1. sisterPlans, before any transaction: which matches may be linked at
-//     all, and which side of each gets a note.
-//  2. sisterHere, inside SetCheck's own transaction on this group's file
-//     (a second transaction on the same file in one command would be
-//     skipped as already applied): this side's link rows and notes.
-//  3. sisterThere, after it: each sister group's side, one transaction
-//     per group.
-//
-// The visibility rule (auth.CanCite) decides which side gets a note: a
-// note on this post needs the other group to be public, and a note on the
-// other post needs this group to be public. Group facts come from site.db;
-// see the Applier's note on reading one file while writing another: a
-// replay may see a later pairing state, and then the later EndSister (also
-// replayed) removes whatever this adds, so the files end up the same.
-
-type sisterPlan struct {
-	m               SisterMatch
-	noteHere, there bool
-}
-
-func sisterPlans(a *Applier, groupID int64, matches []SisterMatch) ([]sisterPlan, error) {
-	if len(matches) == 0 {
-		return nil, nil
-	}
-	site := a.Store.Site()
-	visHere, aiHere, err := groupFacts(site, groupID)
+// SisterRule says whether posts in two groups may be linked, and which
+// side may show a note citing the other: the pairing must be active, both
+// groups must have AI on, and a note may only cite a public group's post
+// (auth.CanCite). It reads site.db, so the worker calls it and puts the
+// answer in the command: a group's command can't read site.db itself
+// (logs.go). The rule is checked again when a note is shown, so a group
+// changing its visibility later takes effect at once.
+func SisterRule(site *sql.DB, here, there int64) (link, citeHere, citeThere bool, err error) {
+	visHere, aiHere, err := groupFacts(site, here)
 	if err != nil || !aiHere {
-		return nil, nil
+		return false, false, false, nil
 	}
-	var plans []sisterPlan
+	p, err := sisterPair(site, here, there)
+	if err != nil {
+		return false, false, false, err
+	}
+	visThere, aiThere, err := groupFacts(site, there)
+	if err != nil || !p.Active || !aiThere {
+		return false, false, false, nil
+	}
+	citeHere, citeThere = auth.CanCite(visThere), auth.CanCite(visHere)
+	return citeHere || citeThere, citeHere, citeThere, nil
+}
+
+// sisterHere writes this group's side of a check's sister links: the link
+// rows and notes on this post. It returns the matches a mod hasn't
+// rejected, whose other sides sendSisterSides then sends.
+func sisterHere(tx *sql.Tx, postID int64, matches []SisterMatch, at int64) ([]SisterMatch, error) {
+	var kept []SisterMatch
 	for _, m := range matches {
-		p, err := sisterPair(site, groupID, m.Group)
-		if err != nil {
-			return nil, err
-		}
-		visThere, aiThere, err := groupFacts(site, m.Group)
-		if err != nil || !p.Active || !aiThere {
+		if !m.CiteHere && !m.CiteThere {
 			continue
 		}
-		pl := sisterPlan{m: m, noteHere: auth.CanCite(visThere), there: auth.CanCite(visHere)}
-		if pl.noteHere || pl.there {
-			plans = append(plans, pl)
-		}
-	}
-	return plans, nil
-}
-
-// sisterHere writes this group's side. It returns the plans a mod hasn't
-// rejected, for sisterThere.
-func sisterHere(tx *sql.Tx, postID int64, plans []sisterPlan, at int64) ([]sisterPlan, error) {
-	var kept []sisterPlan
-	for _, pl := range plans {
-		ok, err := putSisterLink(tx, postID, pl.m.Group, pl.m.Post, pl.m.Title, pl.m.Date, "auto", at)
+		ok, err := putSisterLink(tx, postID, m.Group, m.Post, m.Title, m.Date, "auto", at)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue // a mod rejected this pair
 		}
-		kept = append(kept, pl)
-		if pl.noteHere {
-			if err := linkNote(tx, pl.m.Group, postID, pl.m.Post, pl.m.NoteHere, pl.m.Version, at); err != nil {
+		kept = append(kept, m)
+		if m.CiteHere {
+			if err := linkNote(tx, m.Group, postID, m.Post, m.NoteHere, m.Version, at); err != nil {
 				return nil, err
 			}
 		}
@@ -298,39 +262,12 @@ func sisterHere(tx *sql.Tx, postID int64, plans []sisterPlan, at int64) ([]siste
 	return kept, nil
 }
 
-// sisterThere writes each sister group's side: its link row, and a note
-// on its post where the rule allows. title, date and version are this
-// post's, as of this command.
-func sisterThere(a *Applier, groupID, postID int64, title string, date, version int64, kept []sisterPlan, at int64) error {
-	byGroup := map[int64][]sisterPlan{}
-	var groups []int64
-	for _, pl := range kept {
-		if byGroup[pl.m.Group] == nil {
-			groups = append(groups, pl.m.Group)
-		}
-		byGroup[pl.m.Group] = append(byGroup[pl.m.Group], pl)
-	}
-	slices.Sort(groups)
-	for _, g := range groups {
-		err := a.Group(g, func(tx *sql.Tx) error {
-			for _, pl := range byGroup[g] {
-				var status string
-				if tx.QueryRow(`SELECT status FROM posts WHERE id = ?`, pl.m.Post).Scan(&status) != nil ||
-					(status != "visible" && status != "flagged") {
-					continue
-				}
-				ok, err := putSisterLink(tx, pl.m.Post, groupID, postID, title, date, "auto", at)
-				if err != nil {
-					return err
-				}
-				if ok && pl.there {
-					if err := linkNote(tx, groupID, pl.m.Post, postID, pl.m.NoteThere, version, at); err != nil {
-						return err
-					}
-				}
-			}
-			return nil
-		})
+// sendSisterSides sends each sister group its side of the new links.
+// title, date and version are this post's, as of this command.
+func sendSisterSides(tx *sql.Tx, groupID, postID int64, title string, date, version int64, kept []SisterMatch, at int64) error {
+	for _, m := range kept {
+		err := send(tx, &PutSisterSide{GroupID: m.Group, Post: m.Post, FromGroup: groupID, FromPost: postID,
+			Title: title, Date: date, Version: version, NoteID: m.NoteThere, Cite: m.CiteThere, At: at}, at)
 		if err != nil {
 			return err
 		}
@@ -359,40 +296,38 @@ func putSisterLink(tx *sql.Tx, post, group, other int64, title string, date int6
 }
 
 // RemoveSisterLink is a mod of either group taking down a cross-link. It's
-// remembered as rejected on both sides, so it's never made again.
+// remembered as rejected on both sides, so it's never made again: this
+// side here, and the other side by the same command sent there (Echo).
 type RemoveSisterLink struct {
 	GroupID    int64
 	PostID     int64
 	OtherGroup int64
 	OtherPost  int64
 	By         int64
+	Echo       bool // the other side's copy: no mod log line, nothing sent on
 	At         int64
 }
 
 func (c *RemoveSisterLink) Apply(a *Applier) (any, error) {
-	sides := [][4]int64{{c.GroupID, c.PostID, c.OtherGroup, c.OtherPost}, {c.OtherGroup, c.OtherPost, c.GroupID, c.PostID}}
-	for i, s := range sides {
-		here, post, there, other := s[0], s[1], s[2], s[3]
-		err := a.Group(here, func(tx *sql.Tx) error {
-			if _, err := tx.Exec(`INSERT INTO sister_links (post_id, other_group, other_post, source, state, created_at)
-				VALUES (?, ?, ?, 'mod', 'rejected', ?)
-				ON CONFLICT (post_id, other_group, other_post) DO UPDATE SET state = 'rejected'`, post, there, other, c.At); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(`UPDATE notes SET state = 'removed', removed_by = ? WHERE kind = 'link' AND host_post_id = ?
-				AND id IN (SELECT note_id FROM note_sources WHERE group_id = ? AND post_id = ?)`, c.By, post, there, other); err != nil {
-				return err
-			}
-			if i == 0 {
-				return modLog(tx, c.By, "unlink_sister", "post", post, "", c.At)
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
+	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`INSERT INTO sister_links (post_id, other_group, other_post, source, state, created_at)
+			VALUES (?, ?, ?, 'mod', 'rejected', ?)
+			ON CONFLICT (post_id, other_group, other_post) DO UPDATE SET state = 'rejected'`, c.PostID, c.OtherGroup, c.OtherPost, c.At); err != nil {
+			return err
 		}
-	}
-	return nil, nil
+		if _, err := tx.Exec(`UPDATE notes SET state = 'removed', removed_by = ? WHERE kind = 'link' AND host_post_id = ?
+			AND id IN (SELECT note_id FROM note_sources WHERE group_id = ? AND post_id = ?)`, c.By, c.PostID, c.OtherGroup, c.OtherPost); err != nil {
+			return err
+		}
+		if c.Echo {
+			return nil
+		}
+		if err := modLog(tx, c.By, "unlink_sister", "post", c.PostID, "", c.At); err != nil {
+			return err
+		}
+		return send(tx, &RemoveSisterLink{GroupID: c.OtherGroup, PostID: c.OtherPost, OtherGroup: c.GroupID, OtherPost: c.PostID,
+			By: c.By, Echo: true, At: c.At}, c.At)
+	})
 }
 
 // MarkSisterStale is the worker's sister sweep noticing that the thread a
@@ -454,37 +389,4 @@ func sisterRefs(tx *sql.Tx, postID int64) ([]sisterRef, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
-}
-
-// showSisterNotes hides (or shows again) the notes in sister groups that
-// are written from post, when it's deleted (or restored). A note's text
-// is made from the post, so it must go when the post does. Only notes
-// taken down this way come back on a restore, not ones a mod removed.
-func showSisterNotes(a *Applier, groupID, post int64, refs []sisterRef, show bool) error {
-	from, to := "active", "removed"
-	if show {
-		from, to = to, from
-	}
-	byGroup := map[int64][]any{}
-	var groups []int64
-	for _, r := range refs {
-		if byGroup[r.group] == nil {
-			groups = append(groups, r.group)
-		}
-		byGroup[r.group] = append(byGroup[r.group], r.post)
-	}
-	for _, g := range groups { // one transaction per file; refs are sorted by group
-		hosts := byGroup[g]
-		err := a.Group(g, func(tx *sql.Tx) error {
-			_, err := tx.Exec(`UPDATE notes SET state = ? WHERE kind = 'link' AND state = ? AND removed_by IS NULL
-				AND host_post_id IN (`+placeholders(len(hosts))+`)
-				AND id IN (SELECT note_id FROM note_sources WHERE group_id = ? AND post_id = ?)`,
-				append(append([]any{to, from}, hosts...), groupID, post)...)
-			return err
-		})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }

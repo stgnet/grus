@@ -139,28 +139,24 @@ func (c *UpdateSettings) Apply(a *Applier) (any, error) {
 		if _, err := tx.Exec(`UPDATE settings SET `+strings.Join(sets, ", ")+` WHERE id = 1`, args...); err != nil {
 			return err
 		}
-		return modLog(tx, c.By, "settings", "group", c.GroupID, strings.Join(cols, ", "), c.At)
-	})
-	if err != nil {
-		return nil, err
-	}
-	var siteSets []string
-	var siteArgs []any
-	for _, k := range cols {
-		if mirrored[k] {
-			siteSets = append(siteSets, k+" = ?")
-			siteArgs = append(siteArgs, values[k])
+		if err := modLog(tx, c.By, "settings", "group", c.GroupID, strings.Join(cols, ", "), c.At); err != nil {
+			return err
 		}
-	}
-	if len(siteSets) == 0 {
-		return nil, nil
-	}
-	// A second transaction, on site.db; as with CreateGroup, a replay
-	// after a crash between the two finishes whichever part is missing.
-	return nil, a.Site(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE groups SET `+strings.Join(siteSets, ", ")+` WHERE id = ?`, append(siteArgs, c.GroupID)...)
-		return err
+		mirror := false
+		for _, k := range cols {
+			mirror = mirror || mirrored[k]
+		}
+		if !mirror {
+			return nil
+		}
+		// site.db's copy, sent as the values now are (see MirrorGroup).
+		m := &MirrorGroup{GroupID: c.GroupID}
+		if err := tx.QueryRow(`SELECT name, visibility, ai_enabled FROM settings WHERE id = 1`).Scan(&m.Name, &m.Visibility, &m.AIEnabled); err != nil {
+			return err
+		}
+		return send(tx, m, c.At)
 	})
+	return nil, err
 }
 
 // RecordUsage adds a node's AI usage counts since its last report to the

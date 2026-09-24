@@ -7,8 +7,8 @@ import (
 
 func TestReportsVotesAndBans(t *testing.T) {
 	st := newStore(t)
-	idx := uint64(0)
-	run := func(c Command) (any, error) { idx++; return Run(st, idx, c) }
+	d := &Direct{Store: st}
+	run := d.Apply
 	must := func(c Command) any {
 		t.Helper()
 		v, err := run(c)
@@ -116,8 +116,8 @@ func TestReportsVotesAndBans(t *testing.T) {
 
 func TestHoldFirstPost(t *testing.T) {
 	st := newStore(t)
-	idx := uint64(0)
-	run := func(c Command) (any, error) { idx++; return Run(st, idx, c) }
+	d := &Direct{Store: st}
+	run := d.Apply
 	run(&CreateGroup{GroupID: 1, Slug: "travato", Name: "Travato", OwnerID: 1, At: 0})
 	run(&UpdateSettings{GroupID: 1, Set: map[string]any{"hold_first_post": true}, By: 1, At: 0})
 	run(&JoinGroup{GroupID: 1, UserID: 2, At: 0})

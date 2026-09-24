@@ -23,15 +23,15 @@ func newStore(t *testing.T) *store.Store {
 func TestReplaySkipsApplied(t *testing.T) {
 	st := newStore(t)
 	c := &CreateGroup{GroupID: 1, Slug: "travato", Name: "Travato", At: 1}
-	if _, err := Run(st, 5, c); err != nil {
+	if _, err := Run(st, SiteLog, 5, c); err != nil {
 		t.Fatal(err)
 	}
 	// Same entry again: skipped, so no "slug taken" error.
-	if _, err := Run(st, 5, c); err != nil {
+	if _, err := Run(st, SiteLog, 5, c); err != nil {
 		t.Fatalf("replay of an applied entry: %v", err)
 	}
 	// A new entry with the same slug is a real duplicate.
-	_, err := Run(st, 6, &CreateGroup{GroupID: 2, Slug: "travato", Name: "Again", At: 1})
+	_, err := Run(st, SiteLog, 6, &CreateGroup{GroupID: 2, Slug: "travato", Name: "Again", At: 1})
 	if !errors.Is(err, ErrSlugTaken) {
 		t.Fatalf("duplicate slug: %v", err)
 	}
@@ -40,33 +40,52 @@ func TestReplaySkipsApplied(t *testing.T) {
 	}
 }
 
-// TestCreateGroupCompletesAfterCrash: if a node stopped after CreateGroup
-// wrote site.db but before it wrote the group's file, replaying the entry
-// finishes the job.
-func TestCreateGroupCompletesAfterCrash(t *testing.T) {
+// TestCreateGroupSendsInit: CreateGroup is on the site log, and the new
+// group's own file gets its settings and owner from the InitGroup it sends
+// through the outbox, which then empties.
+func TestCreateGroupSendsInit(t *testing.T) {
 	st := newStore(t)
-	c := &CreateGroup{GroupID: 1, Slug: "travato", Name: "Travato", At: 1}
-	// Simulate the half-applied state: only the site part.
-	a := &Applier{Store: st, Index: 3}
-	if err := a.Site(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO groups (id, slug, name, created_at) VALUES (1, 'travato', 'Travato', 1)`)
-		return err
-	}); err != nil {
+	d := &Direct{Store: st}
+	if _, err := d.Apply(&CreateGroup{GroupID: 1, Slug: "travato", Name: "Travato", OwnerID: 9, At: 1}); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := Run(st, 3, c); err != nil {
-		t.Fatalf("replay: %v", err)
 	}
 	s, err := st.GroupSettings(1)
 	if err != nil || s == nil || s.Name != "Travato" {
-		t.Fatalf("group settings after replay: %+v, %v", s, err)
+		t.Fatalf("group settings: %+v, %v", s, err)
+	}
+	m, _ := st.Membership(1, 9)
+	if m == nil || m.Role != "owner" {
+		t.Fatalf("owner: %+v", m)
+	}
+	if left, _ := st.Outbox(0, 10); len(left) != 0 {
+		t.Fatalf("site outbox not emptied: %d left", len(left))
+	}
+	// Delivered twice (the relay is at-least-once): no harm.
+	if _, err := d.Apply(&InitGroup{GroupID: 1, Name: "Travato", Visibility: "public", OwnerID: 9, At: 1}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCommandsStayInTheirLog: a command can't write a file outside its
+// own log.
+func TestCommandsStayInTheirLog(t *testing.T) {
+	st := newStore(t)
+	a := &Applier{Store: st, Log: LogID(1), Index: 1}
+	if err := a.Site(func(*sql.Tx) error { return nil }); err == nil {
+		t.Fatal("a group command wrote site.db")
+	}
+	if err := a.Group(2, func(*sql.Tx) error { return nil }); err == nil {
+		t.Fatal("group 1's command wrote group 2's file")
+	}
+	if _, err := Run(st, SiteLog, 1, &CreatePost{GroupID: 1, PostID: 1, UserID: 1, Title: "x", At: 1}); err == nil {
+		t.Fatal("a group command ran on the site log")
 	}
 }
 
 func TestRedeemOnce(t *testing.T) {
 	st := newStore(t)
-	idx := uint64(0)
-	run := func(c Command) (any, error) { idx++; return Run(st, idx, c) }
+	d := &Direct{Store: st}
+	run := d.Apply
 
 	if _, err := run(&CreateLogin{TokenHash: "t1", CodeHash: "c", Email: "a@x.com", ReturnURL: "/", At: 100, ExpiresAt: 200}); err != nil {
 		t.Fatal(err)
@@ -97,10 +116,9 @@ func TestRedeemOnce(t *testing.T) {
 
 func TestPurge(t *testing.T) {
 	st := newStore(t)
-	idx := uint64(0)
+	d := &Direct{Store: st}
 	run := func(c Command) {
-		idx++
-		if _, err := Run(st, idx, c); err != nil {
+		if _, err := d.Apply(c); err != nil {
 			t.Fatal(err)
 		}
 	}
