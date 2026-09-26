@@ -131,11 +131,18 @@ the node map, and, being a full node, is placed on every group and copies
 each one. After that the two pass operations back and forth; a Studio
 that was offline catches up by itself when it's back.
 
-The Studio needs no port forwarded on the home router: it finds that the
-VPS can't reach it, and makes every connection itself. The admin page's
-Cluster section says which ("reached at", or that it does the talking).
-Forward the cluster port only if it runs the model and should give quick
-answers to searches (section 7).
+Forward the cluster port (TCP 7946) on the home router to the Studio,
+keeping the same port number outside: a node registers itself at its
+public IP and its own cluster port. The Studio runs the model, so every
+search that needs a quick answer is sent to it on that port. The port only
+accepts connections carrying a certificate the site's CA signed, the same
+as on the VPS. When the home IP changes, the other nodes see the new one
+within seconds and the Studio re-registers itself at it.
+
+Without the forward the Studio still keeps its full copy: it finds that
+the VPS can't reach it and makes every connection itself. Only quick
+answers are lost. The admin page's Cluster section shows which it is
+("reached at", or that it does the talking).
 
 The admin page's Cluster section shows, for this node, each file it
 holds and how many of its operations aren't stable yet, when it last
@@ -199,9 +206,9 @@ and summaries and link notes wait in the job queue until a worker is back.
    then run `make install` again: it finds Ollama and adds `ai_url` to the
    Studio's config, and the Studio records in the node map that it has a
    model, so every other node sends it searches from then on.
-   Searches reach it over the cluster port, so forward that port to the
-   Studio on the home router; without it, jobs still run (the Studio
-   fetches them itself) but searches get plain results.
+   Searches reach it over the cluster port, forwarded to it on the home
+   router (section 3); without that, jobs still run (the Studio does them
+   from its own copy) but searches get plain results.
 2. Pick one on real content (plan section 9, "Choosing the model"), on the
    admin page's **Tools**, "Measure a model": the model's name, an archive
    (the import format), and optionally a questions file (`[{"q": "...",

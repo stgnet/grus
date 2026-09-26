@@ -387,10 +387,21 @@ func (n *Node) swapReports(ctx context.Context) {
 		}()
 	}
 	wg.Wait()
-	if others > 0 && answered == 0 {
+	// Nobody in the map answered: look for the rest of the site through
+	// the join addresses and the site's domains, which lead to live nodes.
+	// A node alone in its map does this too (it may have copied site.db
+	// before the node it copied from had registered), but only now and
+	// then: a site that really is one node would otherwise dial itself
+	// every tick.
+	if answered == 0 && (others > 0 || time.Since(n.lastLook) >= aloneLookEvery) {
+		n.lastLook = time.Now()
 		n.swapViaDomains(ctx, mine)
 	}
 }
+
+// aloneLookEvery is how often a node with no other node in its map looks
+// for others through the join addresses and domains.
+const aloneLookEvery = 30 * time.Second
 
 // swapWith swaps reports with the node at addr, which should be id (""
 // for whoever answers). It reports whether that worked.
@@ -409,9 +420,12 @@ func (n *Node) swapWith(ctx context.Context, addr, id string, mine *Report) bool
 	return true
 }
 
-// swapViaDomains swaps reports with whatever nodes the site's domains
-// lead to, on the cluster port.
+// swapViaDomains swaps reports with whatever nodes the join addresses and
+// the site's domains lead to, on the cluster port.
 func (n *Node) swapViaDomains(ctx context.Context, mine *Report) {
+	for _, addr := range n.o.Join {
+		n.swapWith(ctx, addr, "", mine)
+	}
 	domains, err := n.st.Domains()
 	if err != nil {
 		return
@@ -434,32 +448,42 @@ func (n *Node) swapViaDomains(ctx context.Context, mine *Report) {
 // a file this node holds that this node hasn't got, what's missing. A
 // node that has deleted some this node needs sends a copy of the file
 // instead. So is a node whose copy has a newer base (see store.Position).
+//
+// It works from every node heard from lately, whether or not this node's
+// map lists it yet. That's what heals two nodes that each have only
+// themselves in their map (one copied site.db before the other had
+// registered, say): once they swap reports through a join address or a
+// domain, each pulls the other's site.db operations, those include each
+// one's registration, and the maps are whole again.
 func (n *Node) catchUp(ctx context.Context) {
-	nodes, err := n.st.Nodes()
-	if err != nil {
-		return
+	n.peersMu.Lock()
+	var peers []peerState
+	for id, p := range n.peers {
+		// Not heard from this pass, or it can't be reached (it pushes to
+		// this node instead): skip it.
+		if id == n.o.ID || p.report == nil || p.report.Addr == "" ||
+			time.Since(p.heard) > 3*n.o.tick+5*time.Second {
+			continue
+		}
+		peers = append(peers, p)
 	}
+	n.peersMu.Unlock()
 	for _, l := range n.heldLogs() {
 		e := n.engineFor(l)
-		for _, nd := range nodes {
-			if nd.ID == n.o.ID || ctx.Err() != nil {
-				continue
-			}
-			p := n.peer(nd.ID)
-			if p.report == nil || time.Since(p.heard) > 3*n.o.tick+5*time.Second || nd.Addr == "" {
-				// Not heard from this pass, or it can't be reached: it
-				// pushes to this node instead.
-				continue
+		for _, p := range peers {
+			if ctx.Err() != nil {
+				return
 			}
 			lr, ok := p.report.Logs[l.String()]
 			if !ok {
 				continue
 			}
-			if err := n.catchUpFrom(ctx, e, nd.Addr, lr); err != nil {
-				n.warn("catchup "+l.String()+nd.ID, "catching up %s from %s: %v", l, nd.ID, err)
+			id, addr := p.report.ID, p.report.Addr
+			if err := n.catchUpFrom(ctx, e, addr, lr); err != nil {
+				n.warn("catchup "+l.String()+id, "catching up %s from %s: %v", l, id, err)
 			}
-			if err := n.pushMissing(ctx, e, nd.Addr, lr); err != nil {
-				n.warn("pushing "+l.String()+nd.ID, "sending %s to %s: %v", l, nd.ID, err)
+			if err := n.pushMissing(ctx, e, addr, lr); err != nil {
+				n.warn("pushing "+l.String()+id, "sending %s to %s: %v", l, id, err)
 			}
 		}
 	}

@@ -72,6 +72,9 @@ type Node struct {
 
 	peersMu sync.Mutex
 	peers   map[string]peerState
+	// lastLook: when a node alone in its map last looked for others
+	// (swapReports; only the upkeep loop touches it).
+	lastLook time.Time
 
 	where   addrState    // where others reach this node (addr.go)
 	refuse  atomic.Value // string: why this node won't take writes, "" when it will
@@ -202,6 +205,15 @@ func (n *Node) joinCopy(ctx context.Context) error {
 	for {
 		for _, addr := range n.o.Join {
 			err := n.fetchCopy(ctx, n.engineFor(cmd.SiteLog), addr)
+			if err == nil {
+				// A node that has only just started hasn't put itself in
+				// its map yet. Its site.db lists nobody, and joining with
+				// that would leave this node with nobody to talk to: a
+				// second, separate site. Wait until it has registered.
+				if nodes, _ := n.st.Nodes(); len(nodes) == 0 {
+					err = errors.New("it hasn't registered itself yet")
+				}
+			}
 			if err == nil {
 				n.markReady(cmd.SiteLog)
 				return nil

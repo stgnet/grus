@@ -731,3 +731,32 @@ func TestFindsItsAddress(t *testing.T) {
 		t.Fatal("a report claiming to be another node was accepted")
 	}
 }
+
+// TestTwoSitesFindEachOther: two nodes that each think they're the whole
+// site (the second copied site.db from the first before the first had put
+// itself in its map, or two first nodes were started by mistake) find each
+// other through a join address and end up one site: each pulls the other's
+// site.db operations from its report, even though its map doesn't list it.
+func TestTwoSitesFindEachOther(t *testing.T) {
+	caDir := testCA(t, "n1", "n2")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	n2 := newNode(t, caDir, "n2", 2).start()
+	ready(t, n1, n2)
+	newGroup(n1, 100, "travato", 7)
+	newGroup(n2, 200, "winnebago", 8)
+
+	// Restart n2 with a join line. Its map isn't empty, so it doesn't
+	// copy site.db again; it finds n1 because nobody in its map answers.
+	n2.stop()
+	n2.o.Join = []string{n1.addr()}
+	n2.start()
+
+	for _, tn := range []*testNode{n1, n2} {
+		waitFor(t, tn.o.ID+" to know both nodes and both groups", func() bool {
+			nodes, _ := tn.st.Nodes()
+			g1, _ := tn.st.GroupByID(100)
+			g2, _ := tn.st.GroupByID(200)
+			return len(nodes) == 2 && g1 != nil && g2 != nil
+		})
+	}
+}

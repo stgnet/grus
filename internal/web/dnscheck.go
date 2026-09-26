@@ -41,10 +41,14 @@ const lookupTimeout = 3 * time.Second
 
 // checkDomains runs every domain's checks at once.
 func (s *Server) checkDomains(domains []store.Domain, nodes []store.Node) []domainChecks {
-	// The addresses the nodes are reached at: a domain should point at
-	// some of them (the ones that serve pages).
+	// The addresses of the nodes that serve pages (voter): a domain should
+	// point at some of them. Not the others, such as the Studio, which is
+	// reachable on the cluster port but serves no pages.
 	nodeIPs := map[string]string{} // ip -> node id
 	for _, nd := range nodes {
+		if !nd.Voter {
+			continue
+		}
 		host, _, err := net.SplitHostPort(nd.Addr)
 		if err != nil {
 			continue

@@ -109,10 +109,12 @@ operation is deleted once every node in the map has it.
 
 - **Push:** a new operation goes straight to every node that holds its
   file and can be reached.
-- **Pull:** every few seconds each node swaps reports with a few others
-  (what each has), and each sends the other what it's missing. So
-  operations spread through chains of nodes, and a node back from being
-  offline catches up without anyone noticing it was gone.
+- **Pull:** every couple of seconds each node swaps reports (what each
+  has) with every other node it can reach, pulls what it's missing, and
+  pushes what the other is missing. Every operation carries its origin
+  and sequence number, so it can be passed on by any node that has it,
+  not only the one that made it: a node back from being offline catches up
+  from whoever answers, without anyone noticing it was gone.
 - **Best-effort acknowledgement:** after storing a write, the node waits
   up to half a second for one other node that holds the file to confirm
   it has it, then answers either way. It never blocks, and alone it
@@ -140,8 +142,10 @@ registers it; nobody types it in.
    nobody to ask, checks whether the IP is on one of its own interfaces,
    as a VPS's is.
 
-It looks again every five minutes, so a new home IP or a port opened on
-a router is picked up by itself. `advertise` in the config skips all of
+It looks again every five minutes, and at once when the other nodes
+start seeing it at a different IP, so a new home IP or a port opened on a
+router is picked up by itself. A forwarded port must keep the same number
+outside as inside. `advertise` in the config skips all of
 this (a private network).
 
 **A node nobody can reach** (the Studio behind a home router, with no port
@@ -150,14 +154,19 @@ the talking. It posts its report to each of them, which gets theirs in
 return, pushes what they're missing, and pulls what it's missing, so
 operations still flow both ways and it still counts towards the stable
 point. The one thing it can't do is answer a request another node starts:
-searches and model measurements are sent to a node with a model, so a
-Studio that runs the model needs the cluster port forwarded to it for
+searches and model measurements are sent to a node with a model, so the
+Studio, which runs the model, has the cluster port forwarded to it for
 quick answers (everything else the model does waits in the job queue,
 which the Studio pulls from itself).
 
 If no node in the map answers at all (say, every address changed while
-this node was off), it tries the site's domains instead, and picks the
-map up again from whichever node answers.
+this node was off), it tries its `join` addresses and the site's domains
+instead, and picks the map up again from whichever node answers. A node
+alone in its map does the same every 30 seconds, so two nodes that each
+think they're the whole site (the second copied site.db before the first
+had registered, or two first nodes were started by mistake) find each
+other and merge into one. A new node won't join from a copy that lists no
+nodes at all; it waits until the node it's copying from has registered.
 
 ### New nodes, and nodes that fell behind
 

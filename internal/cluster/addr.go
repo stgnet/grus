@@ -59,8 +59,15 @@ func (n *Node) dialable() string {
 // findAddress works out where this node can be reached, when it hasn't
 // lately.
 func (n *Node) findAddress(ctx context.Context) {
+	// Due every few minutes, and at once when the other nodes start seeing
+	// this node at a different IP than it last found: a home connection's
+	// IP changing is the usual case, and until the node re-registers,
+	// requests to it (searches, for a node with a model) go to the old
+	// address and fail.
+	seen := n.seenIP()
 	n.where.mu.Lock()
-	due := time.Since(n.where.checked) >= addrCheckEvery
+	due := time.Since(n.where.checked) >= addrCheckEvery ||
+		(n.o.Advertise == "" && seen != "" && seen != n.where.publicIP)
 	n.where.mu.Unlock()
 	if !due {
 		return
@@ -69,7 +76,7 @@ func (n *Node) findAddress(ctx context.Context) {
 		n.setAddress(n.o.Advertise, "", true)
 		return
 	}
-	ip := n.seenIP()
+	ip := seen
 	if ip == "" {
 		if n.o.publicIP != nil {
 			ip = n.o.publicIP(ctx) // tests
