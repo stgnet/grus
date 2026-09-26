@@ -109,10 +109,10 @@ operation is deleted once every node in the map has it.
 
 - **Push:** a new operation goes straight to every node that holds its
   file and can be reached.
-- **Pull:** every few seconds each node tells a few others what it has,
-  and each sends the other what it's missing. So operations spread
-  through chains of nodes, and a node back from being offline catches up
-  without anyone noticing it was gone.
+- **Pull:** every few seconds each node swaps reports with a few others
+  (what each has), and each sends the other what it's missing. So
+  operations spread through chains of nodes, and a node back from being
+  offline catches up without anyone noticing it was gone.
 - **Best-effort acknowledgement:** after storing a write, the node waits
   up to half a second for one other node that holds the file to confirm
   it has it, then answers either way. It never blocks, and alone it
@@ -121,6 +121,43 @@ operation is deleted once every node in the map has it.
 A write for a group this node doesn't hold is passed on, as a page
 request, to a node that does, as before. A follow-up for such a group
 (below) is made here and pushed to its holders.
+
+### Where nodes are
+
+The node map lists each node's address as `<IP>:<cluster port>`. Nodes
+have no DNS names of their own (a domain points at whichever nodes serve
+pages, not at one node), so each node finds its own address and
+registers it; nobody types it in.
+
+1. **Its public IP.** Every report a node gets back says the address its
+   request was seen coming from. A node that hasn't heard from anyone yet
+   asks the node one of the site's domains leads to (`/sync/whoami` on
+   the cluster port): every domain points at a live node, which is all the
+   discovery needs. No outside "what's my IP" service is used.
+2. **Whether it can be reached there.** It asks another node to connect
+   back to that address (`/sync/dialback`); the answer counts only if the
+   node that answers has this node's certificate. The first node, with
+   nobody to ask, checks whether the IP is on one of its own interfaces,
+   as a VPS's is.
+
+It looks again every five minutes, so a new home IP or a port opened on
+a router is picked up by itself. `advertise` in the config skips all of
+this (a private network).
+
+**A node nobody can reach** (the Studio behind a home router, with no port
+forwarded) registers with no address. The others never dial it; it does
+the talking. It posts its report to each of them, which gets theirs in
+return, pushes what they're missing, and pulls what it's missing, so
+operations still flow both ways and it still counts towards the stable
+point. The one thing it can't do is answer a request another node starts:
+searches and model measurements are sent to a node with a model, so a
+Studio that runs the model needs the cluster port forwarded to it for
+quick answers (everything else the model does waits in the job queue,
+which the Studio pulls from itself).
+
+If no node in the map answers at all (say, every address changed while
+this node was off), it tries the site's domains instead, and picks the
+map up again from whichever node answers.
 
 ### New nodes, and nodes that fell behind
 

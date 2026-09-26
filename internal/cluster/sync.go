@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 
 	"net/http"
 	"os"
@@ -20,14 +21,19 @@ import (
 // How nodes keep each other's files the same (docs/replication.md,
 // "Passing operations on"), over the internal API:
 //
-//	GET  /sync/report          this node's report (below)
+//	POST /sync/report          swap reports: the caller's for this node's
+//	GET  /sync/report          this node's report (make install checks it)
 //	POST /sync/pull            the operations on one file someone hasn't got
-//	POST /sync/push            operations offered by the node that made them
+//	POST /sync/push            operations someone hasn't got, offered
 //	GET  /sync/copy/{log}      this node's stable copy of a file
+//	GET  /sync/whoami          the address the caller was seen at (addr.go)
+//	POST /sync/dialback        connect back to the caller at an address (addr.go)
 //
-// Every node fetches every other node's report every tick. The reports
-// are how a node knows what the others have (so it can pull what it's
-// missing), and how it works out each file's stable point.
+// Every tick, each node swaps reports with every other node it can reach.
+// The reports are how a node knows what the others have (so it can pull
+// what it's missing, and push what they are), and how it works out each
+// file's stable point. A node nobody can reach (behind a home router) does
+// the swapping itself, so everyone still hears from it.
 
 // Report is what a node says about itself.
 type Report struct {
@@ -37,6 +43,11 @@ type Report struct {
 	// not listed in Logs (see LogReport.Clock for those).
 	Clock int64                `json:"clock"`
 	Logs  map[string]LogReport `json:"logs"` // the files it holds, by log name
+	// Addr is where others can reach it ("" if they can't: see addr.go).
+	Addr string `json:"addr"`
+	// Seen, in a report sent back to a caller, is the address the caller's
+	// request came from: how a node learns its public IP.
+	Seen string `json:"seen,omitempty"`
 }
 
 // LogReport is a node's report on one file it holds.
@@ -53,7 +64,7 @@ type LogReport struct {
 
 // report builds this node's report.
 func (n *Node) report() (*Report, error) {
-	r := &Report{ID: n.o.ID, Origin: n.id.origin(), Clock: n.clock.Now(), Logs: map[string]LogReport{}}
+	r := &Report{ID: n.o.ID, Origin: n.id.origin(), Clock: n.clock.Now(), Logs: map[string]LogReport{}, Addr: n.dialable()}
 	for _, l := range n.heldLogs() {
 		e := n.engineFor(l)
 		e.mu.Lock()
@@ -94,6 +105,7 @@ func (n *Node) logReport(e *engine) (LogReport, error) {
 type peerState struct {
 	report *Report
 	heard  time.Time
+	seen   string // the address it saw this node at, when it said
 }
 
 func (n *Node) peer(id string) peerState {
@@ -105,7 +117,11 @@ func (n *Node) peer(id string) peerState {
 func (n *Node) setPeer(id string, r *Report) {
 	n.peersMu.Lock()
 	defer n.peersMu.Unlock()
-	n.peers[id] = peerState{report: r, heard: time.Now()}
+	seen := r.Seen
+	if seen == "" {
+		seen = n.peers[id].seen // a report pushed to us says nothing of that
+	}
+	n.peers[id] = peerState{report: r, heard: time.Now(), seen: seen}
 }
 
 // stablePoint is the stamp at or below which no operation on e's file can
@@ -194,7 +210,66 @@ func (n *Node) serveSync(mux *http.ServeMux) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		rep.Seen = remoteIP(r)
 		writeJSON(w, rep)
+	})
+	mux.HandleFunc("POST /sync/report", func(w http.ResponseWriter, r *http.Request) {
+		var theirs Report
+		if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&theirs); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// A node can only speak for itself: its certificate names it.
+		if theirs.ID == "" || theirs.ID != callerID(r) {
+			http.Error(w, "a report from someone else", http.StatusForbidden)
+			return
+		}
+		theirs.Seen = ""
+		n.clock.Observe(theirs.Clock)
+		n.setPeer(theirs.ID, &theirs)
+		rep, err := n.report()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rep.Seen = remoteIP(r)
+		writeJSON(w, rep)
+	})
+	// The ways into the site, for a new node's join lines (make install's
+	// deploy/remote-setup.sh asks the node it runs on): every node that
+	// can be reached, and every domain (each leads to a node that serves
+	// pages, which listens on the cluster port too).
+	mux.HandleFunc("GET /sync/join", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, port, _ := net.SplitHostPort(n.o.Listen)
+		nodes, _ := n.st.Nodes()
+		for _, nd := range nodes {
+			if nd.Addr != "" {
+				fmt.Fprintln(w, nd.Addr)
+			}
+		}
+		domains, _ := n.st.Domains()
+		for _, d := range domains {
+			fmt.Fprintln(w, net.JoinHostPort(d.Name, port))
+		}
+	})
+	mux.HandleFunc("GET /sync/whoami", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, whoami{ID: n.o.ID, Seen: remoteIP(r)})
+	})
+	mux.HandleFunc("POST /sync/dialback", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Addr string }
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Connect to the caller at the address it gave, and check it's the
+		// caller that answers there (so this can't be pointed at anyone
+		// else's port).
+		var rep Report
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		err := n.client.GetJSON(ctx, req.Addr, "/sync/report", &rep)
+		cancel()
+		writeJSON(w, struct{ OK bool }{err == nil && rep.ID != "" && rep.ID == callerID(r)})
 	})
 	mux.HandleFunc("POST /sync/pull", func(w http.ResponseWriter, r *http.Request) {
 		var req pullRequest
@@ -276,34 +351,83 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// fetchReports asks every other node in the map for its report, at once.
-func (n *Node) fetchReports(ctx context.Context) {
+// swapReports sends this node's report to every other node it can reach,
+// and takes theirs back, all at once. A node that can't be reached (no
+// address) sends its own; it's heard from that way. If nobody in the map
+// answers (their addresses all changed while this node was away, say),
+// it tries the nodes the site's domains lead to.
+func (n *Node) swapReports(ctx context.Context) {
 	nodes, err := n.st.Nodes()
 	if err != nil {
 		return
 	}
+	mine, err := n.report()
+	if err != nil {
+		return
+	}
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	answered, others := 0, 0
 	for _, nd := range nodes {
 		if nd.ID == n.o.ID {
+			continue
+		}
+		others++
+		if nd.Addr == "" {
 			continue
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var r Report
-			cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			if err := n.client.GetJSON(cctx, nd.Addr, "/sync/report", &r); err != nil {
-				return
+			if n.swapWith(ctx, nd.Addr, nd.ID, mine) {
+				mu.Lock()
+				answered++
+				mu.Unlock()
 			}
-			if r.ID != nd.ID {
-				return // something else answers at that address now
-			}
-			n.clock.Observe(r.Clock)
-			n.setPeer(nd.ID, &r)
 		}()
 	}
 	wg.Wait()
+	if others > 0 && answered == 0 {
+		n.swapViaDomains(ctx, mine)
+	}
+}
+
+// swapWith swaps reports with the node at addr, which should be id (""
+// for whoever answers). It reports whether that worked.
+func (n *Node) swapWith(ctx context.Context, addr, id string, mine *Report) bool {
+	var r Report
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := n.client.PostJSON(cctx, addr, "/sync/report", mine, &r); err != nil {
+		return false
+	}
+	if r.ID == "" || (id != "" && r.ID != id) || r.ID == n.o.ID {
+		return false // something else answers at that address now
+	}
+	n.clock.Observe(r.Clock)
+	n.setPeer(r.ID, &r)
+	return true
+}
+
+// swapViaDomains swaps reports with whatever nodes the site's domains
+// lead to, on the cluster port.
+func (n *Node) swapViaDomains(ctx context.Context, mine *Report) {
+	domains, err := n.st.Domains()
+	if err != nil {
+		return
+	}
+	_, port, _ := net.SplitHostPort(n.o.Listen)
+	for _, d := range domains {
+		lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ips, err := net.DefaultResolver.LookupHost(lctx, d.Name)
+		cancel()
+		if err != nil {
+			continue
+		}
+		for _, ip := range ips {
+			n.swapWith(ctx, net.JoinHostPort(ip, port), "", mine)
+		}
+	}
 }
 
 // catchUp pulls, from every node whose report shows it has operations on
@@ -322,8 +446,10 @@ func (n *Node) catchUp(ctx context.Context) {
 				continue
 			}
 			p := n.peer(nd.ID)
-			if p.report == nil || time.Since(p.heard) > 3*n.o.tick+5*time.Second {
-				continue // not heard from this pass: it can't be reached now
+			if p.report == nil || time.Since(p.heard) > 3*n.o.tick+5*time.Second || nd.Addr == "" {
+				// Not heard from this pass, or it can't be reached: it
+				// pushes to this node instead.
+				continue
 			}
 			lr, ok := p.report.Logs[l.String()]
 			if !ok {
@@ -331,6 +457,9 @@ func (n *Node) catchUp(ctx context.Context) {
 			}
 			if err := n.catchUpFrom(ctx, e, nd.Addr, lr); err != nil {
 				n.warn("catchup "+l.String()+nd.ID, "catching up %s from %s: %v", l, nd.ID, err)
+			}
+			if err := n.pushMissing(ctx, e, nd.Addr, lr); err != nil {
+				n.warn("pushing "+l.String()+nd.ID, "sending %s to %s: %v", l, nd.ID, err)
 			}
 		}
 	}
@@ -394,6 +523,32 @@ func (n *Node) catchUpFrom(ctx context.Context, e *engine, addr string, lr LogRe
 	return nil
 }
 
+// pushMissing sends a node the operations on e's file its report shows it
+// hasn't got. With pulls, that makes everything flow both ways whichever
+// of the two can reach the other. (Operations it needs that have been
+// deleted here, it gets as a copy of the file from someone.)
+func (n *Node) pushMissing(ctx context.Context, e *engine, addr string, lr LogReport) error {
+	live, err := n.st.Live(e.gid())
+	if err != nil {
+		return err
+	}
+	rows, gap, err := store.OpsNewerThan(live, lr.Have, pullBatch)
+	if err != nil || gap || len(rows) == 0 {
+		return err
+	}
+	req := pushRequest{Log: e.log.String()}
+	for _, r := range rows {
+		req.Ops = append(req.Ops, toOp(r))
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return n.client.postRaw(cctx, addr, "/sync/push", body)
+}
+
 // fetchCopy takes another node's copy of a file (see installCopy).
 func (n *Node) fetchCopy(ctx context.Context, e *engine, addr string) error {
 	path, err := n.st.TempPath(e.gid())
@@ -453,7 +608,7 @@ func (n *Node) holderAddrs(l cmd.LogID) []string {
 	var out []string
 	if isEverywhere(l) {
 		for _, nd := range nodes {
-			if nd.ID != n.o.ID {
+			if nd.ID != n.o.ID && nd.Addr != "" {
 				out = append(out, nd.Addr)
 			}
 		}
@@ -464,7 +619,7 @@ func (n *Node) holderAddrs(l cmd.LogID) []string {
 		return nil
 	}
 	for _, h := range hosts {
-		if h.NodeID != n.o.ID {
+		if h.NodeID != n.o.ID && h.Addr != "" {
 			out = append(out, h.Addr)
 		}
 	}

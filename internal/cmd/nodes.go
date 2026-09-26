@@ -30,8 +30,10 @@ type RegisterNode struct {
 }
 
 func (c *RegisterNode) Apply(a *Applier) (any, error) {
-	if c.ID == "" || c.Addr == "" || strings.ContainsAny(c.ID, " /") {
-		return nil, Invalid("a node needs an id and an address")
+	// An empty Addr is a node others can't reach (behind a home router):
+	// it does the talking itself (internal/cluster/addr.go).
+	if c.ID == "" || strings.ContainsAny(c.ID, " /") {
+		return nil, Invalid("a node needs an id")
 	}
 	return nil, a.Site(func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`INSERT INTO nodes (id, addr, voter, full, ai, origin, num, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

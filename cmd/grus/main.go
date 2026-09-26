@@ -182,7 +182,7 @@ func serve(path string) error {
 			}
 			var addrs []string
 			for _, n := range nodes {
-				if n.AI && n.ID != c.NodeID {
+				if n.AI && n.ID != c.NodeID && n.Addr != "" {
 					addrs = append(addrs, n.Addr)
 				}
 			}
@@ -270,7 +270,7 @@ func benchOn(c *config.Config, st *store.Store, client *cluster.Client, rpcMux *
 			return err
 		}
 		for _, nd := range nodes {
-			if !nd.AI {
+			if !nd.AI || nd.Addr == "" {
 				continue
 			}
 			data, err := a.JSON()

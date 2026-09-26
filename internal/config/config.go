@@ -44,7 +44,7 @@ type Config struct {
 
 	// Cluster.
 	ClusterAddr string   // listen address for node-to-node mTLS (default ":7946")
-	Advertise   string   // host:port other nodes use to reach this one (default <host name>:7946)
+	Advertise   string   // host:port other nodes use to reach this one (default: the node finds it, internal/cluster/addr.go)
 	Voter       bool     // new groups are placed on it (a VPS that serves pages)
 	Full        bool     // holds every group (the Studio)
 	Join        []string // other nodes' cluster addresses; none means this is the first node
@@ -137,9 +137,10 @@ func (c *Config) set(key, val string) error {
 	case "full":
 		c.Full, err = strconv.ParseBool(val)
 	case "join":
-		// join = vps1.nfb.group:7946
+		// join = nfb.group (one of the site's domains, or a node's
+		// address), with the cluster port when it isn't given.
 		if _, _, err := net.SplitHostPort(val); err != nil {
-			return fmt.Errorf("join: %v", err)
+			val = net.JoinHostPort(val, "7946")
 		}
 		c.Join = append(c.Join, val)
 	case "tls_ca":
@@ -203,10 +204,6 @@ func (c *Config) defaults() error {
 	if c.ClusterAddr == "" {
 		c.ClusterAddr = ":7946"
 	}
-	if c.Advertise == "" {
-		_, port, _ := net.SplitHostPort(c.ClusterAddr)
-		c.Advertise = net.JoinHostPort(strings.ToLower(host), port)
-	}
 	certs := filepath.Join(c.DataDir, "cluster")
 	if c.TLSCA == "" {
 		c.TLSCA = filepath.Join(certs, "ca.crt")
@@ -229,8 +226,10 @@ func (c *Config) check() error {
 	if c.NodeNum < -1 || c.NodeNum > ToolNodeNum-1 {
 		return fmt.Errorf("node_num must be 0-%d", ToolNodeNum-1)
 	}
-	if _, _, err := net.SplitHostPort(c.Advertise); err != nil {
-		return fmt.Errorf("advertise: %v", err)
+	if c.Advertise != "" {
+		if _, _, err := net.SplitHostPort(c.Advertise); err != nil {
+			return fmt.Errorf("advertise: %v", err)
+		}
 	}
 	if len(c.Join) == 0 {
 		// The first node takes new groups; there's nowhere else for them.

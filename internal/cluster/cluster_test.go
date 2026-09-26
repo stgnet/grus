@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net"
@@ -663,5 +664,70 @@ func TestEnsureCerts(t *testing.T) {
 	if err := EnsureCerts(empty+"/ca.crt", empty+"/node.crt", empty+"/node.key", "n3", false); err == nil ||
 		!strings.Contains(err.Error(), "make install") {
 		t.Fatalf("no CA and not the first node: %v", err)
+	}
+}
+
+// TestNodeNobodyCanReach: a node behind a home router (no address others
+// can reach) does all the talking: its writes still reach the others, it
+// still gets theirs, and the stable point still moves, from the report it
+// sends.
+func TestNodeNobodyCanReach(t *testing.T) {
+	caDir := testCA(t, "n1", "home")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	newGroup(n1, 100, "travato", 7)
+	h := newNode(t, caDir, "home", 2, n1.addr())
+	h.o.Advertise = ""                                        // find it...
+	h.o.publicIP = func(context.Context) string { return "" } // ...and fail
+	h.o.Full = true
+	home := h.start()
+	waitFor(t, "home registered with no address", func() bool {
+		nodes, _ := n1.st.Nodes()
+		for _, nd := range nodes {
+			if nd.ID == "home" {
+				return nd.Addr == ""
+			}
+		}
+		return false
+	})
+	waitHolds(t, home, 100, 7)
+	post(home, 100, 1001, 7, "from home")
+	post(n1, 100, 1002, 7, "from n1")
+	same(t, 100, n1, home)
+	waitFor(t, "n1's stable point to pass home's post", func() bool {
+		stable, _ := n1.st.Stable(100)
+		var n int
+		stable.QueryRow(`SELECT COUNT(*) FROM posts`).Scan(&n)
+		return n == 2
+	})
+}
+
+// TestFindsItsAddress: a node with no address set learns its public IP
+// (here, what the test says it is) and, when another node can connect
+// back to it there, registers that address.
+func TestFindsItsAddress(t *testing.T) {
+	caDir := testCA(t, "n1", "n2")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	o := newNode(t, caDir, "n2", 2, n1.addr())
+	_, port, _ := net.SplitHostPort(o.o.Listen)
+	o.o.Advertise = ""
+	o.o.publicIP = func(context.Context) string { return "127.0.0.1" }
+	n2 := o.start()
+	waitFor(t, "n2 registered at the address n1 could reach", func() bool {
+		nodes, _ := n1.st.Nodes()
+		for _, nd := range nodes {
+			if nd.ID == "n2" {
+				return nd.Addr == "127.0.0.1:"+port
+			}
+		}
+		return false
+	})
+	// And a caller can only speak for itself: n1 can't send a report
+	// claiming to be n2.
+	fake := &Report{ID: "n2", Origin: "n2@1"}
+	var back Report
+	if err := n1.n.client.PostJSON(context.Background(), n2.addr(), "/sync/report", fake, &back); err == nil {
+		t.Fatal("a report claiming to be another node was accepted")
 	}
 }

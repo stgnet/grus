@@ -27,7 +27,8 @@
 #
 # Answers can come from the environment instead of prompts (for a run
 # with no terminal): GRUS_FROM (the machine to copy from; "-" for a new
-# site), GRUS_DOMAIN, GRUS_OPERATOR, GRUS_ADVERTISE, GRUS_FULL (y/n),
+# site), GRUS_DOMAIN, GRUS_OPERATOR, GRUS_ADVERTISE (normally found by the
+# node itself), GRUS_FULL (y/n),
 # GRUS_WEB (y/n), GRUS_MAIL (y/n), GRUS_MAIL_DOMAIN.
 #
 # Security: nothing secret is in the repository. The cluster CA's key
@@ -142,10 +143,8 @@ if ! as_root test -f "$conf"; then
     echo "Give the name of a machine already running this site (as you'd ssh to it)"
     echo "to copy the setup from, or leave it empty to start a new site here."
     ask FROM "Copy the setup from" ""
-    host=$(hostname -f 2>/dev/null || hostname)
     node=$(hostname -s 2>/dev/null || hostname | cut -d. -f1)
     node=$(echo "$node" | tr '[:upper:]' '[:lower:]')
-    ask ADVERTISE "This machine's address for the other nodes" "$host:7946"
     web_default=y
     [ "$os" = Darwin ] && web_default=n
 
@@ -175,12 +174,17 @@ if ! as_root test -f "$conf"; then
         scp -q "$FROM:/tmp/grus-setup.tar" "$tmpcerts/setup.tar"
         ssh "$FROM" 'rm -f /tmp/grus-setup.tar'
         tar -C "$tmpcerts" -xf "$tmpcerts/setup.tar"
-        lines+=("join = $(cat "$tmpcerts/join")")
+        while read -r j; do
+            [ -n "$j" ] && lines+=("join = $j")
+        done <"$tmpcerts/join"
         ask FULL "Hold a full copy of every group, like the Studio? (y/n)" n
         ask WEB "Serve the site's pages from this machine? (y/n)" "$web_default"
     fi
 
-    lines+=("node_id = $node" "advertise = $ADVERTISE")
+    lines+=("node_id = $node")
+    # Where the other nodes reach this one is found by the node itself
+    # (internal/cluster/addr.go); GRUS_ADVERTISE sets it instead.
+    [ -n "${GRUS_ADVERTISE:-}" ] && lines+=("advertise = $GRUS_ADVERTISE")
     yes "$FULL" && lines+=("full = true")
     if yes "$WEB"; then
         lines+=("voter = true" "http_addr = :80" "https_addr = :443")

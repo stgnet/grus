@@ -70,7 +70,7 @@ func (n *Node) PassOn(w http.ResponseWriter, r *http.Request, groupID int64) boo
 func (n *Node) holders(groupID int64) []string {
 	var out []string
 	add := func(id, addr string) {
-		if id != n.o.ID && !slices.Contains(out, addr) {
+		if id != n.o.ID && addr != "" && !slices.Contains(out, addr) {
 			out = append(out, addr)
 		}
 	}
@@ -117,7 +117,7 @@ func (n *Node) BlobPeers(groupID int64) []string {
 	var out []string
 	nodes, _ := n.st.Nodes()
 	for _, nd := range nodes {
-		if nd.ID != n.o.ID {
+		if nd.ID != n.o.ID && nd.Addr != "" {
 			out = append(out, nd.Addr)
 		}
 	}

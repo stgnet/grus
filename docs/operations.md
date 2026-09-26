@@ -62,9 +62,14 @@ signed is a cluster member; if a node's key leaks, remove that node and
 treat the CA as compromised.
 
 Open ports 80 and 443 to everyone on the nodes that serve pages, and the
-cluster port (7946) between the nodes. Point the domain's DNS at the
-nodes that serve pages; the admin page's **DNS and mail** section shows
-each record as the world sees it, and what it should be.
+cluster port (7946) too: a new node finds the site through a domain on
+that port. A node's address is never set by hand: it finds its public IP
+through the other nodes (or the node a domain leads to) and checks
+whether it can be reached there. One that can't, like the Studio behind a
+home router, still takes part fully by doing all the connecting itself
+([replication.md](replication.md), "Where nodes are"). Point the domain's
+DNS at the nodes that serve pages; the admin page's **DNS and mail**
+section shows each record as the world sees it, and what it should be.
 
 ## 2. The first node's settings
 
@@ -126,6 +131,12 @@ the node map, and, being a full node, is placed on every group and copies
 each one. After that the two pass operations back and forth; a Studio
 that was offline catches up by itself when it's back.
 
+The Studio needs no port forwarded on the home router: it finds that the
+VPS can't reach it, and makes every connection itself. The admin page's
+Cluster section says which ("reached at", or that it does the talking).
+Forward the cluster port only if it runs the model and should give quick
+answers to searches (section 7).
+
 The admin page's Cluster section shows, for this node, each file it
 holds and how many of its operations aren't stable yet, when it last
 heard from each other node, and how many rewinds it has done.
@@ -135,7 +146,7 @@ heard from each other node, and how many rewinds it has done.
 There's nothing to back up and nothing to restore. Every full node (the
 Studio, and any other) is a live, complete copy of everything, and every
 write is on the node that took it before the page says it worked. If
-nodes are lost, start new ones with a `join` line pointing at any node
+nodes are lost, start new ones with make install, copying from any node
 still running: they copy what they need and carry on. The copy of last
 resort is the Studio's.
 
@@ -147,7 +158,8 @@ carry on, including one left entirely alone.
 - **A node that will come back** (a reboot, the Studio's home connection
   dropping): do nothing. It catches up when it's back.
 - **The VPS is gone for good:** start a new VPS with a config that has
-  `voter = true` and `join = <the Studio's cluster address>`, and point
+  `voter = true`, and a `join` line with the Studio's public IP (make
+  install asks for a machine to copy from: give it the Studio), and point
   DNS at it. It copies everything from the Studio and serves from then on.
   Then remove the old VPS on the admin page (below), giving its groups to
   the new one.
@@ -187,6 +199,9 @@ and summaries and link notes wait in the job queue until a worker is back.
    then run `make install` again: it finds Ollama and adds `ai_url` to the
    Studio's config, and the Studio records in the node map that it has a
    model, so every other node sends it searches from then on.
+   Searches reach it over the cluster port, so forward that port to the
+   Studio on the home router; without it, jobs still run (the Studio
+   fetches them itself) but searches get plain results.
 2. Pick one on real content (plan section 9, "Choosing the model"), on the
    admin page's **Tools**, "Measure a model": the model's name, an archive
    (the import format), and optionally a questions file (`[{"q": "...",
@@ -307,8 +322,9 @@ except anything under legal hold. Every node applies the same purge.
 
 ## 12. More nodes
 
-A second or third VPS: issue it a certificate, and give it a config with
-`voter = true` and `join = <any existing node's cluster address>`. It
+A second or third VPS: `make install` on it, copying the setup from any
+node, and yes to serving pages (which sets `voter = true`; the `join`
+lines it writes are the site's domains and the nodes' addresses). It
 copies site.db on first start, registers itself, and new groups are
 placed on it from then on: on the first three nodes with `voter = true`
 (by node id), and on every full node.

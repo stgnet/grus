@@ -30,7 +30,7 @@ type Options struct {
 	ID        string      // stable node id: "n1", "studio"
 	Num       int         // node number in ids (internal/ids); no two nodes may share one; -1: choose one
 	Listen    string      // cluster port to listen on, e.g. ":7946"
-	Advertise string      // host:port other nodes dial to reach this one
+	Advertise string      // host:port other nodes dial to reach this one; "" to find it (addr.go)
 	TLS       *tls.Config // from LoadTLS
 
 	// Voter: new groups are placed on this node (a VPS that serves
@@ -47,10 +47,11 @@ type Options struct {
 	// how the nodes find each other.
 	Join []string
 
-	tick     time.Duration    // how often upkeep runs (default 2s)
-	joinWait time.Duration    // tests: give up joining after this (0 = never)
-	ackWait  time.Duration    // how long a write waits for another node to have it (default 500ms)
-	now      func() time.Time // the wall clock (tests replace it)
+	tick     time.Duration                // how often upkeep runs (default 2s)
+	publicIP func(context.Context) string // tests: this node's public IP (default: ask via the domains)
+	joinWait time.Duration                // tests: give up joining after this (0 = never)
+	ackWait  time.Duration                // how long a write waits for another node to have it (default 500ms)
+	now      func() time.Time             // the wall clock (tests replace it)
 }
 
 // Node is this server's part of the cluster.
@@ -72,6 +73,7 @@ type Node struct {
 	peersMu sync.Mutex
 	peers   map[string]peerState
 
+	where   addrState    // where others reach this node (addr.go)
 	refuse  atomic.Value // string: why this node won't take writes, "" when it will
 	rewinds atomic.Int64 // how many rewinds, for the admin page
 	closed  atomic.Bool  // shut down: engines change nothing more
@@ -119,7 +121,7 @@ func Start(o Options, st *store.Store) (*Node, error) {
 		mux: mux, client: NewClient(o.TLS), engines: map[cmd.LogID]*engine{}, copies: map[cmd.LogID]bool{},
 		peers: map[string]peerState{}, warned: map[string]time.Time{}, kick: make(chan struct{}, 1), done: make(chan struct{}), cancel: cancel}
 	n.refuse.Store("")
-	n.rpc = mux.listen(rpcProto, hostAddr(o.Advertise))
+	n.rpc = mux.listen(rpcProto, hostAddr(o.Listen))
 	n.serveRPC()
 
 	// Files already on disk are real copies. site.db always exists (the
@@ -424,6 +426,16 @@ func (n *Node) heardFromAll() bool {
 // holds, with how far it has got.
 func (n *Node) Stats() map[string]string {
 	st := map[string]string{"node": n.o.ID, "origin": n.id.origin(), "rewinds": fmt.Sprint(n.rewinds.Load())}
+	n.where.mu.Lock()
+	switch {
+	case n.where.dialable != "":
+		st["reached at"] = n.where.dialable
+	case n.where.publicIP != "":
+		st["reached at"] = "nowhere: public IP " + n.where.publicIP + " can't be reached on the cluster port, so this node does the talking"
+	default:
+		st["reached at"] = "nowhere yet: its public IP isn't known, so this node does the talking"
+	}
+	n.where.mu.Unlock()
 	if why := n.refuse.Load().(string); why != "" {
 		st["refusing writes"] = why
 	}

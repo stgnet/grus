@@ -73,7 +73,7 @@ func (n *Node) serveRPC() {
 		json.NewEncoder(w).Encode(applyReply{Value: v})
 	})
 	n.serveSync(mux)
-	n.rpcSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	n.rpcSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, ConnContext: connPeer}
 	go n.rpcSrv.Serve(n.rpc)
 }
 

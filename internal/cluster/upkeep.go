@@ -48,10 +48,11 @@ func (n *Node) upkeepOnce(ctx context.Context) {
 	if n.rejoin(ctx) {
 		return
 	}
+	n.findAddress(ctx)
 	n.register()
 	n.checkNumber()
 	n.placeFiles(ctx)
-	n.fetchReports(ctx)
+	n.swapReports(ctx)
 	n.catchUp(ctx)
 	for _, l := range n.heldLogs() {
 		if ctx.Err() != nil {
@@ -79,7 +80,7 @@ func (n *Node) registered() bool {
 	}
 	for _, nd := range nodes {
 		if nd.ID == n.o.ID {
-			return nd.Addr == n.o.Advertise && nd.Voter == n.o.Voter && nd.Full == n.o.Full && nd.AI == n.o.AI &&
+			return nd.Addr == n.dialable() && nd.Voter == n.o.Voter && nd.Full == n.o.Full && nd.AI == n.o.AI &&
 				nd.Origin == n.id.origin() && nd.Num == n.o.Num
 		}
 	}
@@ -92,7 +93,7 @@ func (n *Node) register() {
 	if n.registered() || !n.holds(cmd.SiteLog) {
 		return
 	}
-	_, err := n.Apply(&cmd.RegisterNode{ID: n.o.ID, Addr: n.o.Advertise, Voter: n.o.Voter, Full: n.o.Full, AI: n.o.AI,
+	_, err := n.Apply(&cmd.RegisterNode{ID: n.o.ID, Addr: n.dialable(), Voter: n.o.Voter, Full: n.o.Full, AI: n.o.AI,
 		Origin: n.id.origin(), Num: n.o.Num, At: n.o.now().Unix()})
 	if err != nil {
 		n.warn("register", "registering %s: %v (will retry)", n.o.ID, err)

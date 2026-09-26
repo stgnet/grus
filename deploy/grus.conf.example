@@ -35,18 +35,23 @@ https_addr = :443
 # dev = true
 # http_addr = :8080
 
-# Cluster: node-to-node mutual TLS on one port (default :7946), and the
-# address other nodes reach this one at (default <host name>:7946).
+# Cluster: node-to-node mutual TLS on one port (default :7946). A node
+# finds for itself where the others can reach it: its public IP, as the
+# other nodes (or the node a site domain leads to) see it, and whether a
+# connection there gets through (docs/replication.md, "Where nodes are").
+# advertise overrides that, for a private network.
 cluster_addr = :7946
-advertise    = vps1.nfb.group:7946
+# advertise  = 10.0.0.5:7946
 # New groups are placed on nodes with voter = true (a VPS that serves
 # pages); the first node always is one. A small VPS that holds only the
 # groups placed on it sets neither voter nor full.
 voter        = true
-# Every node but the first sets join (repeatable): an existing node to copy
-# site.db from the first time it starts. After that the node map (site.db)
-# is how the nodes find each other.
-# join = vps2.nfb.group:7946
+# Every node but the first sets join (repeatable): where to find a node to
+# copy site.db from the first time it starts. Any of the site's domains
+# will do, since each leads to a node that serves pages (the port defaults
+# to 7946); make install writes these lines itself. After that the node
+# map (site.db) is how the nodes find each other.
+# join = nfb.group
 
 # The cluster certificates (default <data_dir>/cluster/ca.crt, node.crt,
 # node.key). The service makes this node's own, and on the first node the
