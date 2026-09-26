@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"strings"
 )
 
@@ -124,4 +126,54 @@ func ValidDomain(d string) error {
 		}
 	}
 	return nil
+}
+
+// rowID is the id of a row a command makes whose table would otherwise
+// number its rows itself (jobs, nudges, FAQ history). A SQLite row number
+// depends on the order rows were added, and until the order of operations
+// settles (docs/replication.md) two nodes can add the same rows in
+// different orders; a command that refers to a row by that number could
+// then mean a different row on each. So these ids are computed from what
+// the row is: the same row gets the same id on every node, in any order.
+//
+// It's a 64-bit FNV-1a hash of the parts, kept positive and non-zero. Two
+// different rows sharing an id is as likely as two random 62-bit numbers
+// matching, which is to say it won't happen.
+func rowID(parts ...any) int64 {
+	h := fnv.New64a()
+	for _, p := range parts {
+		fmt.Fprint(h, p)
+		h.Write([]byte{0}) // so ("ab","c") and ("a","bc") differ
+	}
+	return int64(h.Sum64()>>2) | 1
+}
+
+// freeName is how a name that must be unique (a group's slug, a handle) is
+// claimed. count is a query counting the rows that already use a name.
+//
+// Where the command is first made (a.Fresh), a taken name is refused with
+// taken, and the page asks for another. Anywhere else the name was free
+// when it was made, and has been taken since by another node on the other
+// side of a split, which comes first in the final order. Refusing then
+// would lose what the person did, so the later claim gets the name with a
+// number added instead (travato-2, alice_2), the same on every node. The
+// number is cut to fit max, and the person sees their new name next time.
+func freeName(tx *sql.Tx, a *Applier, count, name, sep string, max int, taken error) (string, error) {
+	for i := 1; ; i++ {
+		try := name
+		if i > 1 {
+			suffix := sep + fmt.Sprint(i)
+			try = name[:min(len(name), max-len(suffix))] + suffix
+		}
+		var n int
+		if err := tx.QueryRow(count, try).Scan(&n); err != nil {
+			return "", err
+		}
+		if n == 0 {
+			return try, nil
+		}
+		if a.Fresh {
+			return "", taken
+		}
+	}
 }

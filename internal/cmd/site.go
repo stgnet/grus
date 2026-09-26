@@ -199,15 +199,12 @@ func (c *CreateGroup) Apply(a *Applier) (any, error) {
 		return nil, Invalid("visibility must be public, private or hidden")
 	}
 	return nil, a.Site(func(tx *sql.Tx) error {
-		var n int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM groups WHERE slug = ?`, c.Slug).Scan(&n); err != nil {
+		slug, err := freeName(tx, a, `SELECT COUNT(*) FROM groups WHERE slug = ?`, c.Slug, "-", 32, ErrSlugTaken)
+		if err != nil {
 			return err
 		}
-		if n > 0 {
-			return ErrSlugTaken
-		}
 		if _, err := tx.Exec(`INSERT INTO groups (id, slug, name, visibility, created_at) VALUES (?, ?, ?, ?, ?)`,
-			c.GroupID, c.Slug, c.Name, vis, c.At); err != nil {
+			c.GroupID, slug, c.Name, vis, c.At); err != nil {
 			return err
 		}
 		// The group's settings live here, with the site's. InitGroup gives

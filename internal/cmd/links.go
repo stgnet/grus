@@ -145,8 +145,9 @@ func feedWeight(tx *sql.Tx, older, newer, at int64) error {
 	if n > 0 {
 		return nil // already weighted, or a mod reversed it
 	}
-	if _, err := tx.Exec(`INSERT INTO nudges (post_id, kind, target_id, value, reason, created_at)
-		VALUES (?, 'feed_weight', ?, ?, ?, ?)`, newer, newer, FeedSink, fmt.Sprintf("repeats answered thread %d", older), at); err != nil {
+	if _, err := tx.Exec(`INSERT INTO nudges (id, post_id, kind, target_id, value, reason, created_at)
+		VALUES (?, ?, 'feed_weight', ?, ?, ?, ?)`, rowID("nudge", newer, "feed_weight", newer, at),
+		newer, newer, FeedSink, fmt.Sprintf("repeats answered thread %d", older), at); err != nil {
 		return err
 	}
 	_, err := tx.Exec(`UPDATE posts SET sink = ? WHERE id = ?`, FeedSink, newer)

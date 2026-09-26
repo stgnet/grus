@@ -233,7 +233,7 @@ func (s *Store) EntryHistory(groupID, entryID int64) ([]History, error) {
 		return nil, err
 	}
 	rows, err := db.Query(`SELECT id, question, answer, COALESCE(changed_by, 0), created_at FROM faq_history
-		WHERE entry_id = ? ORDER BY id DESC`, entryID)
+		WHERE entry_id = ? ORDER BY created_at DESC, id DESC`, entryID)
 	if err != nil {
 		return nil, err
 	}

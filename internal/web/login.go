@@ -230,6 +230,7 @@ func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request, t *store.L
 		SessionExpires: expires.Unix(),
 		UserAgentHint:  uaHint(r.UserAgent()),
 		Operator:       s.global().IsOperator(t.Email),
+		NewAccount:     !s.Store.EmailHasAccount(t.Email),
 		At:             now.Unix(),
 	})
 	if errors.Is(err, cmd.ErrLoginDead) {

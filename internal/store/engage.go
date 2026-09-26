@@ -136,7 +136,7 @@ func (s *Store) scanNotes(groupID int64, q string, args ...any) ([]Notification,
 
 // Notifications lists someone's newest notifications in a group.
 func (s *Store) Notifications(groupID, userID int64, limit int) ([]Notification, error) {
-	return s.scanNotes(groupID, `SELECT `+noteCols+noteFrom+` WHERE n.user_id = ? ORDER BY n.id DESC LIMIT ?`, userID, limit)
+	return s.scanNotes(groupID, `SELECT `+noteCols+noteFrom+` WHERE n.user_id = ? ORDER BY n.created_at DESC, n.id DESC LIMIT ?`, userID, limit)
 }
 
 // UnreadCount counts someone's unread notifications in a group.
@@ -165,7 +165,7 @@ func (s *Store) PendingEmail(groupID, before int64, userIDs []int64) ([]Notifica
 	return s.scanNotes(groupID, `SELECT `+noteCols+noteFrom+`
 		WHERE n.read_at IS NULL AND n.emailed_at IS NULL AND n.created_at <= ?
 		  AND n.user_id IN (?`+strings.Repeat(",?", len(userIDs)-1)+`)
-		ORDER BY n.id LIMIT 5000`, args...)
+		ORDER BY n.created_at, n.id LIMIT 5000`, args...)
 }
 
 // EmailUsers lists the accounts that want notifications by email, or a

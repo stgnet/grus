@@ -49,6 +49,13 @@ type Applier struct {
 	Store *store.Store
 	Log   LogID  // the log the command came from
 	Index uint64 // its index in that log
+	// Fresh is true when the command is being applied for the first time,
+	// on the node where it's made: the one application whose outcome
+	// decides whether it happens at all. Anywhere else, and on any later
+	// replay, the command is known to have succeeded where it was made.
+	// Almost every command behaves the same either way; see freeName for
+	// the exception.
+	Fresh bool
 }
 
 // Site runs fn in a transaction on site.db.
@@ -100,7 +107,7 @@ func Run(st *store.Store, log LogID, index uint64, c Command) (any, error) {
 	if LogOf(c) != log {
 		return nil, fmt.Errorf("%s belongs to log %s, not %s", nameOf(c), LogOf(c), log)
 	}
-	v, err := c.Apply(&Applier{Store: st, Log: log, Index: index})
+	v, err := c.Apply(&Applier{Store: st, Log: log, Index: index, Fresh: true})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", nameOf(c), err)
 	}

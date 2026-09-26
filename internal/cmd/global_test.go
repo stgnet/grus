@@ -108,3 +108,63 @@ func TestSeedGlobalOnce(t *testing.T) {
 		t.Fatalf("faq_hour back to default: %d", g.FAQHour)
 	}
 }
+
+// TestNamesClaimedTwice: where a name is first chosen, a taken name is
+// refused; applied anywhere else (the other side of a split claimed it
+// first), it gets a number added instead, and the same one everywhere.
+func TestNamesClaimedTwice(t *testing.T) {
+	st := newStore(t)
+	index := map[LogID]uint64{}
+	run := func(fresh bool, c Command) (any, error) {
+		index[LogOf(c)]++
+		return c.Apply(&Applier{Store: st, Log: LogOf(c), Index: index[LogOf(c)], Fresh: fresh})
+	}
+	if _, err := run(true, &CreateGroup{GroupID: 1, Slug: "travato", Name: "A", At: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(true, &CreateGroup{GroupID: 2, Slug: "travato", Name: "B", At: 2}); err != ErrSlugTaken {
+		t.Fatalf("fresh claim of a taken slug: %v", err)
+	}
+	if _, err := run(false, &CreateGroup{GroupID: 2, Slug: "travato", Name: "B", At: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if g, _ := st.GroupByID(2); g == nil || g.Slug != "travato-2" {
+		t.Fatalf("second group: %+v", g)
+	}
+
+	st.Site().Exec(`INSERT INTO users (id, email, handle, created_at) VALUES (10, 'a@x', 'alice', 1), (11, 'b@x', NULL, 1)`)
+	if _, err := run(true, &SetHandle{UserID: 11, Handle: "alice"}); err != ErrHandleTaken {
+		t.Fatalf("fresh claim of a taken handle: %v", err)
+	}
+	if _, err := run(false, &SetHandle{UserID: 11, Handle: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := st.UserByID(11); u.Handle != "alice_2" {
+		t.Fatalf("second handle: %q", u.Handle)
+	}
+}
+
+// TestSameEmailTwoAccounts: two first sign-ins with one email, made on
+// two sides of a split. The second finds the first account, and its own
+// id becomes another name for it.
+func TestSameEmailTwoAccounts(t *testing.T) {
+	st := newStore(t)
+	d := &Direct{Store: st}
+	for i, tok := range []string{"t1", "t2"} {
+		if _, err := d.Apply(&CreateLogin{TokenHash: tok, Email: "a@x", At: 1, ExpiresAt: 100}); err != nil {
+			t.Fatal(err)
+		}
+		v, err := d.Apply(&RedeemLogin{TokenHash: tok, NewUserID: int64(100 + i), SessionHash: "s" + tok,
+			SessionExpires: 100, NewAccount: true, At: 2})
+		if err != nil || v.(Redeemed).UserID != 100 {
+			t.Fatalf("sign-in %d: %v %v", i, v, err)
+		}
+	}
+	st.Site().Exec(`UPDATE users SET handle = 'alice' WHERE id = 100`)
+	if u, _ := st.UserByID(101); u == nil || u.ID != 100 {
+		t.Fatalf("alias lookup: %+v", u)
+	}
+	if h, _ := st.Handles([]int64{101}); h[101] != "alice" {
+		t.Fatalf("alias handle: %v", h)
+	}
+}

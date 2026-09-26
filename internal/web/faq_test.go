@@ -60,7 +60,7 @@ func TestFAQPages(t *testing.T) {
 		t.Fatalf("history:\n%s", hist)
 	}
 	var first int64
-	db.QueryRow(`SELECT MIN(id) FROM faq_history`).Scan(&first)
+	db.QueryRow(`SELECT id FROM faq_history WHERE answer LIKE '%225/75R16%'`).Scan(&first)
 	expect(t, mod.do("POST", G+entry+"/rollback", url.Values{"version": {fmt.Sprint(first)}}), 303, entry)
 	if !strings.Contains(s.browser().do("GET", G+entry, nil).Body.String(), "225/75R16") {
 		t.Fatal("rollback")

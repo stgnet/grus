@@ -116,7 +116,7 @@ func (s *Server) SendNotices() error {
 			}
 			for _, v := range views {
 				lines[uid] = append(lines[uid], v)
-				newest[uid] = max(newest[uid], v.ID)
+				newest[uid] = max(newest[uid], v.CreatedAt)
 			}
 		}
 		for u, id := range newest {

@@ -137,8 +137,8 @@ func setNudges(tx *sql.Tx, c *SetSummary, shown map[int64]bool) error {
 		if reversed > 0 {
 			return nil
 		}
-		_, err := tx.Exec(`INSERT INTO nudges (post_id, kind, target_id, value, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			c.PostID, kind, target, value, reason, c.At)
+		_, err := tx.Exec(`INSERT INTO nudges (id, post_id, kind, target_id, value, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			rowID("nudge", c.PostID, kind, target, c.At), c.PostID, kind, target, value, reason, c.At)
 		return err
 	}
 	for i, cm := range c.Useful {

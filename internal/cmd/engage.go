@@ -179,36 +179,38 @@ func (c *Follow) Apply(a *Applier) (any, error) {
 	})
 }
 
-// MarkRead marks someone's notifications in a group read, up to and
-// including UpTo (the newest one they were shown), so one that arrived
-// while the page was open stays unread.
+// MarkRead marks a person's notifications in a group read, up to and
+// including those made at UpTo (a notification's created_at): what the
+// page showed them. It goes by time rather than by row number because a
+// notification's row number can differ between nodes until the order of
+// operations settles (docs/replication.md).
 type MarkRead struct {
 	GroupID int64
 	UserID  int64
-	UpTo    int64
+	UpTo    int64 // created_at of the newest notification shown
 	At      int64
 }
 
 func (c *MarkRead) Apply(a *Applier) (any, error) {
 	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE notifications SET read_at = ? WHERE user_id = ? AND id <= ? AND read_at IS NULL`,
+		_, err := tx.Exec(`UPDATE notifications SET read_at = ? WHERE user_id = ? AND created_at <= ? AND read_at IS NULL`,
 			c.At, c.UserID, c.UpTo)
 		return err
 	})
 }
 
-// MarkEmailed records that notifications up to UpTo were sent by email, so
-// the next pass doesn't send them again.
+// MarkEmailed records that notifications made up to UpTo (a created_at)
+// were sent by email, so the next pass doesn't send them again.
 type MarkEmailed struct {
 	GroupID int64
 	UserID  int64
-	UpTo    int64
+	UpTo    int64 // created_at of the newest notification emailed
 	At      int64
 }
 
 func (c *MarkEmailed) Apply(a *Applier) (any, error) {
 	return nil, a.Group(c.GroupID, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE notifications SET emailed_at = ? WHERE user_id = ? AND id <= ? AND emailed_at IS NULL`,
+		_, err := tx.Exec(`UPDATE notifications SET emailed_at = ? WHERE user_id = ? AND created_at <= ? AND emailed_at IS NULL`,
 			c.At, c.UserID, c.UpTo)
 		return err
 	})

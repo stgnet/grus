@@ -158,9 +158,11 @@ func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	return &u, nil
 }
 
-// UserByID looks up a live (not deleted) account.
+// UserByID looks up a live (not deleted) account, by its id or another id
+// for the same account (user_aliases).
 func (s *Store) UserByID(id int64) (*User, error) {
-	return scanUser(s.Site().QueryRow(`SELECT `+userCols+` FROM users WHERE id = ? AND deleted_at IS NULL`, id))
+	return scanUser(s.Site().QueryRow(`SELECT `+userCols+` FROM users WHERE deleted_at IS NULL
+		AND id = COALESCE((SELECT user_id FROM user_aliases WHERE alias_id = ?1), ?1)`, id))
 }
 
 // UserByHandle looks up a live account by its handle, ignoring case.
@@ -225,4 +227,12 @@ func (s *Store) Cert(name string) ([]byte, error) {
 func (s *Store) UserByName(name string) (*User, error) {
 	name = strings.TrimPrefix(strings.TrimSpace(name), "@")
 	return scanUser(s.Site().QueryRow(`SELECT `+userCols+` FROM users WHERE (handle = ?1 COLLATE NOCASE OR email = lower(?1)) AND deleted_at IS NULL`, name))
+}
+
+// EmailHasAccount reports whether any account, even a deleted one waiting
+// to be purged, has this email.
+func (s *Store) EmailHasAccount(email string) bool {
+	var n int
+	s.Site().QueryRow(`SELECT COUNT(*) FROM users WHERE email = ?`, email).Scan(&n)
+	return n > 0
 }

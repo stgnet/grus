@@ -58,8 +58,8 @@ const (
 //     last ran.
 func schedule(tx *sql.Tx, kind string, refID, version, runAfter, at int64) error {
 	_, err := tx.Exec(`
-		INSERT INTO jobs (kind, ref_id, ref_version, run_after, pending_since, created_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+		INSERT INTO jobs (id, kind, ref_id, ref_version, run_after, pending_since, created_at)
+		VALUES (?8, ?1, ?2, ?3, ?4, ?5, ?5)
 		ON CONFLICT (kind, ref_id) DO UPDATE SET
 		  ref_version   = excluded.ref_version,
 		  attempts      = 0,
@@ -69,7 +69,7 @@ func schedule(tx *sql.Tx, kind string, refID, version, runAfter, at int64) error
 		    WHEN jobs.done_at IS NULL THEN MIN(excluded.run_after, jobs.pending_since + ?6)
 		    ELSE MAX(excluded.run_after, COALESCE(jobs.last_run_at, 0) + ?7) END,
 		  done_at       = NULL`,
-		kind, refID, version, runAfter, at, MaxWait, MinRerun)
+		kind, refID, version, runAfter, at, MaxWait, MinRerun, rowID("job", kind, refID))
 	return err
 }
 

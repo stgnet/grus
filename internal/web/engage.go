@@ -172,7 +172,7 @@ func (s *Server) notificationsPage(w http.ResponseWriter, r *http.Request) {
 		}
 		all = append(all, views...)
 		if list[0].ReadAt == 0 {
-			if _, err := s.Log.Apply(&cmd.MarkRead{GroupID: g.ID, UserID: u.ID, UpTo: list[0].ID, At: s.Now().Unix()}); err != nil {
+			if _, err := s.Log.Apply(&cmd.MarkRead{GroupID: g.ID, UserID: u.ID, UpTo: list[0].CreatedAt, At: s.Now().Unix()}); err != nil {
 				s.serverError(w, r, err)
 				return
 			}

@@ -288,7 +288,13 @@ func (s *Store) Handles(ids []int64) (map[int64]string, error) {
 	for i, id := range ids {
 		args[i] = id
 	}
-	q := `SELECT id, COALESCE(handle, '') FROM users WHERE id IN (?` + strings.Repeat(",?", len(ids)-1) + `)`
+	// Ids given are keyed as given, and an alias id (user_aliases) shows its
+	// account's handle.
+	in := `(?` + strings.Repeat(",?", len(ids)-1) + `)`
+	q := `SELECT id, COALESCE(handle, '') FROM users WHERE id IN ` + in + `
+		UNION ALL SELECT a.alias_id, COALESCE(u.handle, '') FROM user_aliases a JOIN users u ON u.id = a.user_id
+		WHERE a.alias_id IN ` + in
+	args = append(args, args...)
 	rows, err := s.Site().Query(q, args...)
 	if err != nil {
 		return nil, err

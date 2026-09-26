@@ -298,8 +298,8 @@ func readablePosts(tx *sql.Tx, ids []int64) ([]int64, error) {
 // faqHistory records a version of an entry as it was written. Every
 // version is kept (the first one too), so rollback is choosing a row.
 func faqHistory(tx *sql.Tx, entry int64, q, ans string, by, at int64) error {
-	_, err := tx.Exec(`INSERT INTO faq_history (entry_id, question, answer, changed_by, created_at) VALUES (?, ?, ?, ?, ?)`,
-		entry, q, ans, nullIfZero(by), at)
+	_, err := tx.Exec(`INSERT OR IGNORE INTO faq_history (id, entry_id, question, answer, changed_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		rowID("faq_history", entry, q, ans, by, at), entry, q, ans, nullIfZero(by), at)
 	return err
 }
 

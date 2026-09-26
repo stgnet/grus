@@ -3,6 +3,7 @@ package cmd
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 )
 
 // Sign-in commands. The flow (plan section 8, "From a shared link to the
@@ -63,7 +64,13 @@ type RedeemLogin struct {
 	SessionExpires int64
 	UserAgentHint  string
 	Operator       bool // the global settings list this email as an operator
-	At             int64
+	// NewAccount says the node where this was made had no account for the
+	// email, so it made one with NewUserID and may already have written
+	// things under that id. If the account turns out to exist after all
+	// (made on the other side of a split), NewUserID is kept as another
+	// name for it.
+	NewAccount bool
+	At         int64
 }
 
 // Redeemed is RedeemLogin's result.
@@ -111,6 +118,11 @@ func (c *RedeemLogin) Apply(a *Applier) (any, error) {
 			if _, err := tx.Exec(`UPDATE users SET deleted_at = NULL, purge_after = NULL WHERE id = ?`, out.UserID); err != nil {
 				return err
 			}
+			if c.NewAccount && c.NewUserID != out.UserID {
+				if _, err := tx.Exec(`INSERT OR IGNORE INTO user_aliases (alias_id, user_id) VALUES (?, ?)`, c.NewUserID, out.UserID); err != nil {
+					return err
+				}
+			}
 			if c.Operator {
 				if _, err := tx.Exec(`UPDATE users SET is_operator = 1 WHERE id = ?`, out.UserID); err != nil {
 					return err
@@ -150,14 +162,12 @@ func (c *SetHandle) Apply(a *Applier) (any, error) {
 		return nil, err
 	}
 	return nil, a.Site(func(tx *sql.Tx) error {
-		var n int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM users WHERE handle = ? AND id != ?`, c.Handle, c.UserID).Scan(&n); err != nil {
+		handle, err := freeName(tx, a, `SELECT COUNT(*) FROM users WHERE handle = ? AND id != `+fmt.Sprint(c.UserID),
+			c.Handle, "_", 20, ErrHandleTaken)
+		if err != nil {
 			return err
 		}
-		if n > 0 {
-			return ErrHandleTaken
-		}
-		res, err := tx.Exec(`UPDATE users SET handle = ? WHERE id = ? AND deleted_at IS NULL`, c.Handle, c.UserID)
+		res, err := tx.Exec(`UPDATE users SET handle = ? WHERE id = ? AND deleted_at IS NULL`, handle, c.UserID)
 		if err != nil {
 			return err
 		}

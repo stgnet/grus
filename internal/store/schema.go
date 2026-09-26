@@ -295,6 +295,17 @@ CREATE TABLE group_settings (
 -- each node's config (was the worker key).
 ALTER TABLE nodes ADD COLUMN ai INTEGER NOT NULL DEFAULT 0;
 `,
+	// 8: another id for the same account. Someone signing in for the first
+	// time on two sides of a split gets an account made on each, with
+	// different ids; when the two sides merge, the second finds the first
+	// and uses it (cmd.RedeemLogin), and whatever was written under the
+	// second id is shown as theirs through this.
+	`
+CREATE TABLE user_aliases (
+  alias_id INTEGER PRIMARY KEY,
+  user_id  INTEGER NOT NULL
+);
+`,
 }
 
 var groupMigrations = []string{
