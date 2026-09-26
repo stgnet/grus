@@ -200,8 +200,7 @@ func TestPrivateGroupPhotos(t *testing.T) {
 	body := alice.do("GET", G+w.Header().Get("Location"), nil).Body.String()
 	hash := regexp.MustCompile(`/img/([0-9a-f]{64})/t`).FindStringSubmatch(body)[1]
 
-	db, _ := s.st.Group(42)
-	db.Exec(`UPDATE settings SET visibility = 'private'`)
+	s.st.Site().Exec(`UPDATE group_settings SET visibility = 'private' WHERE group_id = 42`)
 	expect(t, s.browser().do("GET", G+"/img/"+hash, nil), 404, "")
 	w = alice.do("GET", G+"/img/"+hash, nil)
 	expect(t, w, 200, "")

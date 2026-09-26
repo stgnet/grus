@@ -3,20 +3,22 @@ package web
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/stgnet/grus/internal/cmd"
 	"github.com/stgnet/grus/internal/store"
 )
 
-// The operator's page on the primary domain: groups, domains, cluster
-// status. Anyone else gets a plain 404, so the page's existence isn't
-// advertised.
+// The operator's page, on any of the domains: the global level. Groups,
+// domains and their mail, the global settings, the cluster. Anyone else
+// gets a plain 404, so the page's existence isn't advertised.
 
 type adminData struct {
 	Groups  []adminGroup
 	Domains []store.Domain
-	Nodes   []adminNode // the node map (M7); empty on a single node with none registered
+	Global  []globalField // the global settings, in store.GlobalKeys order
+	Nodes   []adminNode   // the node map (M7); empty on a single node with none registered
 	Cluster map[string]string
 	Form    map[string]string // values to refill after an error
 
@@ -69,9 +71,17 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, u *store.Us
 		s.serverError(w, r, err)
 		return
 	}
+	raw, err := s.Store.GlobalRaw()
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
 	d := adminData{Domains: domains, Form: form}
+	for _, k := range store.GlobalKeys {
+		d.Global = append(d.Global, globalField{Key: k, Value: raw[k]})
+	}
 	for _, g := range groups {
-		d.Groups = append(d.Groups, adminGroup{Group: g, URL: s.groupURL(&g, rt.primary, "/")})
+		d.Groups = append(d.Groups, adminGroup{Group: g, URL: s.groupURL(&g, rt.domain, "/")})
 	}
 	if st, ok := s.Log.(statser); ok {
 		all := st.Stats()
@@ -190,7 +200,7 @@ func (s *Server) adminCreateGroup(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
-// adminDomain adds an alternate domain or makes a domain the primary.
+// adminDomain lists a domain, or takes one off the list.
 func (s *Server) adminDomain(w http.ResponseWriter, r *http.Request) {
 	u := s.operator(w, r)
 	if u == nil {
@@ -199,10 +209,10 @@ func (s *Server) adminDomain(w http.ResponseWriter, r *http.Request) {
 	domain := strings.ToLower(strings.TrimSpace(r.FormValue("domain")))
 	var c cmd.Command
 	switch r.FormValue("action") {
-	case "alternate":
-		c = &cmd.AddAlternateDomain{Domain: domain, At: s.Now().Unix()}
-	case "primary":
-		c = &cmd.SetPrimaryDomain{Domain: domain, At: s.Now().Unix()}
+	case "add":
+		c = &cmd.AddDomain{Domain: domain, At: s.Now().Unix()}
+	case "remove":
+		c = &cmd.RemoveDomain{Domain: domain}
 	default:
 		s.adminFail(w, r, u, errors.New("unknown action"), nil)
 		return
@@ -211,35 +221,81 @@ func (s *Server) adminDomain(w http.ResponseWriter, r *http.Request) {
 		s.adminFail(w, r, u, err, map[string]string{"domain": domain})
 		return
 	}
-	// After a primary change this request's host is now an alternate, so
-	// this redirect itself goes through the new redirect rules.
+	// Removing the domain this page is on leaves this redirect with
+	// nowhere to go, which is what removing it means.
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
-// adminAlias adds a single host that redirects to a group (or home).
-func (s *Server) adminAlias(w http.ResponseWriter, r *http.Request) {
+// adminDomainMail sets one domain's own mail settings. A blank password
+// keeps the one already set (the page never shows it); a blank relay
+// clears them all, and the domain uses the global relay.
+func (s *Server) adminDomainMail(w http.ResponseWriter, r *http.Request) {
 	u := s.operator(w, r)
 	if u == nil {
 		return
 	}
-	host := strings.ToLower(strings.TrimSpace(r.FormValue("host")))
-	slug := strings.ToLower(strings.TrimSpace(r.FormValue("group")))
-	form := map[string]string{"host": host, "group": slug}
-	var gid int64
-	if slug != "" {
-		g, err := s.Store.GroupBySlug(slug)
-		if err != nil {
-			s.serverError(w, r, err)
-			return
-		}
-		if g == nil {
-			s.adminFail(w, r, u, errors.New("no group "+slug), form)
-			return
-		}
-		gid = g.ID
+	name := strings.ToLower(strings.TrimSpace(r.FormValue("domain")))
+	d, err := s.Store.DomainNamed(name)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
 	}
-	if _, err := s.Log.Apply(&cmd.AddHostAlias{Host: host, GroupID: gid, At: s.Now().Unix()}); err != nil {
-		s.adminFail(w, r, u, err, form)
+	if d == nil {
+		s.adminFail(w, r, u, errors.New("no domain "+name), nil)
+		return
+	}
+	c := &cmd.SetDomainMail{Domain: name, SMTPHost: r.FormValue("smtp_host"), SMTPUser: r.FormValue("smtp_user"),
+		SMTPPass: r.FormValue("smtp_pass"), MailFrom: r.FormValue("mail_from")}
+	if p := strings.TrimSpace(r.FormValue("smtp_port")); p != "" {
+		if c.SMTPPort, err = strconv.Atoi(p); err != nil {
+			s.adminFail(w, r, u, errors.New("the port must be a number"), nil)
+			return
+		}
+	}
+	if c.SMTPPass == "" {
+		c.SMTPPass = d.SMTPPass
+	}
+	if strings.TrimSpace(c.SMTPHost) == "" {
+		c.SMTPPort, c.SMTPUser, c.SMTPPass = 0, "", ""
+	}
+	if _, err := s.Log.Apply(c); err != nil {
+		s.adminFail(w, r, u, err, nil)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+// globalField is one global setting on the admin page.
+type globalField struct {
+	Key   string
+	Value string
+}
+
+// adminGlobal saves the global settings form: every key on it. An empty
+// field puts the key back to its default, except the SMTP password, which
+// the page never shows: empty keeps it, and it's cleared with the relay.
+func (s *Server) adminGlobal(w http.ResponseWriter, r *http.Request) {
+	u := s.operator(w, r)
+	if u == nil {
+		return
+	}
+	raw, err := s.Store.GlobalRaw()
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	values := map[string]string{}
+	for _, k := range store.GlobalKeys {
+		values[k] = r.FormValue(k)
+	}
+	if values["smtp_pass"] == "" {
+		values["smtp_pass"] = raw["smtp_pass"]
+	}
+	if strings.TrimSpace(values["smtp_host"]) == "" {
+		values["smtp_user"], values["smtp_pass"] = "", ""
+	}
+	if _, err := s.Log.Apply(&cmd.SetGlobal{Values: values}); err != nil {
+		s.adminFail(w, r, u, err, nil)
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)

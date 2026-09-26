@@ -31,8 +31,8 @@ const (
 	FAQNewPerNight = 20
 )
 
-// RootGroupID is the group file behind the root FAQ on the bare primary
-// domain (plan section 4, "The root FAQ at nfb.group"). It's a group file
+// RootGroupID is the group file behind the root FAQ on the bare domains
+// (plan section 4, "The root FAQ at nfb.group"). It's a group file
 // like any other, so the same FAQ code runs it, but it's not in the groups
 // table, so it has no address, no members, and no feed. Real group ids are
 // time-based and far larger, so they never collide with it.

@@ -80,7 +80,7 @@ func (n *Node) registered() bool {
 	}
 	for _, nd := range nodes {
 		if nd.ID == n.o.ID {
-			return nd.Addr == n.o.Advertise && nd.Voter == n.o.Voter && nd.Full == n.o.Full
+			return nd.Addr == n.o.Advertise && nd.Voter == n.o.Voter && nd.Full == n.o.Full && nd.AI == n.o.AI
 		}
 	}
 	return false
@@ -95,7 +95,7 @@ func (n *Node) register() {
 		return
 	}
 	n.lastSubmit = time.Now()
-	_, err := n.Apply(&cmd.RegisterNode{ID: n.o.ID, Addr: n.o.Advertise, Voter: n.o.Voter, Full: n.o.Full,
+	_, err := n.Apply(&cmd.RegisterNode{ID: n.o.ID, Addr: n.o.Advertise, Voter: n.o.Voter, Full: n.o.Full, AI: n.o.AI,
 		At: time.Now().Unix()})
 	if err != nil {
 		logf("registering %s: %v (will retry)", n.o.ID, err)
@@ -119,7 +119,7 @@ func (n *Node) forget() bool {
 		return false
 	}
 	now := time.Now().Unix()
-	if _, _, err := s.applyHere(&cmd.RegisterNode{ID: n.o.ID, Addr: n.o.Advertise, Voter: true, Full: n.o.Full, At: now}); err != nil {
+	if _, _, err := s.applyHere(&cmd.RegisterNode{ID: n.o.ID, Addr: n.o.Advertise, Voter: true, Full: n.o.Full, AI: n.o.AI, At: now}); err != nil {
 		logf("recover: %v", err)
 		return false
 	}

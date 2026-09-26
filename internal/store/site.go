@@ -22,14 +22,16 @@ type User struct {
 	Digest         string // off | daily
 	Bio            string // M7: the public profile
 	Photo          string // blob hash of the profile photo, or ""
+	// Domain is the one this account last signed in on: email that isn't
+	// a reply to a request is sent through it and links to it.
+	Domain string
 }
 
 // Group is a row of the site's group list. Settings live in the group's own
 // file (GroupSettings).
 type Group struct {
 	ID        int64
-	Slug      string
-	MainHost  string // "" = <slug>.<primary>
+	Slug      string // the group is at <slug>.<domain>, on every domain
 	Name      string
 	Status    string
 	CreatedAt int64
@@ -38,10 +40,37 @@ type Group struct {
 	AIEnabled  bool
 }
 
-// Domain is a row of the domains table.
+// Domain is a row of the domains table: one of the site's domains, all
+// equal, and the mail settings for it (empty = the global ones).
 type Domain struct {
-	Name string
-	Role string // primary | alternate
+	Name      string
+	CreatedAt int64
+	SMTPHost  string
+	SMTPPort  int
+	SMTPUser  string
+	SMTPPass  string
+	MailFrom  string
+}
+
+// Domains lists every domain, oldest first. The oldest is only a fallback:
+// for email to someone who has never signed in on a domain that's still
+// listed.
+func (s *Store) Domains() ([]Domain, error) {
+	rows, err := s.Site().Query(`SELECT name, created_at, smtp_host, smtp_port, smtp_user, smtp_pass, mail_from
+		FROM domains ORDER BY created_at, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Domain
+	for rows.Next() {
+		var d Domain
+		if err := rows.Scan(&d.Name, &d.CreatedAt, &d.SMTPHost, &d.SMTPPort, &d.SMTPUser, &d.SMTPPass, &d.MailFrom); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 // LoginToken is one emailed sign-in.
@@ -50,44 +79,32 @@ type LoginToken struct {
 	Email     string
 	CodeHash  string
 	ReturnURL string
+	Domain    string // the domain the sign-in was asked for on
 	ExpiresAt int64
 	Tries     int
 	UsedAt    int64 // 0 = unused
 }
 
-// PrimaryDomain returns the current primary domain.
-func (s *Store) PrimaryDomain() (string, error) {
-	var name string
-	err := s.Site().QueryRow(`SELECT name FROM domains WHERE role = 'primary'`).Scan(&name)
+// DomainNamed returns one domain's row, or nil if it isn't listed.
+func (s *Store) DomainNamed(name string) (*Domain, error) {
+	var d Domain
+	err := s.Site().QueryRow(`SELECT name, created_at, smtp_host, smtp_port, smtp_user, smtp_pass, mail_from
+		FROM domains WHERE name = ?`, name).
+		Scan(&d.Name, &d.CreatedAt, &d.SMTPHost, &d.SMTPPort, &d.SMTPUser, &d.SMTPPass, &d.MailFrom)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return nil, nil
 	}
-	return name, err
-}
-
-// Domains lists every domain, primary first.
-func (s *Store) Domains() ([]Domain, error) {
-	rows, err := s.Site().Query(`SELECT name, role FROM domains ORDER BY role = 'alternate', name`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Domain
-	for rows.Next() {
-		var d Domain
-		if err := rows.Scan(&d.Name, &d.Role); err != nil {
-			return nil, err
-		}
-		out = append(out, d)
-	}
-	return out, rows.Err()
+	return &d, nil
 }
 
-const groupCols = `id, slug, COALESCE(main_host, ''), name, status, created_at, visibility, ai_enabled`
+const groupCols = `id, slug, name, status, created_at, visibility, ai_enabled`
 
 func scanGroup(row interface{ Scan(...any) error }) (*Group, error) {
 	var g Group
-	err := row.Scan(&g.ID, &g.Slug, &g.MainHost, &g.Name, &g.Status, &g.CreatedAt, &g.Visibility, &g.AIEnabled)
+	err := row.Scan(&g.ID, &g.Slug, &g.Name, &g.Status, &g.CreatedAt, &g.Visibility, &g.AIEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -105,11 +122,6 @@ func (s *Store) GroupByID(id int64) (*Group, error) {
 // GroupBySlug looks a group up by slug.
 func (s *Store) GroupBySlug(slug string) (*Group, error) {
 	return scanGroup(s.Site().QueryRow(`SELECT `+groupCols+` FROM groups WHERE slug = ?`, slug))
-}
-
-// GroupByMainHost finds the group whose custom domain is host.
-func (s *Store) GroupByMainHost(host string) (*Group, error) {
-	return scanGroup(s.Site().QueryRow(`SELECT `+groupCols+` FROM groups WHERE main_host = ?`, host))
 }
 
 // Groups lists every group by name.
@@ -130,27 +142,13 @@ func (s *Store) Groups() ([]Group, error) {
 	return out, rows.Err()
 }
 
-// HostAlias returns the group an alias host points at. found is false when
-// host isn't an alias; groupID is 0 for an alias of the home page.
-func (s *Store) HostAlias(host string) (groupID int64, found bool, err error) {
-	var gid sql.NullInt64
-	err = s.Site().QueryRow(`SELECT group_id FROM host_aliases WHERE host = ?`, host).Scan(&gid)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	return gid.Int64, true, nil
-}
-
 const userCols = `id, COALESCE(handle, ''), COALESCE(email, ''), is_operator, suspended_until, created_at,
-	notify_email, digest, COALESCE(bio, ''), COALESCE(photo_key, '')`
+	notify_email, digest, COALESCE(bio, ''), COALESCE(photo_key, ''), domain`
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.Handle, &u.Email, &u.IsOperator, &u.SuspendedUntil, &u.CreatedAt,
-		&u.NotifyEmail, &u.Digest, &u.Bio, &u.Photo)
+		&u.NotifyEmail, &u.Digest, &u.Bio, &u.Photo, &u.Domain)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -199,9 +197,9 @@ func (s *Store) LoginToken(tokenHash string) (*LoginToken, error) {
 	var t LoginToken
 	var used sql.NullInt64
 	err := s.Site().QueryRow(`
-		SELECT token_hash, email, code_hash, return_url, expires_at, tries, used_at
+		SELECT token_hash, email, code_hash, return_url, domain, expires_at, tries, used_at
 		FROM login_tokens WHERE token_hash = ?`, tokenHash).
-		Scan(&t.TokenHash, &t.Email, &t.CodeHash, &t.ReturnURL, &t.ExpiresAt, &t.Tries, &used)
+		Scan(&t.TokenHash, &t.Email, &t.CodeHash, &t.ReturnURL, &t.Domain, &t.ExpiresAt, &t.Tries, &used)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

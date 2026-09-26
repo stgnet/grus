@@ -1,17 +1,20 @@
 # Outbound mail
 
 Sign-in only works if the email arrives. Grus hands every message to an SMTP
-server (`smtp_host` in grus.conf); with none set, it prints each email to
-the log instead, which is fine on a laptop and a dead end in production.
+server: the global SMTP settings on `/admin`, or a domain's own there. Each
+domain's email comes from that domain (`login@<domain>` unless the domain
+has its own sender), so each domain needs the records below. With no relay
+set, grus prints each email to the log instead, which is fine on a laptop
+and a dead end in production.
 
 There are two ways to give it one:
 
 1. **Send from the VPS itself** (`deploy/install-mail.sh`, below): Postfix
-   on loopback, DKIM signing for the primary domain, no outside account.
+   on loopback, DKIM signing for each domain, no outside account.
    Free and quick, but whether big providers accept the mail depends on the
    VPS's IP (see "Blocklists").
 2. **A transactional mail service** (Postmark, Amazon SES, Mailgun,
-   Brevo): set `smtp_host`, `smtp_port`, `smtp_user` and `smtp_pass` to
+   Brevo): set the SMTP relay, port, user and password on `/admin` to
    what the service gives you, and publish the SPF and DKIM records it
    gives you instead of the ones below. Their IPs have a sending
    reputation a new VPS doesn't, so this is the dependable choice once
@@ -23,7 +26,7 @@ There are two ways to give it one:
 After `sudo make install`:
 
 ```sh
-sudo deploy/install-mail.sh                 # domain from primary_domain
+sudo deploy/install-mail.sh                 # the first domain line in grus.conf
 sudo deploy/install-mail.sh nfb.group g.stg.net   # or name both
 ```
 
@@ -39,8 +42,12 @@ defaults to `hostname -f`. Use the VPS's reverse-DNS name. The script:
   and pass every message through OpenDKIM;
 - delivers mail addressed to the domain itself (bounces to `mail_from`,
   DMARC reports, `postmaster@`) to root's mailbox, `/var/mail/root`;
+- adds the domain to OpenDKIM's key and signing tables, so running it
+  again for each other domain signs each with its own key;
 - sets `smtp_host = 127.0.0.1` and `smtp_port = 25` in
-  `/etc/grus/grus.conf` and restarts grus;
+  `/etc/grus/grus.conf`, the seed for a new cluster's first start. On a
+  site that's already running, set the relay on `/admin` instead
+  (127.0.0.1, port 25, no user or password);
 - prints the DNS records, and saves the DKIM value to
   `/root/dkim-<domain>.txt` on one line.
 
@@ -49,7 +56,7 @@ beside them with `.orig` on the end.
 
 ## DNS records
 
-Three TXT records on the primary domain. Most DNS panels add the domain to
+Three TXT records on each domain. Most DNS panels add the domain to
 the name for you, so type only the short part.
 
 | Name | Type | Value |

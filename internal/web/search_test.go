@@ -93,7 +93,7 @@ func TestSearchAndAsk(t *testing.T) {
 
 	// The daily limit soft-fails too.
 	s.srv.AI = &ai.Pool{Local: &ai.Engine{LLM: pickLLM{}, Store: s.st, Meter: &ai.Meter{}}}
-	s.srv.AskLimit = 1
+	must(t, s.log, &cmd.SetGlobal{Values: map[string]string{"ask_daily_limit": "1"}})
 	s.srv.asks = askCounter{}
 	alice.do("POST", G+"/ask", url.Values{"q": {"fan"}})
 	if !strings.Contains(alice.do("POST", G+"/ask", url.Values{"q": {"fan"}}).Body.String(), `class="soft"`) {

@@ -66,8 +66,11 @@ func (e *Engine) noteAskTime(d time.Duration) {
 
 // Pool picks where each search runs: this node's own model, or a worker.
 type Pool struct {
-	Local   *Engine  // nil if this node has no model
-	Workers []string // cluster addresses of nodes with a model
+	Local *Engine // nil if this node has no model
+	// Workers returns the cluster addresses of the other nodes with a
+	// model. It's asked on every poll (from the node map), so a worker
+	// added or removed is picked up without a restart.
+	Workers func() []string
 	Client  *cluster.Client
 	Applied func() uint64 // this node's log position
 
@@ -83,7 +86,11 @@ type workerState struct {
 // Poll keeps the workers' health current until ctx ends.
 func (p *Pool) Poll(ctx context.Context) {
 	for {
-		for _, addr := range p.Workers {
+		var workers []string
+		if p.Workers != nil {
+			workers = p.Workers()
+		}
+		for _, addr := range workers {
 			hctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			var h Health
 			err := p.Client.GetJSON(hctx, addr, "/ai/health", &h)

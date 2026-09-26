@@ -1,24 +1,26 @@
 #!/bin/sh
 # Sets up outbound mail on a Linux VPS so grus can send sign-in and
 # notification email itself, with no outside mail service: Postfix as a
-# send-only server on loopback, OpenDKIM signing for the primary domain,
-# and grus.conf pointed at it. Run as root after `make install`:
+# send-only server on loopback, OpenDKIM signing, and grus pointed at it.
+# Run as root after `make install`:
 #
 #   sudo deploy/install-mail.sh [domain] [helo-name]
 #
-# domain defaults to primary_domain in /etc/grus/grus.conf; helo-name (the
-# name Postfix greets other servers with) defaults to `hostname -f` and
-# should be this server's reverse-DNS name. It's safe to re-run: it keeps
-# an existing DKIM key and prints the DNS records again. docs/mail.md has
-# the full story, including the blocklist check.
+# Each run sets up DKIM for one domain; run it once per domain on the
+# admin page's list, since each domain's email comes from that domain.
+# domain defaults to the first domain line in /etc/grus/grus.conf;
+# helo-name (the name Postfix greets other servers with) defaults to
+# `hostname -f` and should be this server's reverse-DNS name. It's safe to
+# re-run: it keeps existing DKIM keys and prints the DNS records again.
+# docs/mail.md has the full story, including the blocklist check.
 set -eu
 
 conf=/etc/grus/grus.conf
 [ -f "$conf" ] || { echo "No $conf: run 'sudo make install' first." >&2; exit 1; }
 
-domain=${1:-$(sed -n 's/^primary_domain *= *//p' "$conf" | tr -d ' ')}
+domain=${1:-$(sed -n -E 's/^(primary_)?domain *= *//p' "$conf" | head -n 1 | tr -d ' ')}
 helo=${2:-$(hostname -f)}
-[ -n "$domain" ] || { echo "No domain given and no primary_domain in $conf." >&2; exit 1; }
+[ -n "$domain" ] || { echo "No domain given and no domain line in $conf." >&2; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive
 echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
@@ -37,18 +39,30 @@ fi
 chown opendkim:opendkim "$keys"/*
 chmod 600 "$keys/$sel.private"
 
+# One line per domain in the key and signing tables, so every domain this
+# script has been run for is signed with its own key. A re-run for the same
+# domain replaces its lines rather than adding more.
+# Both tables name the key record, <selector>._domainkey.<domain>, which is
+# what finds this domain's old lines.
+re=$(printf '%s' "$domain" | sed 's/\./\\./g')
+for t in KeyTable SigningTable; do
+    touch /etc/opendkim/$t
+    sed -i -E "/\._domainkey\.$re( |\$)/d" /etc/opendkim/$t
+done
+echo "$sel._domainkey.$domain $domain:$sel:$keys/$sel.private" >> /etc/opendkim/KeyTable
+echo "*@$domain $sel._domainkey.$domain" >> /etc/opendkim/SigningTable
+
 [ -f /etc/opendkim.conf.orig ] || cp /etc/opendkim.conf /etc/opendkim.conf.orig
 cat > /etc/opendkim.conf <<EOF
-# Signs outbound mail for $domain (grus sign-in and notification email).
-# Written by deploy/install-mail.sh.
+# Signs outbound mail (grus sign-in and notification email) for every
+# domain in the key and signing tables. Written by deploy/install-mail.sh.
 Syslog          yes
 UMask           007
 Mode            s
 Canonicalization relaxed/simple
 OversignHeaders From
-Domain          $domain
-Selector        $sel
-KeyFile         $keys/$sel.private
+KeyTable        refile:/etc/opendkim/KeyTable
+SigningTable    refile:/etc/opendkim/SigningTable
 Socket          inet:8891@127.0.0.1
 PidFile         /run/opendkim/opendkim.pid
 UserID          opendkim
@@ -85,12 +99,13 @@ systemctl enable -q opendkim postfix
 systemctl restart opendkim postfix
 
 # grus sends to the local Postfix with no login (Postfix offers no AUTH).
+# In grus.conf these are only the seed for a cluster's first start; on a
+# running site the relay is a global setting on the admin page.
 sed -i -E \
     -e 's/^#? *smtp_host *=.*/smtp_host = 127.0.0.1/' \
     -e 's/^#? *smtp_port *=.*/smtp_port = 25/' \
     -e 's/^(smtp_(user|pass) *=)/# \1/' "$conf"
 grep -q '^smtp_host' "$conf" || printf 'smtp_host = 127.0.0.1\nsmtp_port = 25\n' >> "$conf"
-if systemctl is-active -q grus; then systemctl restart grus; fi
 
 # The DNS records, with the DKIM value on one line (also saved to a file,
 # since a terminal can wrap or indent a long line when it's copied).
@@ -100,8 +115,10 @@ echo "$dkim" > "/root/dkim-$domain.txt"
 
 cat <<EOF
 
-Mail is set up: postfix and opendkim are running, and grus sends through
-127.0.0.1:25. Add these TXT records for $domain (docs/mail.md):
+Mail is set up: postfix and opendkim are running, and sign $domain's mail.
+If grus is already running, set the SMTP relay on /admin to 127.0.0.1,
+port 25, no user or password (global settings, or $domain's own row).
+Add these TXT records for $domain (docs/mail.md):
 
   $domain                      v=spf1 ip4:$ip -all
   _dmarc.$domain               v=DMARC1; p=none

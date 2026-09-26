@@ -25,6 +25,10 @@ import (
 // One node usually leads every group, and then a person gets one email for
 // all their groups. When groups are led from different nodes, each node
 // sends its own groups' part.
+//
+// These emails aren't a reply to any request, so there's no request
+// domain to answer in. Each person's go out in the domain they last
+// signed in on (userDomain): its links, and its mail settings.
 
 const (
 	emailEvery = 5 * time.Minute
@@ -38,8 +42,9 @@ const (
 )
 
 // RunMail sends notification emails every few minutes, and the daily
-// digest at digestHour UTC, for the groups this node leads.
-func (s *Server) RunMail(ctx context.Context, digestHour int) {
+// digest at the digest_hour global setting (UTC), for the groups this
+// node leads.
+func (s *Server) RunMail(ctx context.Context) {
 	tick := time.NewTicker(emailEvery)
 	defer tick.Stop()
 	for {
@@ -51,7 +56,7 @@ func (s *Server) RunMail(ctx context.Context, digestHour int) {
 		if err := s.SendNotices(); err != nil {
 			log.Printf("notification email: %v", err)
 		}
-		if s.Now().UTC().Hour() == digestHour {
+		if s.Now().UTC().Hour() == s.global().DigestHour {
 			if err := s.SendDigests(); err != nil {
 				log.Printf("digest email: %v", err)
 			}
@@ -76,7 +81,7 @@ func (s *Server) SendNotices() error {
 	if len(want) == 0 {
 		return nil
 	}
-	primary, err := s.Store.PrimaryDomain()
+	domains, err := s.Store.Domains()
 	if err != nil {
 		return err
 	}
@@ -97,14 +102,22 @@ func (s *Server) SendNotices() error {
 		if err != nil || len(list) == 0 {
 			continue
 		}
-		views, err := s.noticeViews(g, primary, list)
-		if err != nil {
-			return err
+		// Each person's links are in their own domain, so the views are
+		// made per person.
+		byUser := map[int64][]store.Notification{}
+		for _, n := range list {
+			byUser[n.UserID] = append(byUser[n.UserID], n)
 		}
 		newest := map[int64]int64{}
-		for _, v := range views {
-			lines[v.UserID] = append(lines[v.UserID], v)
-			newest[v.UserID] = max(newest[v.UserID], v.ID)
+		for uid, ns := range byUser {
+			views, err := s.noticeViews(g, s.userDomain(users[uid], domains), ns)
+			if err != nil {
+				return err
+			}
+			for _, v := range views {
+				lines[uid] = append(lines[uid], v)
+				newest[uid] = max(newest[uid], v.ID)
+			}
 		}
 		for u, id := range newest {
 			marks[u] = append(marks[u], upTo{g.ID, id})
@@ -119,12 +132,13 @@ func (s *Server) SendNotices() error {
 		if len(list) == 1 {
 			subject = excerpt(list[0].Text, 120)
 		}
+		domain := s.userDomain(users[id], domains)
 		var b strings.Builder
 		for _, v := range list {
 			fmt.Fprintf(&b, "%s (%s)\n%s\n\n", v.Text, v.Group, v.URL)
 		}
-		b.WriteString(s.emailFooter(primary))
-		if err := s.Mail.Send(users[id].Email, subject, b.String()); err != nil {
+		b.WriteString(s.emailFooter(domain))
+		if err := s.sendMail(domain, users[id].Email, subject, b.String()); err != nil {
 			log.Printf("notification email to user %d: %v", id, err)
 			continue // left unmarked, so the next pass tries again
 		}
@@ -147,7 +161,7 @@ func (s *Server) SendDigests() error {
 	if err != nil {
 		return err
 	}
-	primary, err := s.Store.PrimaryDomain()
+	domains, err := s.Store.Domains()
 	if err != nil {
 		return err
 	}
@@ -166,12 +180,13 @@ func (s *Server) SendDigests() error {
 		if u.Digest != cmd.DigestDaily {
 			continue
 		}
-		body, due, err := s.digestBody(u, groups, primary, now)
+		domain := s.userDomain(u, domains)
+		body, due, err := s.digestBody(u, groups, domain, now)
 		if err != nil {
 			return err
 		}
 		if body != "" {
-			if err := s.Mail.Send(u.Email, "Today in your groups", body+s.emailFooter(primary)); err != nil {
+			if err := s.sendMail(domain, u.Email, "Today in your groups", body+s.emailFooter(domain)); err != nil {
 				log.Printf("digest to user %d: %v", id, err)
 				continue
 			}
@@ -188,7 +203,7 @@ func (s *Server) SendDigests() error {
 // digestBody is one person's digest text, or "" when there's nothing new,
 // and the groups it covered (this node leads them, and they haven't had
 // today's digest yet), to be marked as sent.
-func (s *Server) digestBody(u *store.User, groups []store.Group, primary string, now int64) (string, []int64, error) {
+func (s *Server) digestBody(u *store.User, groups []store.Group, domain string, now int64) (string, []int64, error) {
 	var b strings.Builder
 	var due []int64
 	unread := 0
@@ -214,7 +229,7 @@ func (s *Server) digestBody(u *store.User, groups []store.Group, primary string,
 		fmt.Fprintf(&b, "%s\n", g.Name)
 		for _, p := range posts {
 			fmt.Fprintf(&b, "  %s (%s)\n  %s\n", p.Title, plural(p.CommentCount, "comment", "comments"),
-				s.groupURL(g, primary, fmt.Sprintf("/p/%d", p.ID)))
+				s.groupURL(g, domain, fmt.Sprintf("/p/%d", p.ID)))
 		}
 		b.WriteString("\n")
 	}
@@ -223,13 +238,13 @@ func (s *Server) digestBody(u *store.User, groups []store.Group, primary string,
 	}
 	if unread > 0 {
 		fmt.Fprintf(&b, "You have %s: %s\n\n", plural(unread, "unread notification", "unread notifications"),
-			s.primaryURL(primary, "/notifications"))
+			s.siteURL(domain, "/notifications"))
 	}
 	return b.String(), due, nil
 }
 
-func (s *Server) emailFooter(primary string) string {
-	return "--\nYou asked for these emails. To change or stop them: " + s.primaryURL(primary, "/profile") + "\n"
+func (s *Server) emailFooter(domain string) string {
+	return "--\nYou asked for these emails. To change or stop them: " + s.siteURL(domain, "/profile") + "\n"
 }
 
 func plural(n int, one, many string) string {

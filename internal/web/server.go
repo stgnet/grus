@@ -8,10 +8,13 @@ package web
 import (
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/stgnet/grus/internal/ai"
@@ -19,7 +22,6 @@ import (
 	"github.com/stgnet/grus/internal/blob"
 	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/ids"
-	"github.com/stgnet/grus/internal/mail"
 	"github.com/stgnet/grus/internal/store"
 	webfiles "github.com/stgnet/grus/web"
 )
@@ -28,8 +30,13 @@ import (
 type Server struct {
 	Store *store.Store
 	Log   cluster.Log
-	Mail  *mail.Mailer
 	IDs   *ids.Generator
+
+	// MailLog is where email goes when no SMTP relay is set, for the
+	// domain or globally: how you sign in on a laptop, where the link
+	// appears in the server's output. (The relays themselves are in the
+	// global settings and the domains table; see mailer.)
+	MailLog io.Writer
 
 	// Dev serves plain HTTP with non-Secure cookies. PortSuffix (":8080")
 	// is added to every URL we build, for the same reason.
@@ -58,22 +65,20 @@ type Server struct {
 	PassOn   func(w http.ResponseWriter, r *http.Request, groupID int64) bool
 	Leads    func(groupID int64) bool
 
-	IsOperator func(email string) bool // from the config file
-	Limiter    *auth.SendLimiter
-	Now        func() time.Time // replaced in tests
+	Limiter *auth.SendLimiter
+	Now     func() time.Time // replaced in tests
 
-	// AI: where searches run (nil when no node has a model), usage
-	// counting, and the per-person daily question limit.
-	AI       *ai.Pool
-	Meter    *ai.Meter
-	AskLimit int
+	// AI: where searches run (nil when no node has a model), and usage
+	// counting. The per-person daily question limit is a global setting.
+	AI    *ai.Pool
+	Meter *ai.Meter
 
 	pages     map[string]*template.Template
 	fragments *template.Template // pieces of pages the scripts fetch
 	asks      askCounter
 	newPosts  hourCounter    // new accounts: posts and comments this hour
 	cache     pageCache      // public pages as signed-out visitors see them (cache.go)
-	homeMux   *http.ServeMux // the bare primary domain: sign-in, home, admin
+	homeMux   *http.ServeMux // a bare domain: sign-in, home, admin
 	groupMux  *http.ServeMux // any group's host
 }
 
@@ -85,9 +90,12 @@ func New(s *Server) (*Server, error) {
 	if s.Limiter == nil {
 		s.Limiter = auth.NewSendLimiter()
 	}
-	if s.IsOperator == nil {
-		s.IsOperator = func(string) bool { return false }
+	if s.MailLog == nil {
+		s.MailLog = os.Stderr
 	}
+	// One lock for every mailer this server makes, so two emails printed
+	// at once don't interleave.
+	s.MailLog = &lockedWriter{w: s.MailLog}
 	if err := s.loadPages(); err != nil {
 		return nil, err
 	}
@@ -97,7 +105,7 @@ func New(s *Server) (*Server, error) {
 	}
 	staticHandler := cacheStatic(http.StripPrefix("/static/", http.FileServerFS(static)))
 
-	// Routes on the bare primary domain (plan section 10).
+	// Routes on the bare domain, any of them (plan section 10).
 	h := http.NewServeMux()
 	h.HandleFunc("GET /{$}", s.home)
 	h.HandleFunc("GET /login", s.loginForm)
@@ -112,11 +120,10 @@ func New(s *Server) (*Server, error) {
 	h.HandleFunc("GET /admin", s.admin)
 	h.HandleFunc("POST /admin/groups", s.adminCreateGroup)
 	h.HandleFunc("POST /admin/domains", s.adminDomain)
-	h.HandleFunc("POST /admin/aliases", s.adminAlias)
-	h.HandleFunc("POST /admin/grouphost", s.adminGroupHost)
+	h.HandleFunc("POST /admin/domains/mail", s.adminDomainMail)
+	h.HandleFunc("POST /admin/global", s.adminGlobal)
 	h.HandleFunc("POST /admin/place", s.adminPlace)
 	h.HandleFunc("POST /admin/nodes/remove", s.adminRemoveNode)
-	h.HandleFunc("GET /bounce", s.bounce)
 	h.HandleFunc("POST /admin/suspend", s.adminSuspend)
 	h.HandleFunc("GET /notifications", s.notificationsPage)
 	h.HandleFunc("GET /profile", s.profile)
@@ -142,8 +149,8 @@ func New(s *Server) (*Server, error) {
 	h.HandleFunc("/", s.notFound)
 	s.homeMux = h
 
-	// Routes on a group's own host. The group comes from the Host header,
-	// so paths are short: travato.nfb.group/p/123.
+	// Routes on a group's host, <slug>.<domain>. The group comes from the
+	// Host header, so paths are short: travato.nfb.group/p/123.
 	g := http.NewServeMux()
 	g.HandleFunc("GET /{$}", s.groupHome)
 	g.HandleFunc("GET /about", s.groupAbout)
@@ -228,7 +235,6 @@ func New(s *Server) (*Server, error) {
 	g.HandleFunc("GET /img/{hash}", s.serveImage)
 	g.HandleFunc("GET /img/{hash}/t", s.serveImage)
 	g.HandleFunc("GET /login", s.groupLogin)
-	g.HandleFunc("GET /_bounce", s.bounceBack)
 	g.HandleFunc("POST /logout", s.logout)
 	g.Handle("GET /static/", staticHandler)
 	g.HandleFunc("/", s.notFound)
@@ -244,8 +250,8 @@ func (s *Server) Handler() http.Handler {
 	// Origin), and Go's CrossOriginProtection refuses any state-changing
 	// request that isn't from the same origin. There are no tokens to thread
 	// through forms, and it holds because every form posts to the host that
-	// served it (sign-in forms live on the primary; group pages link to them
-	// rather than embedding them).
+	// served it (sign-in forms live on the bare domain; group pages link to
+	// them rather than embedding them).
 	csrf := http.NewCrossOriginProtection()
 	return s.logRequests(securityHeaders(!s.Dev, csrf.Handler(http.HandlerFunc(s.route))))
 }
@@ -279,10 +285,6 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	case siteHome:
 		s.homeMux.ServeHTTP(w, withRoute(r, rt))
 	case siteGroup:
-		if s.needsBounce(r, rt) {
-			s.startBounce(w, r, rt)
-			return
-		}
 		if s.cacheable(r, rt) {
 			s.serveCached(w, withRoute(r, rt), rt, s.groupMux)
 			return
@@ -293,7 +295,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// gathers reports whether a page on the bare primary domain reads from
+// gathers reports whether a page on a bare domain reads from
 // every group's file (rather than site.db, which every node has).
 func gathers(path string) bool {
 	return path == "/" || path == "/notifications"
@@ -329,7 +331,7 @@ func (s *Server) loadPages() error {
 type page struct {
 	Title    string
 	User     *store.User
-	HomeURL  string // the primary's home page
+	HomeURL  string // the home page, on this request's domain
 	LoginURL string // sign-in, coming back to this page
 	Group    *store.Group
 	Manage   bool // show the group's Settings link
@@ -349,9 +351,9 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 		p.Unread = s.unreadCount(p.User)
 	}
 	if p.HomeURL == "" {
-		if rt := routeOf(r); rt != nil {
-			p.HomeURL = s.primaryURL(rt.primary, "/")
-			p.LoginURL = s.primaryURL(rt.primary, "/login?next="+queryEscape(s.currentURL(r)))
+		if rt := routeOf(r); rt != nil && rt.domain != "" {
+			p.HomeURL = s.siteURL(rt.domain, "/")
+			p.LoginURL = s.siteURL(rt.domain, "/login?next="+queryEscape(s.currentURL(r)))
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -422,4 +424,16 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		}
 		log.Printf("%s %s%s %d %s", r.Method, r.Host, path, sw.status, time.Since(start).Round(time.Millisecond))
 	})
+}
+
+// lockedWriter serializes writes to w.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }

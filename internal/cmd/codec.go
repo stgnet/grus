@@ -118,11 +118,22 @@ var registry = map[string]func() Command{
 	"PutSisterSide":   func() Command { return new(PutSisterSide) },
 	"ShowSisterNotes": func() Command { return new(ShowSisterNotes) },
 	"PurgeGroup":      func() Command { return new(PurgeGroup) },
-	"QueueGroupFAQ":   func() Command { return new(QueueGroupFAQ) },
-	"RegisterNode":    func() Command { return new(RegisterNode) },
-	"RemoveNode":      func() Command { return new(RemoveNode) },
-	"PlaceGroup":      func() Command { return new(PlaceGroup) },
-	"UnplaceGroup":    func() Command { return new(UnplaceGroup) },
+
+	// The global level: one list of equal domains, the global settings,
+	// and every group's settings in site.db.
+	"AddDomain":      func() Command { return new(AddDomain) },
+	"RemoveDomain":   func() Command { return new(RemoveDomain) },
+	"SetDomainMail":  func() Command { return new(SetDomainMail) },
+	"SetGlobal":      func() Command { return new(SetGlobal) },
+	"SeedGlobal":     func() Command { return new(SeedGlobal) },
+	"CopySettings":   func() Command { return new(CopySettings) },
+	"ExportSettings": func() Command { return new(ExportSettings) },
+	"AdoptSettings":  func() Command { return new(AdoptSettings) },
+	"QueueGroupFAQ":  func() Command { return new(QueueGroupFAQ) },
+	"RegisterNode":   func() Command { return new(RegisterNode) },
+	"RemoveNode":     func() Command { return new(RemoveNode) },
+	"PlaceGroup":     func() Command { return new(PlaceGroup) },
+	"UnplaceGroup":   func() Command { return new(UnplaceGroup) },
 }
 
 // envelope is how a command sits in the log: its type name plus its fields

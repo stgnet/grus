@@ -2,8 +2,9 @@
 
 A self-hosted home for discussion groups: picture posts and comment threads,
 organized so the good answers don't scroll away. One engine runs many groups,
-each on its own subdomain (`travato.nfb.group`) or its own domain, across one
-or more servers, with one passwordless login for all of them.
+each on its own subdomain (`travato.nfb.group`), across one or more servers,
+with one passwordless login for all of them. The site can have several
+domains, all equal: any server answers any of them, the same way.
 
 Grus is a single Go binary with SQLite files and a Raft-replicated command
 log. No database server, no JavaScript framework, no third-party anything.
@@ -35,9 +36,15 @@ checks nothing acknowledged is lost).
   each file has its own log (site.db's, and one per group), so a node holds
   only the groups placed on it. The starting setup is one VPS as the only
   voter plus the Studio as a non-voting full copy.
-- Routing by Host header: the primary domain, `<slug>.<primary>`, custom
-  domains, single-host aliases, and alternate domains that redirect every
-  old link. The primary can be changed live.
+- Routing by Host header against one global list of domains, all equal:
+  `<domain>` is the home site and `<slug>.<domain>` a group, on every
+  listed domain, and each request is answered in the domain it came in on.
+  Domains are added and removed live.
+- The global level: site.db holds everything needed to run the system
+  except the groups' content (the domains, each domain's mail settings,
+  operators, SMTP, AI and schedule settings, and every group's settings),
+  changed on the admin page. grus.conf holds only what's particular to a
+  node.
 - Let's Encrypt certificates per host, only for hosts that exist, cached in
   `site.db` so every node has them.
 - Passwordless sign-in: an emailed magic link (tap Continue, so email
@@ -57,7 +64,7 @@ make                    # or: go build -o grus ./cmd/grus
 cat > dev.conf <<EOF
 node_id = n1
 data_dir = ./data
-primary_domain = grus.localhost
+domain = grus.localhost
 dev = true
 http_addr = 127.0.0.1:8080
 cluster_addr = 127.0.0.1:7946
@@ -98,7 +105,7 @@ docs/               operations runbook, DNS records for mail
 
 - [docs/operations.md](docs/operations.md): setting up the VPS and the Studio,
   backups, recovering from a lost VPS, and adding more nodes.
-- [docs/dns.md](docs/dns.md): DNS for the primary domain, including SPF,
+- [docs/dns.md](docs/dns.md): DNS for each domain, including SPF,
   DKIM and DMARC so sign-in emails reach the inbox.
 - [docs/mail.md](docs/mail.md): sending that email from the VPS itself
   (`deploy/install-mail.sh`), blocklists, and relaying through a service.

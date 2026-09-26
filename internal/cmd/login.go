@@ -21,6 +21,7 @@ type CreateLogin struct {
 	CodeHash  string
 	Email     string
 	ReturnURL string // already checked against our own hosts
+	Domain    string // the domain the sign-in was asked for on
 	At        int64
 	ExpiresAt int64
 }
@@ -28,9 +29,9 @@ type CreateLogin struct {
 func (c *CreateLogin) Apply(a *Applier) (any, error) {
 	return nil, a.Site(func(tx *sql.Tx) error {
 		_, err := tx.Exec(`
-			INSERT INTO login_tokens (token_hash, email, code_hash, return_url, created_at, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			c.TokenHash, c.Email, c.CodeHash, c.ReturnURL, c.At, c.ExpiresAt)
+			INSERT INTO login_tokens (token_hash, email, code_hash, return_url, domain, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			c.TokenHash, c.Email, c.CodeHash, c.ReturnURL, c.Domain, c.At, c.ExpiresAt)
 		return err
 	})
 }
@@ -61,7 +62,7 @@ type RedeemLogin struct {
 	SessionHash    string
 	SessionExpires int64
 	UserAgentHint  string
-	Operator       bool // config lists this email as an operator
+	Operator       bool // the global settings list this email as an operator
 	At             int64
 }
 
@@ -74,12 +75,12 @@ type Redeemed struct {
 func (c *RedeemLogin) Apply(a *Applier) (any, error) {
 	var out Redeemed
 	err := a.Site(func(tx *sql.Tx) error {
-		var email string
+		var email, domain string
 		var expires int64
 		var tries int
 		var used sql.NullInt64
-		err := tx.QueryRow(`SELECT email, return_url, expires_at, tries, used_at FROM login_tokens WHERE token_hash = ?`,
-			c.TokenHash).Scan(&email, &out.ReturnURL, &expires, &tries, &used)
+		err := tx.QueryRow(`SELECT email, return_url, domain, expires_at, tries, used_at FROM login_tokens WHERE token_hash = ?`,
+			c.TokenHash).Scan(&email, &out.ReturnURL, &domain, &expires, &tries, &used)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrLoginDead
 		}
@@ -114,6 +115,15 @@ func (c *RedeemLogin) Apply(a *Applier) (any, error) {
 				if _, err := tx.Exec(`UPDATE users SET is_operator = 1 WHERE id = ?`, out.UserID); err != nil {
 					return err
 				}
+			}
+		}
+
+		// Remember the domain this sign-in was on: email that isn't a
+		// reply to a request (notifications, the digest) goes out through
+		// it and links back to it.
+		if domain != "" {
+			if _, err := tx.Exec(`UPDATE users SET domain = ? WHERE id = ?`, domain, out.UserID); err != nil {
+				return err
 			}
 		}
 

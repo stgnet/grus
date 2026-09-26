@@ -10,7 +10,7 @@ import (
 	"github.com/stgnet/grus/internal/cmd"
 )
 
-// Public profiles (M7): /u/<handle> on the primary domain shows a
+// Public profiles (M7): /u/<handle> on the bare domain shows a
 // member's handle, photo, bio and when they joined. It never lists their
 // groups or posts: a profile must not undo an anonymous post, or show that
 // someone is in a private group.
@@ -115,9 +115,9 @@ func (s *Server) profileAbout(w http.ResponseWriter, r *http.Request) {
 
 // profileURL is where an author's name links to: their public profile,
 // or "" for an anonymous post, an archive post, or a deleted account.
-func (s *Server) profileURL(primary string, names map[int64]string, id int64, anonymous bool) string {
+func (s *Server) profileURL(domain string, names map[int64]string, id int64, anonymous bool) string {
 	if anonymous || id == 0 || names[id] == "" {
 		return ""
 	}
-	return s.primaryURL(primary, "/u/"+names[id])
+	return s.siteURL(domain, "/u/"+names[id])
 }

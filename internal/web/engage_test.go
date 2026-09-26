@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -136,6 +137,36 @@ func TestNotificationEmailAndDigest(t *testing.T) {
 	s.srv.SendDigests()
 	if s.mail.Len() != 0 {
 		t.Fatal("two digests in a day")
+	}
+}
+
+// TestEmailInSignInDomain: email that isn't a reply to a request goes out
+// in the domain the person last signed in on: its links, and its sender.
+func TestEmailInSignInDomain(t *testing.T) {
+	s := newSite(t)
+	must(t, s.log, &cmd.AddDomain{Domain: "grus.example", At: 2})
+	G := "https://travato.nfb.group"
+	alice := s.signedIn("alice@example.com", "alice")
+	bob := s.signedIn("bob@example.com", "bob")
+	loc := alice.upload(G+"/submit", map[string]string{"title": "Solar wiring"}, nil).Header().Get("Location")
+	expect(t, alice.do("POST", "https://nfb.group/profile", url.Values{"email": {"on"}, "digest": {"off"}}), 303, "/profile?saved=1")
+
+	// alice signs in again, on the other domain.
+	b := s.browser()
+	b.do("POST", "https://grus.example/login", url.Values{"email": {"alice@example.com"}})
+	token := regexp.MustCompile(`https://grus\.example/link/([A-Za-z0-9_-]+)`).FindAllStringSubmatch(s.mail.String(), -1)
+	b.do("POST", "https://grus.example/link/"+token[len(token)-1][1], url.Values{})
+
+	bob.upload(G+loc+"/comment", map[string]string{"body": "Use 10 AWG."}, nil)
+	s.srv.Now = func() time.Time { return time.Now().Add(time.Hour) }
+	s.mail.Reset()
+	if err := s.srv.SendNotices(); err != nil {
+		t.Fatal(err)
+	}
+	sent := s.mail.String()
+	if !strings.Contains(sent, "From: login@grus.example") || !strings.Contains(sent, "https://travato.grus.example"+loc) ||
+		strings.Contains(sent, "nfb.group") {
+		t.Fatalf("notification email should be in grus.example:\n%s", sent)
 	}
 }
 

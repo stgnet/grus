@@ -9,8 +9,10 @@ import (
 // its outbox (see logs.go). Each is safe to apply twice, because the relay
 // may deliver one again after a crash.
 
-// InitGroup gives a new group's own file its first settings and owner.
-// CreateGroup, on the site log, sends it to the new group's log.
+// InitGroup gives a new group's own file its first owner, and its copy of
+// the group's first settings (site.db has the real ones; see
+// UpdateSettings). CreateGroup, on the site log, sends it to the new
+// group's log.
 type InitGroup struct {
 	GroupID     int64
 	Name        string
@@ -36,10 +38,10 @@ func (c *InitGroup) Apply(a *Applier) (any, error) {
 	})
 }
 
-// MirrorGroup updates site.db's copy of a group's name, visibility and
-// "Use AI" setting, which any node needs without holding the group. The
-// group's UpdateSettings sends it with the values as they now are, so a
-// repeat or a late delivery writes the same thing.
+// MirrorGroup updated site.db's copy of a group's name, visibility and
+// "Use AI" setting, when settings lived in the group's own file. Settings
+// live in site.db now (UpdateSettings); this stays so that old logs, and
+// any still waiting in an outbox, apply as they did.
 type MirrorGroup struct {
 	GroupID    int64
 	Name       string

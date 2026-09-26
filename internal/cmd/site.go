@@ -4,87 +4,172 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
-// SetPrimaryDomain makes Domain the primary. The old primary becomes an
-// alternate, which means every old link (bare or <slug>.old) redirects to the
-// same place on the new primary. That's the whole "change the primary later"
-// runbook as far as the data goes (plan section 8, "Domains").
+// Domains (see the domains table in internal/store/schema.go): one list
+// for the whole site, every domain on it equal. Any node answers any of
+// them, and each request is answered in the domain it came in on.
+
+// AddDomain lists a domain. Point its DNS at the nodes first; its
+// certificate is fetched the first time it's used.
+type AddDomain struct {
+	Domain string
+	At     int64
+}
+
+func (c *AddDomain) Apply(a *Applier) (any, error) {
+	if err := ValidDomain(c.Domain); err != nil {
+		return nil, err
+	}
+	return nil, a.Site(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`INSERT INTO domains (name, created_at) VALUES (?, ?) ON CONFLICT (name) DO NOTHING`, c.Domain, c.At)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return Invalid("%s is already listed", c.Domain)
+		}
+		return nil
+	})
+}
+
+// RemoveDomain takes a domain off the list. Requests for it are then
+// answered "no such group", and no certificate is fetched for it. The
+// last domain can't be removed: the site would have no address at all.
+type RemoveDomain struct {
+	Domain string
+}
+
+func (c *RemoveDomain) Apply(a *Applier) (any, error) {
+	return nil, a.Site(func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM domains WHERE name != ?`, c.Domain).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			return Invalid("the site needs at least one domain")
+		}
+		res, err := tx.Exec(`DELETE FROM domains WHERE name = ?`, c.Domain)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// SetDomainMail sets a domain's own mail settings. An empty SMTPHost
+// means the domain uses the global SMTP settings; an empty MailFrom means
+// login@<domain>.
+type SetDomainMail struct {
+	Domain   string
+	SMTPHost string
+	SMTPPort int
+	SMTPUser string
+	SMTPPass string
+	MailFrom string
+}
+
+func (c *SetDomainMail) Apply(a *Applier) (any, error) {
+	if c.SMTPPort < 0 || c.SMTPPort > 65535 {
+		return nil, Invalid("smtp port must be 0 to 65535")
+	}
+	if strings.ContainsAny(c.SMTPHost+c.SMTPUser+c.MailFrom, "\r\n") {
+		return nil, Invalid("line break in a mail setting")
+	}
+	return nil, a.Site(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE domains SET smtp_host = ?, smtp_port = ?, smtp_user = ?, smtp_pass = ?, mail_from = ? WHERE name = ?`,
+			strings.TrimSpace(c.SMTPHost), c.SMTPPort, strings.TrimSpace(c.SMTPUser), c.SMTPPass, strings.TrimSpace(c.MailFrom), c.Domain)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// Before the domain list, there was a primary domain with alternates that
+// redirected to it, single hosts that redirected, and groups on their own
+// domains. Old logs still hold those commands, so they still decode. The
+// two that listed a domain now just list it (a replay leaves the same
+// list); the rest did nothing that exists any more.
+
+// SetPrimaryDomain is the old way to list a domain.
 type SetPrimaryDomain struct {
 	Domain string
 	At     int64
 }
 
-func (c *SetPrimaryDomain) Apply(a *Applier) (any, error) {
-	if err := ValidDomain(c.Domain); err != nil {
-		return nil, err
-	}
-	return nil, a.Site(func(tx *sql.Tx) error {
-		// Demote first: the unique index allows only one primary at a time.
-		if _, err := tx.Exec(`UPDATE domains SET role = 'alternate' WHERE role = 'primary' AND name != ?`, c.Domain); err != nil {
-			return err
-		}
-		_, err := tx.Exec(`
-			INSERT INTO domains (name, role, created_at) VALUES (?, 'primary', ?)
-			ON CONFLICT (name) DO UPDATE SET role = 'primary'`, c.Domain, c.At)
-		return err
-	})
-}
+func (c *SetPrimaryDomain) Apply(a *Applier) (any, error) { return nil, listDomain(a, c.Domain, c.At) }
 
-// AddAlternateDomain adds a domain that redirects to the primary: the bare
-// name to the home page, <slug>.<alternate> to <slug>.<primary>.
+// AddAlternateDomain is the old way to list a domain.
 type AddAlternateDomain struct {
 	Domain string
 	At     int64
 }
 
 func (c *AddAlternateDomain) Apply(a *Applier) (any, error) {
-	if err := ValidDomain(c.Domain); err != nil {
-		return nil, err
+	return nil, listDomain(a, c.Domain, c.At)
+}
+
+func listDomain(a *Applier, domain string, at int64) error {
+	if ValidDomain(domain) != nil {
+		return nil // was refused when it was first applied, too
 	}
-	return nil, a.Site(func(tx *sql.Tx) error {
-		res, err := tx.Exec(`INSERT INTO domains (name, role, created_at) VALUES (?, 'alternate', ?)
-			ON CONFLICT (name) DO NOTHING`, c.Domain, c.At)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return fmt.Errorf("%s is already listed", c.Domain)
-		}
-		return nil
+	return a.Site(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO domains (name, created_at) VALUES (?, ?) ON CONFLICT (name) DO NOTHING`, domain, at)
+		return err
 	})
 }
 
-// AddHostAlias makes one extra host 301 to a group's main address (or to
-// the home page when GroupID is 0).
+// AddHostAlias is gone (a host that redirected to a group); it does nothing.
 type AddHostAlias struct {
 	Host    string
 	GroupID int64
 	At      int64
 }
 
-func (*AddHostAlias) siteLog() {}
+func (*AddHostAlias) siteLog()                    {}
+func (*AddHostAlias) Apply(*Applier) (any, error) { return nil, nil }
 
-func (c *AddHostAlias) Apply(a *Applier) (any, error) {
-	if err := ValidDomain(c.Host); err != nil {
-		return nil, err
-	}
-	return nil, a.Site(func(tx *sql.Tx) error {
-		var gid any // NULL for a home-page alias
-		if c.GroupID != 0 {
-			var n int
-			if err := tx.QueryRow(`SELECT COUNT(*) FROM groups WHERE id = ?`, c.GroupID).Scan(&n); err != nil {
-				return err
-			}
-			if n == 0 {
-				return ErrNotFound
-			}
-			gid = c.GroupID
-		}
-		_, err := tx.Exec(`INSERT INTO host_aliases (host, group_id, created_at) VALUES (?, ?, ?)`, c.Host, gid, c.At)
-		return err
-	})
+// SetGroupHost is gone (a group's own domain); it does nothing.
+type SetGroupHost struct {
+	GroupID int64
+	Host    string
+	At      int64
 }
+
+func (*SetGroupHost) siteLog()                    {}
+func (*SetGroupHost) Apply(*Applier) (any, error) { return nil, nil }
+
+// StartBounce is gone (sign-in carried to a group's own domain); it does
+// nothing.
+type StartBounce struct {
+	CodeHash  string
+	UserID    int64
+	Host      string
+	ExpiresAt int64
+	At        int64
+}
+
+func (*StartBounce) Apply(*Applier) (any, error) { return nil, nil }
+
+// FinishBounce is gone, like StartBounce; it does nothing.
+type FinishBounce struct {
+	CodeHash       string
+	Host           string
+	SessionHash    string
+	SessionExpires int64
+	UserAgentHint  string
+	At             int64
+}
+
+func (*FinishBounce) Apply(*Applier) (any, error) { return nil, nil }
 
 // CreateGroup adds a group to the site's list and places it on nodes; its
 // own file gets its settings and first owner (OwnerID, if set) from the
@@ -123,6 +208,13 @@ func (c *CreateGroup) Apply(a *Applier) (any, error) {
 		}
 		if _, err := tx.Exec(`INSERT INTO groups (id, slug, name, visibility, created_at) VALUES (?, ?, ?, ?, ?)`,
 			c.GroupID, c.Slug, c.Name, vis, c.At); err != nil {
+			return err
+		}
+		// The group's settings live here, with the site's. InitGroup gives
+		// the group's own file the same first values (its copy). A private
+		// group's FAQ starts private too.
+		if _, err := tx.Exec(`INSERT INTO group_settings (group_id, name, description, visibility, public_faq) VALUES (?, ?, ?, ?, ?)`,
+			c.GroupID, c.Name, c.Description, vis, vis == "public"); err != nil {
 			return err
 		}
 		if err := placeNewGroup(tx, c.GroupID, c.At); err != nil {

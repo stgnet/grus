@@ -1,5 +1,10 @@
 # grus.conf: one "key = value" per line; # starts a comment.
-# Keys that take a list (join, operator, worker) are repeated.
+# Keys that take a list (join, domain, operator) are repeated.
+#
+# grus.conf holds only what's particular to this node. Everything else is
+# the global level, kept in site.db, the same on every node, and changed on
+# the admin page: the list of domains (all equal, any node answers any of
+# them), mail, operators, AI settings, and every group with its settings.
 #
 # This example is the VPS in the starting setup (plan section 8, "Where it
 # starts"): the only voter, serving every group, with the Studio as a
@@ -12,16 +17,11 @@ node_num = 1
 
 data_dir = /var/lib/grus
 
-# Seeds the domains table the first time the cluster starts. After that,
-# change domains on the admin page (the table is the truth).
-primary_domain = nfb.group
-
 # Web. Port 80 answers Let's Encrypt and redirects to HTTPS.
 http_addr  = :80
 https_addr = :443
-acme_email = scott@stg.net
 
-# For a laptop: plain HTTP, no certificates. Use a primary like
+# For a laptop: plain HTTP, no certificates. Use a domain like
 # grus.localhost (browsers send *.localhost to 127.0.0.1) and open
 # http://grus.localhost:8080/.
 # dev = true
@@ -39,33 +39,41 @@ bootstrap    = true
 voter        = true
 # Every other node sets join (repeatable): an existing node to register
 # through the first time it starts. After that the node map (site.db) is
-# how the nodes find each other, and the Studio joins by itself.
+# how the nodes find each other.
 # join = vps2.nfb.group:7946
 
 tls_ca   = /etc/grus/cluster/ca.crt
 tls_cert = /etc/grus/cluster/n1.crt
 tls_key  = /etc/grus/cluster/n1.key
 
-# Mail relay for sign-in emails. Without smtp_host, emails are printed to
-# the log instead (fine for a laptop, useless in production): until the
-# relay is set, find the first sign-in link with `journalctl -u grus`.
-# smtp_host = smtp.example.com
-# smtp_port = 587
-# smtp_user = login@nfb.group
-# smtp_pass = change-me
-mail_from = login@nfb.group
+# ---------------------------------------------------------------------
+# Seeds. Everything below is used once, when the cluster is first
+# created (or first started after upgrading to the global level), to fill
+# in the global settings. After that the admin page is the truth and
+# these lines are ignored; they can be deleted.
+
+# The site's first domain (repeat for more). The bootstrap node needs one.
+domain = nfb.group
 
 # Accounts with these emails become site operators when they sign in.
 operator = scott@stg.net
 
-# AI (plan section 9). The VPS runs no model: searches and background jobs
-# go to the nodes listed here (their cluster addresses). Without a worker,
-# search shows plain results and nothing is summarized or linked; the site
-# works the same otherwise.
-# worker = studio.example.net:7946
-# Quick answers per member per day (0 = the default, 20).
+# Let's Encrypt's contact address.
+acme_email = scott@stg.net
+
+# The SMTP relay for sign-in and notification email. A domain can also
+# have its own, on the admin page. Without one, emails are printed to the
+# log instead (fine for a laptop, useless in production): until it's set,
+# find the first sign-in link with `journalctl -u grus`.
+# smtp_host = smtp.example.com
+# smtp_port = 587
+# smtp_user = login@nfb.group
+# smtp_pass = change-me
+# The first domain's sender (default login@<domain>).
+# mail_from = login@nfb.group
+
+# Quick answers per member per day (default 20), and the UTC hours of the
+# nightly FAQ batch (8) and the daily email digest (12).
 # ask_daily_limit = 20
-# Hour (UTC, 0-23) the nightly FAQ batch is queued.
 # faq_hour = 8
-# The hour (UTC) the daily email digest goes out, for those who asked.
 # digest_hour = 12

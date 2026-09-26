@@ -1,10 +1,19 @@
 // Package config reads grus.conf.
 //
+// grus.conf holds only what's particular to one node, and what it needs
+// before it can read site.db: who it is, where its files are, where it
+// listens, and how to reach the rest of the cluster. Everything else (the
+// domains, mail, operators, AI settings, every group and its settings) is
+// the global level, in site.db, the same on every node and changed on
+// the admin page.
+//
+// A few keys here are seeds for that global level (see Seed): they're
+// used once, when a cluster is first created (or first upgraded to the
+// global level), and ignored after that.
+//
 // The format is deliberately plain: one "key = value" per line, "#" starts a
-// comment, and keys that take a list (join, operator, worker) are simply
-// repeated.
-// It's easier to read and edit on a server than JSON, and it keeps secrets
-// like the SMTP password out of the process arguments where `ps` shows them.
+// comment, and keys that take a list (join, domain, operator) are simply
+// repeated. It's easier to read and edit on a server than JSON.
 //
 // See deploy/grus.conf.example for every key with an explanation.
 package config
@@ -25,17 +34,11 @@ type Config struct {
 	NodeNum int    // 0-1023, distinct per node; goes into every id (default 1)
 	DataDir string // databases, raft log, blobs (default /var/lib/grus)
 
-	// PrimaryDomain seeds the domains table the first time the site
-	// database is created. After that the table is the truth, and the
-	// primary is changed with the SetPrimaryDomain command (admin page).
-	PrimaryDomain string
-
-	// Web serving. A node with neither address set (the Studio in M0) runs
-	// only the cluster side: it keeps a full live copy and serves nothing.
+	// Web serving. A node with neither address set (the Studio) runs only
+	// the cluster side: it keeps a full live copy and serves nothing.
 	HTTPAddr  string // ":80" in production (ACME + redirect to HTTPS)
 	HTTPSAddr string // ":443" in production
 	Dev       bool   // plain HTTP on HTTPAddr, no certificates, non-Secure cookies
-	ACMEEmail string // contact address given to Let's Encrypt
 
 	// Cluster.
 	ClusterAddr string   // listen address for node-to-node mTLS, e.g. ":7946"
@@ -48,35 +51,34 @@ type Config struct {
 	TLSCert     string   // this node's certificate (made by `grus ca issue`)
 	TLSKey      string   // this node's key
 
-	// Mail. With no SMTPHost, login emails are written to the log instead
-	// of sent, which is what you want on a laptop.
-	SMTPHost string
-	SMTPPort int // default 587
-	SMTPUser string
-	SMTPPass string
-	MailFrom string // default login@<primary domain>
+	// AIURL is this machine's own model server (Ollama, e.g.
+	// http://127.0.0.1:11434), if it has one. It's a fact about this
+	// machine's hardware, like DataDir; which model runs on it is a
+	// global setting. A node with one works the background job queue and
+	// answers searches for every node.
+	AIURL string
 
-	// Operators: emails whose accounts get the site operator flag when they
-	// sign in.
-	Operators []string
+	Seed Seed
 
-	// AI (plan section 9). A node with ai_url runs a model: it works the
-	// background job queue and answers searches (the Studio). Web nodes list
-	// those nodes as `worker` lines (their cluster addresses) to send
-	// searches to them; a node that has a model and serves pages uses its
-	// own too.
-	AIURL     string   // Ollama, e.g. http://127.0.0.1:11434
-	AIModel   string   // the model name in Ollama (pick one with `grus bench-llm`)
-	AIContext int      // context window in tokens (default 16384)
-	Workers   []string // cluster addresses of nodes with a model
-	AskLimit  int      // search questions per person per day (default 20)
-	// The hour (UTC, 0-23) the leader queues the nightly FAQ batch, when
-	// the model is otherwise idle. Default 8: 3-4am in US Eastern time.
-	FAQHour int
-	// The hour (UTC) the daily email digest goes out. Default 12: early
-	// morning across the US.
-	DigestHour int
+	// Obsolete lists keys that are still accepted, so an old config
+	// loads, but no longer do anything. The server logs them.
+	Obsolete []string
 }
+
+// Seed is the first configuration of the global level, for a new cluster
+// or one upgraded from when these lived in every node's grus.conf. The
+// site log's leader applies it once (cmd.SeedGlobal); after that site.db
+// is the truth, and these lines can be deleted.
+type Seed struct {
+	Domains  []string          // domain (repeatable); primary_domain is the old spelling
+	MailFrom string            // mail_from: the first domain's sender
+	Values   map[string]string // global settings by key: smtp_host, operators, ...
+}
+
+// seedKeys are the grus.conf keys that seed a global setting of the same
+// name (see store.Global).
+var seedKeys = map[string]bool{"smtp_host": true, "smtp_port": true, "smtp_user": true, "smtp_pass": true,
+	"acme_email": true, "ai_model": true, "ai_context": true, "ask_daily_limit": true, "faq_hour": true, "digest_hour": true}
 
 // Load reads and checks a config file.
 func Load(path string) (*Config, error) {
@@ -86,7 +88,7 @@ func Load(path string) (*Config, error) {
 	}
 	defer f.Close()
 
-	c := &Config{NodeNum: 1, DataDir: "/var/lib/grus", SMTPPort: 587, FAQHour: 8, DigestHour: 12}
+	c := &Config{NodeNum: 1, DataDir: "/var/lib/grus", Seed: Seed{Values: map[string]string{}}}
 	sc := bufio.NewScanner(f)
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
@@ -116,16 +118,12 @@ func (c *Config) set(key, val string) error {
 		c.NodeNum, err = strconv.Atoi(val)
 	case "data_dir":
 		c.DataDir = val
-	case "primary_domain":
-		c.PrimaryDomain = strings.ToLower(val)
 	case "http_addr":
 		c.HTTPAddr = val
 	case "https_addr":
 		c.HTTPSAddr = val
 	case "dev":
 		c.Dev, err = strconv.ParseBool(val)
-	case "acme_email":
-		c.ACMEEmail = val
 	case "cluster_addr":
 		c.ClusterAddr = val
 	case "advertise":
@@ -148,39 +146,29 @@ func (c *Config) set(key, val string) error {
 		c.TLSCert = val
 	case "tls_key":
 		c.TLSKey = val
-	case "smtp_host":
-		c.SMTPHost = val
-	case "smtp_port":
-		c.SMTPPort, err = strconv.Atoi(val)
-	case "smtp_user":
-		c.SMTPUser = val
-	case "smtp_pass":
-		c.SMTPPass = val
-	case "mail_from":
-		c.MailFrom = val
-	case "operator":
-		c.Operators = append(c.Operators, strings.ToLower(val))
 	case "ai_url":
 		c.AIURL = val
-	case "ai_model":
-		c.AIModel = val
-	case "ai_context":
-		c.AIContext, err = strconv.Atoi(val)
+
+	// Seeds for the global level.
+	case "domain", "primary_domain":
+		c.Seed.Domains = append(c.Seed.Domains, strings.ToLower(val))
+	case "mail_from":
+		c.Seed.MailFrom = val
+	case "operator":
+		ops := c.Seed.Values["operators"]
+		if ops != "" {
+			ops += "\n"
+		}
+		c.Seed.Values["operators"] = ops + strings.ToLower(val)
+
+	// worker lines listed the nodes with a model; the node map has them now.
 	case "worker":
-		c.Workers = append(c.Workers, val)
-	case "ask_daily_limit":
-		c.AskLimit, err = strconv.Atoi(val)
-	case "digest_hour":
-		c.DigestHour, err = strconv.Atoi(val)
-		if err == nil && (c.DigestHour < 0 || c.DigestHour > 23) {
-			err = fmt.Errorf("digest_hour must be 0 to 23")
-		}
-	case "faq_hour":
-		c.FAQHour, err = strconv.Atoi(val)
-		if err == nil && (c.FAQHour < 0 || c.FAQHour > 23) {
-			err = fmt.Errorf("faq_hour must be 0 to 23")
-		}
+		c.Obsolete = append(c.Obsolete, key)
 	default:
+		if seedKeys[key] {
+			c.Seed.Values[key] = val
+			return nil
+		}
 		// Fail loudly: a misspelled key silently ignored is a bad afternoon.
 		return fmt.Errorf("unknown key %q", key)
 	}
@@ -199,8 +187,10 @@ func (c *Config) check() error {
 	if c.NodeNum < 0 || c.NodeNum > ToolNodeNum-1 {
 		return fmt.Errorf("node_num must be 0-%d", ToolNodeNum-1)
 	}
-	if c.PrimaryDomain == "" {
-		return fmt.Errorf("primary_domain is required")
+	if c.Bootstrap && len(c.Seed.Domains) == 0 {
+		// The node that creates the cluster lists its first domain, or
+		// the site would have no address to reach the admin page on.
+		return fmt.Errorf("the bootstrap node needs a domain line")
 	}
 	if c.ClusterAddr == "" || c.Advertise == "" {
 		return fmt.Errorf("cluster_addr and advertise are required")
@@ -211,9 +201,6 @@ func (c *Config) check() error {
 	if c.TLSCA == "" || c.TLSCert == "" || c.TLSKey == "" {
 		return fmt.Errorf("tls_ca, tls_cert and tls_key are required (see `grus ca`)")
 	}
-	if c.AIURL != "" && c.AIModel == "" {
-		return fmt.Errorf("ai_url is set but ai_model isn't")
-	}
 	if c.Bootstrap {
 		// The node that creates the cluster is its first voter.
 		c.Voter = true
@@ -221,18 +208,5 @@ func (c *Config) check() error {
 	if !c.Bootstrap && len(c.Join) == 0 {
 		return fmt.Errorf("a node that doesn't bootstrap the cluster needs a join address")
 	}
-	if c.MailFrom == "" {
-		c.MailFrom = "login@" + c.PrimaryDomain
-	}
 	return nil
-}
-
-// IsOperator reports whether email is listed as an operator.
-func (c *Config) IsOperator(email string) bool {
-	for _, o := range c.Operators {
-		if o == strings.ToLower(email) {
-			return true
-		}
-	}
-	return false
 }

@@ -22,6 +22,7 @@ type RegisterNode struct {
 	Addr  string
 	Voter bool
 	Full  bool
+	AI    bool // runs a model
 	At    int64
 }
 
@@ -30,9 +31,10 @@ func (c *RegisterNode) Apply(a *Applier) (any, error) {
 		return nil, Invalid("a node needs an id and an address")
 	}
 	return nil, a.Site(func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`INSERT INTO nodes (id, addr, voter, full, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT (id) DO UPDATE SET addr = excluded.addr, voter = excluded.voter, full = excluded.full, updated_at = excluded.updated_at`,
-			c.ID, c.Addr, c.Voter, c.Full, c.At, c.At); err != nil {
+		if _, err := tx.Exec(`INSERT INTO nodes (id, addr, voter, full, ai, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (id) DO UPDATE SET addr = excluded.addr, voter = excluded.voter, full = excluded.full,
+			  ai = excluded.ai, updated_at = excluded.updated_at`,
+			c.ID, c.Addr, c.Voter, c.Full, c.AI, c.At, c.At); err != nil {
 			return err
 		}
 		if c.Voter {

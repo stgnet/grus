@@ -12,7 +12,7 @@ import (
 )
 
 // The group FAQ pages (plan section 4), and the root FAQ on the bare
-// primary domain, which is the same code over a reserved group file
+// domain (any of them), which is the same code over a reserved group file
 // (cmd.RootGroupID) whose editors are the site's operators.
 
 // faqCtx is the request context for FAQ pages: the group's, or on the bare
@@ -23,8 +23,8 @@ func (s *Server) faqCtx(w http.ResponseWriter, r *http.Request) *greq {
 	if rt.group == nil {
 		u := s.user(r)
 		c := &greq{rt: rt, root: true, u: u,
-			g:  &store.Group{ID: cmd.RootGroupID, Name: rt.primary},
-			st: &store.Settings{Name: rt.primary, Visibility: "public"}}
+			g:  &store.Group{ID: cmd.RootGroupID, Name: rt.domain},
+			st: &store.Settings{Name: rt.domain, Visibility: "public"}}
 		if u != nil {
 			c.v = auth.Viewer{UserID: u.ID, Operator: u.IsOperator}
 		}
@@ -135,7 +135,7 @@ func (s *Server) faqPage(w http.ResponseWriter, r *http.Request) {
 		// notes, so a public FAQ never points into a private group.
 		for _, p := range pairs {
 			if g, ok := s.sisterCitable(c, p.Other); ok {
-				d.Sisters = append(d.Sisters, faqSister{Name: g.Name, URL: s.groupURL(g, c.rt.primary, "/faq"), Topics: p.Topics})
+				d.Sisters = append(d.Sisters, faqSister{Name: g.Name, URL: s.groupURL(g, c.rt.domain, "/faq"), Topics: p.Topics})
 			}
 		}
 	}
@@ -165,7 +165,7 @@ func (s *Server) rootGroups(r *http.Request, c *greq) ([]rootGroupCard, error) {
 		if err != nil || !auth.CanSeeGroup(v, st.Visibility) {
 			continue
 		}
-		card := rootGroupCard{Name: g.Name, Description: st.Description, URL: s.groupURL(g, c.rt.primary, "/faq")}
+		card := rootGroupCard{Name: g.Name, Description: st.Description, URL: s.groupURL(g, c.rt.domain, "/faq")}
 		if auth.CanReadFAQ(v, st.Visibility, st.PublicFAQ) {
 			tree, err := s.Store.Topics(g.ID)
 			if err != nil {

@@ -10,6 +10,7 @@ type Node struct {
 	Addr  string // cluster host:port
 	Voter bool
 	Full  bool
+	AI    bool // runs a model: searches and background jobs can go to it
 }
 
 // Host is one node's part in one group.
@@ -23,7 +24,7 @@ type Host struct {
 
 // Nodes lists every node, by id.
 func (s *Store) Nodes() ([]Node, error) {
-	rows, err := s.Site().Query(`SELECT id, addr, voter, full FROM nodes ORDER BY id`)
+	rows, err := s.Site().Query(`SELECT id, addr, voter, full, ai FROM nodes ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +32,7 @@ func (s *Store) Nodes() ([]Node, error) {
 	var out []Node
 	for rows.Next() {
 		var n Node
-		if err := rows.Scan(&n.ID, &n.Addr, &n.Voter, &n.Full); err != nil {
+		if err := rows.Scan(&n.ID, &n.Addr, &n.Voter, &n.Full, &n.AI); err != nil {
 			return nil, err
 		}
 		out = append(out, n)

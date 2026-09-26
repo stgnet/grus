@@ -1,8 +1,9 @@
-# DNS for the primary domain
+# DNS for a domain
 
-Everything below is for `nfb.group`; substitute the domain if it changes
-(see "Changing the primary" in operations.md). `VPS_IP` is the VPS's public
-address.
+Every domain on the admin page's list is the whole site, answered the same
+way by every node. Everything below is for `nfb.group`; each other listed
+domain needs the same records with its own name. `VPS_IP` is the public
+address of a node that serves web traffic.
 
 ## Web
 
@@ -13,8 +14,16 @@ address.
 | `www.nfb.group` | (covered by the wildcard) | | redirects to `nfb.group` |
 
 Certificates are fetched per host the first time it's used, and only for
-hosts that exist (groups, aliases, the primary). A random name like
-`typo.nfb.group` resolves but fails to connect, which is intended.
+hosts that exist (a listed domain, its `www`, and its groups). A random
+name like `typo.nfb.group` resolves but fails to connect, which is
+intended.
+
+Since any node answers any listed domain, the domains can point at
+different nodes: `nfb.group` at one VPS and `eu.example.org` at another,
+say, or a new node given a domain of its own to try it out on before
+anything else points at it. The site is the same on each; only the
+address differs, and every link on a page stays in the domain it was
+asked for on.
 
 The Studio needs a name of its own for the cluster port (any domain works;
 it doesn't have to be under `nfb.group`). Use a short TTL (300s) so a new
@@ -23,8 +32,11 @@ home IP takes effect quickly.
 ## Mail: SPF, DKIM, DMARC
 
 Sign-in only works if the email reaches the inbox, so set these up before
-the first real user. Grus sends through an SMTP relay (your mail provider,
-`smtp_host` in grus.conf); the relay signs with DKIM. To send from the VPS
+the first real user, for each domain. Email about a domain comes from that
+domain (`login@<domain>`, or the domain's own sender on the admin page), so
+each domain needs its own SPF, DKIM and DMARC. Grus sends through an SMTP
+relay (your mail provider; the global SMTP settings on the admin page, or
+a domain's own); the relay signs with DKIM. To send from the VPS
 itself instead, with no mail provider, see [mail.md](mail.md): it has the
 records for that setup.
 
@@ -58,9 +70,10 @@ interfere with TXT lookups.)
 **Check:** send yourself a sign-in email and look at the headers for
 `spf=pass`, `dkim=pass` and `dmarc=pass`.
 
-## Alternate domains
+## Adding a domain
 
-An alternate domain (the old primary after a change, a short or typo
-domain) needs the same two A records (bare and wildcard) pointing at the
-VPS. Add it on the admin page first; it then redirects every link to the
-same page on the primary, with its own certificates.
+Point the new domain's two A records (bare and wildcard) at the node or
+nodes that should answer it, add its mail records, then add it on the admin
+page. It's live on every node at once; certificates are fetched as its
+hosts are first used. Taking a domain off the list stops it being
+answered anywhere.

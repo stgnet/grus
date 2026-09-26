@@ -29,8 +29,7 @@ import (
 var askTimeout = 8 * time.Second
 
 const (
-	defaultAskLimit = 20 // questions per person per day
-	softFailText    = "Quick answers aren't available right now. These posts match your search."
+	softFailText = "Quick answers aren't available right now. These posts match your search."
 )
 
 type searchHit struct {
@@ -272,14 +271,14 @@ func (s *Server) checkSisterCard(c *greq, g *store.Group, card ai.Card) (cardVie
 		if err != nil || e == nil || e.Status != "active" {
 			return cardView{}, false
 		}
-		return cardView{URL: s.groupURL(g, c.rt.primary, fmt.Sprintf("/faq/e/%d", e.ID)), Title: e.Question,
+		return cardView{URL: s.groupURL(g, c.rt.domain, fmt.Sprintf("/faq/e/%d", e.ID)), Title: e.Question,
 			Label: g.Name + " FAQ", Date: e.UpdatedAt, Statement: card.Statement}, true
 	case card.PostID != 0:
 		p, err := s.Store.Post(g.ID, card.PostID)
 		if err != nil || p == nil || p.Status != "visible" {
 			return cardView{}, false
 		}
-		return cardView{URL: s.groupURL(g, c.rt.primary, fmt.Sprintf("/p/%d", p.ID)), Title: p.Title, Label: label,
+		return cardView{URL: s.groupURL(g, c.rt.domain, fmt.Sprintf("/p/%d", p.ID)), Title: p.Title, Label: label,
 			Date: p.CreatedAt, Statement: card.Statement}, true
 	}
 	return cardView{}, false // outside pages are cited from the group that has them
@@ -344,10 +343,7 @@ type askCounter struct {
 }
 
 func (s *Server) askAllowed(userID int64) bool {
-	limit := s.AskLimit
-	if limit == 0 {
-		limit = defaultAskLimit
-	}
+	limit := s.global().AskLimit
 	today := s.Now().UTC().Format("2006-01-02")
 	s.asks.mu.Lock()
 	defer s.asks.mu.Unlock()

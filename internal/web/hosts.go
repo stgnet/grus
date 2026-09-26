@@ -10,20 +10,25 @@ import (
 	"github.com/stgnet/grus/internal/store"
 )
 
-// Which site a request is for comes from its Host header alone. The rules
-// (plan section 8, "Domains"):
+// Which site a request is for comes from its Host header alone, against
+// the one global list of domains (site.db's domains table). Every listed
+// domain is equal: each is the whole site, with the same groups and the
+// same content, and a request is answered in the domain it came in on.
+// So with example.org and example.net both listed:
 //
-//	nfb.group                  the home site: sign-in, home page, admin
-//	www.nfb.group              301 to nfb.group
-//	<slug>.nfb.group           that group (or 301 to its custom domain)
-//	<custom domain>            the group whose main_host it is
-//	<alias host>               301 to its group's main address
-//	<alternate>, x.<alternate> 301 to the same place on the primary
+//	example.org                the home site: sign-in, home page, admin
+//	www.example.org            301 to example.org
+//	<slug>.example.org         that group
+//	example.net, ...           exactly the same, with example.net links
 //	anything else              "no such group"
 //
-// Every rule reads site.db, so adding a group, an alias or a domain takes
-// effect on every node the moment the command is applied, with no restart
-// or config change.
+// That lets each domain's DNS point at different nodes (any node answers
+// any domain), and a node be tried out on its own by the domain that
+// leads to it.
+//
+// Every rule reads site.db, so adding a group or a domain takes effect on
+// every node the moment the command is applied, with no restart or config
+// change.
 
 type siteKind int
 
@@ -36,7 +41,7 @@ const (
 
 type route struct {
 	kind     siteKind
-	primary  string       // the primary domain at the time of the request
+	domain   string       // the listed domain this request came in on ("" if none)
 	group    *store.Group // siteGroup
 	redirect string       // siteRedirect: scheme://host[:port], no path
 }
@@ -47,75 +52,38 @@ func (s *Server) resolve(hostport string) (*route, error) {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	primary, err := s.Store.PrimaryDomain()
-	if err != nil {
-		return nil, err
-	}
-	rt := &route{primary: primary}
-
-	switch {
-	case host == primary:
-		rt.kind = siteHome
-		return rt, nil
-	case host == "www."+primary:
-		return s.redirectTo(rt, primary), nil
-	case strings.HasSuffix(host, "."+primary):
-		slug := strings.TrimSuffix(host, "."+primary)
-		if strings.Contains(slug, ".") {
-			return rt, nil // a.b.nfb.group: not a group
-		}
-		g, err := s.Store.GroupBySlug(slug)
-		if err != nil || g == nil {
-			return rt, err
-		}
-		if g.MainHost != "" {
-			// The group moved to its own domain; old links follow it.
-			return s.redirectTo(rt, g.MainHost), nil
-		}
-		rt.kind, rt.group = siteGroup, g
-		return rt, nil
-	}
-
-	if g, err := s.Store.GroupByMainHost(host); err != nil || g != nil {
-		if g != nil {
-			rt.kind, rt.group = siteGroup, g
-		}
-		return rt, err
-	}
-
-	gid, found, err := s.Store.HostAlias(host)
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		if gid == 0 {
-			return s.redirectTo(rt, primary), nil
-		}
-		g, err := s.Store.GroupByID(gid)
-		if err != nil || g == nil {
-			return rt, err
-		}
-		return s.redirectTo(rt, groupHost(g, primary)), nil
-	}
-
-	// Alternate domains: the old primary after a change, a short domain, a
-	// typo domain. The bare name goes to the home page, and <slug>.<alt>
-	// goes to <slug>.<primary>, so every old link keeps working.
 	domains, err := s.Store.Domains()
 	if err != nil {
 		return nil, err
 	}
+	// The listed domain this host is, or is under. The longest wins, in
+	// case one listed domain is under another (a.example.org and
+	// example.org): its own rules apply, not the shorter one's.
+	rt := &route{}
 	for _, d := range domains {
-		if d.Role != "alternate" {
-			continue
-		}
-		if host == d.Name || host == "www."+d.Name {
-			return s.redirectTo(rt, primary), nil
-		}
-		if sub, ok := strings.CutSuffix(host, "."+d.Name); ok && !strings.Contains(sub, ".") {
-			return s.redirectTo(rt, sub+"."+primary), nil
+		if (host == d.Name || strings.HasSuffix(host, "."+d.Name)) && len(d.Name) > len(rt.domain) {
+			rt.domain = d.Name
 		}
 	}
+	if rt.domain == "" {
+		return rt, nil
+	}
+	if host == rt.domain {
+		rt.kind = siteHome
+		return rt, nil
+	}
+	sub := strings.TrimSuffix(host, "."+rt.domain)
+	if sub == "www" {
+		return s.redirectTo(rt, rt.domain), nil
+	}
+	if strings.Contains(sub, ".") {
+		return rt, nil // a.b.example.org: not a group
+	}
+	g, err := s.Store.GroupBySlug(sub)
+	if err != nil || g == nil {
+		return rt, err
+	}
+	rt.kind, rt.group = siteGroup, g
 	return rt, nil
 }
 
@@ -127,8 +95,9 @@ func (s *Server) redirectTo(rt *route, host string) *route {
 
 // Building our own links. Nothing stored in the database is ever an
 // absolute URL of ours: posts, notes and notifications store ids, and links
-// are built here at render time from the current domains. That's what makes
-// changing the primary domain cheap.
+// are built here at render time, in the domain of the request being
+// answered (or, for email, the domain the person signed in on). That's
+// what keeps every domain equal.
 
 func (s *Server) scheme() string {
 	if s.Dev {
@@ -137,21 +106,14 @@ func (s *Server) scheme() string {
 	return "https"
 }
 
-// groupHost is a group's main address: its custom domain, or
-// <slug>.<primary>.
-func groupHost(g *store.Group, primary string) string {
-	if g.MainHost != "" {
-		return g.MainHost
-	}
-	return g.Slug + "." + primary
+// siteURL is a page of the home site on domain.
+func (s *Server) siteURL(domain, path string) string {
+	return s.scheme() + "://" + domain + s.PortSuffix + path
 }
 
-func (s *Server) primaryURL(primary, path string) string {
-	return s.scheme() + "://" + primary + s.PortSuffix + path
-}
-
-func (s *Server) groupURL(g *store.Group, primary, path string) string {
-	return s.scheme() + "://" + groupHost(g, primary) + s.PortSuffix + path
+// groupURL is a page of a group, on domain: <slug>.<domain>.
+func (s *Server) groupURL(g *store.Group, domain, path string) string {
+	return s.scheme() + "://" + g.Slug + "." + domain + s.PortSuffix + path
 }
 
 // currentURL is the full URL of this request, for "come back here after
@@ -162,12 +124,12 @@ func (s *Server) currentURL(r *http.Request) string {
 
 // safeNext checks a "where to go after signing in" URL. It must be one of
 // our own sites, or sign-in would be an open redirect: a trusted-looking
-// nfb.group link that drops people on a phishing page. Anything else becomes
-// the home page.
-func (s *Server) safeNext(raw, primary string) string {
-	home := s.primaryURL(primary, "/")
+// link of ours that drops people on a phishing page. Anything else becomes
+// the home page of domain (the request's).
+func (s *Server) safeNext(raw, domain string) string {
+	home := s.siteURL(domain, "/")
 	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") && !strings.HasPrefix(raw, "/\\") {
-		return s.primaryURL(primary, raw)
+		return s.siteURL(domain, raw)
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != s.scheme() || u.User != nil || u.Host == "" {

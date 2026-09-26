@@ -65,6 +65,11 @@ type Ollama struct {
 	Model   string // e.g. a small model picked with `grus bench-llm`
 	Context int    // context window in tokens; Ollama's default (2048-4096) silently truncates threads
 	HTTP    *http.Client
+	// Current, if set, is asked for the model and context window on every
+	// call, overriding Model and Context: a server reads them from the
+	// global settings, so changing the model on the admin page changes it
+	// on every node without a restart.
+	Current func() (model string, contextTokens int)
 }
 
 // NewOllama returns a client for model at url.
@@ -86,18 +91,22 @@ type ollamaMessage struct {
 
 func (o *Ollama) Call(ctx context.Context, req Request, out any) (Usage, error) {
 	start := time.Now()
+	model, numCtx := o.Model, o.Context
+	if o.Current != nil {
+		model, numCtx = o.Current()
+	}
 	user := ollamaMessage{Role: "user", Content: req.Prompt}
 	for _, im := range req.Images {
 		user.Images = append(user.Images, base64.StdEncoding.EncodeToString(im))
 	}
 	body, err := json.Marshal(map[string]any{
-		"model":    o.Model,
+		"model":    model,
 		"messages": []ollamaMessage{{Role: "system", Content: req.System}, user},
 		"format":   req.Schema,
 		"stream":   false,
 		// Temperature 0: the same thread gives the same note, and the
 		// model sticks to what the text says.
-		"options":    map[string]any{"temperature": 0, "num_ctx": o.Context},
+		"options":    map[string]any{"temperature": 0, "num_ctx": numCtx},
 		"keep_alive": "30m", // stay loaded between jobs; loading takes seconds
 	})
 	if err != nil {

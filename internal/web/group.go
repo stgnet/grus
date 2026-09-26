@@ -63,12 +63,12 @@ func (c *greq) page(title string, data any) *page {
 // response and returns false when they can't.
 func (s *Server) writer(w http.ResponseWriter, r *http.Request, c *greq, back string) bool {
 	if c.u == nil {
-		login := s.primaryURL(c.rt.primary, "/login?next="+queryEscape(s.groupURL(c.g, c.rt.primary, back)))
+		login := s.siteURL(c.rt.domain, "/login?next="+queryEscape(s.groupURL(c.g, c.rt.domain, back)))
 		http.Redirect(w, r, login, http.StatusSeeOther)
 		return false
 	}
 	if c.u.Handle == "" {
-		http.Redirect(w, r, s.primaryURL(c.rt.primary, "/welcome?next="+queryEscape(s.groupURL(c.g, c.rt.primary, back))), http.StatusSeeOther)
+		http.Redirect(w, r, s.siteURL(c.rt.domain, "/welcome?next="+queryEscape(s.groupURL(c.g, c.rt.domain, back))), http.StatusSeeOther)
 		return false
 	}
 	if c.member() {

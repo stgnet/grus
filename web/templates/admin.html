@@ -16,29 +16,48 @@
 </form>
 
 <h2>Domains</h2>
-<ul>{{range .Data.Domains}}<li>{{.Name}} <span class="tag">{{.Role}}</span></li>{{end}}</ul>
+<p class="muted">Every domain here is the whole site: the same groups and content, answered by every node. A request is answered in the domain it came in on, so each domain's DNS can point at different nodes, and a node can be tried out by the domain that leads to it. Set up a domain's DNS first (docs/dns.md), for the bare name and <code>*.</code> the name.</p>
+<table>
+  <tr><th>Domain</th><th>Mail</th><th></th></tr>
+  {{range .Data.Domains}}<tr>
+    <td>{{.Name}}</td>
+    <td>
+      <form method="post" action="/admin/domains/mail" class="stack">
+        <input type="hidden" name="domain" value="{{.Name}}">
+        <label>SMTP relay (empty: the global one) <input name="smtp_host" value="{{.SMTPHost}}"></label>
+        <label>Port <input name="smtp_port" value="{{if .SMTPPort}}{{.SMTPPort}}{{end}}" inputmode="numeric"></label>
+        <label>User <input name="smtp_user" value="{{.SMTPUser}}"></label>
+        <label>Password {{if .SMTPPass}}(set; empty keeps it){{end}} <input type="password" name="smtp_pass" autocomplete="new-password"></label>
+        <label>From (empty: login@{{.Name}}) <input name="mail_from" value="{{.MailFrom}}"></label>
+        <button class="secondary">Save mail for {{.Name}}</button>
+      </form>
+    </td>
+    <td>
+      <form method="post" action="/admin/domains">
+        <input type="hidden" name="domain" value="{{.Name}}">
+        <button name="action" value="remove" class="danger">Remove</button>
+      </form>
+    </td>
+  </tr>{{end}}
+</table>
 <form method="post" action="/admin/domains" class="stack">
   <label>Domain <input name="domain" value="{{index .Data.Form "domain"}}" required></label>
-  <div class="row">
-    <button name="action" value="alternate">Add as alternate</button>
-    <button name="action" value="primary">Make primary</button>
-  </div>
-  <p class="muted">Making a domain primary moves every group's address to it; the old primary becomes an alternate that redirects. Set up its DNS first (docs/dns.md).</p>
+  <button name="action" value="add">Add domain</button>
 </form>
 
-<h2>Host aliases</h2>
-<form method="post" action="/admin/aliases" class="stack">
-  <label>Host <input name="host" value="{{index .Data.Form "host"}}" required></label>
-  <label>Redirects to group (address name; empty for the home page) <input name="group" value="{{index .Data.Form "group"}}"></label>
-  <button>Add alias</button>
-</form>
-
-<h2>A group's own domain</h2>
-<form method="post" action="/admin/grouphost" class="stack">
-  <label>Group (address name) <input name="group" value="{{index .Data.Form "group"}}" required></label>
-  <label>Domain (empty to go back to its address under the primary) <input name="host" value="{{index .Data.Form "domain"}}"></label>
-  <p class="muted">Point the domain's DNS at the nodes first. Sign-in still happens on the primary; members are signed in on the group's domain automatically.</p>
-  <button>Set domain</button>
+<h2>Global settings</h2>
+<form method="post" action="/admin/global" class="stack">
+  {{range .Data.Global}}
+  {{if eq .Key "operators"}}
+  <label>Operators (emails, one per line; these accounts get this page) <textarea name="operators" rows="3">{{.Value}}</textarea></label>
+  {{else if eq .Key "smtp_pass"}}
+  <label>smtp_pass {{if .Value}}(set; empty keeps it){{end}} <input type="password" name="smtp_pass" autocomplete="new-password"></label>
+  {{else}}
+  <label>{{.Key}} <input name="{{.Key}}" value="{{.Value}}"></label>
+  {{end}}
+  {{end}}
+  <p class="muted">An empty field takes the default: smtp_port 587, ai_context 16384, ask_daily_limit 20, faq_hour 8, digest_hour 12 (hours are UTC). With no smtp_host, here or on a domain, email is printed to the server log instead of sent. The SMTP settings here are for any domain without its own. ai_model is the model every node with a local model (ai_url in its grus.conf) runs.</p>
+  <button>Save global settings</button>
 </form>
 
 <h2>Accounts</h2>

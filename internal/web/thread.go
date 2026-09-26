@@ -211,7 +211,7 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 		return nil, err
 	}
 	d := &PostView{Post: *p, Author: authorOf(names, p.UserID, p.Anonymous),
-		AuthorURL: s.profileURL(c.rt.primary, names, p.UserID, p.Anonymous)}
+		AuthorURL: s.profileURL(c.rt.domain, names, p.UserID, p.Anonymous)}
 	d.CanEdit = c.u != nil && p.UserID == c.u.ID
 	if d.CanEdit && p.Anonymous {
 		d.Author += " (you)" // only the author sees this; everyone else sees just "Anonymous member"
@@ -244,7 +244,7 @@ func (s *Server) postView(c *greq, p *store.Post) (*PostView, error) {
 	}
 	view := func(cm store.Comment) commentView {
 		v := commentView{Comment: cm, Author: authorOf(names, cm.UserID, cm.Anonymous),
-			AuthorURL: s.profileURL(c.rt.primary, names, cm.UserID, cm.Anonymous),
+			AuthorURL: s.profileURL(c.rt.domain, names, cm.UserID, cm.Anonymous),
 			Images:    byComment[cm.ID], CanEdit: c.u != nil && cm.UserID == c.u.ID}
 		if v.CanEdit && cm.Anonymous {
 			v.Author += " (you)"
@@ -339,7 +339,7 @@ func (s *Server) placeNotes(c *greq, d *postData) error {
 				continue // not written yet: a sister note has nothing to show without its text
 			}
 			views = append(views, noteView{Note: n, Title: l.Title, Date: l.Date, Heading: "In the " + g.Name + " group",
-				URL: s.groupURL(g, c.rt.primary, fmt.Sprintf("/p/%d", n.SourcePostID)), CanRemove: d.CanMod, Sister: true})
+				URL: s.groupURL(g, c.rt.domain, fmt.Sprintf("/p/%d", n.SourcePostID)), CanRemove: d.CanMod, Sister: true})
 			continue
 		}
 		other, err := s.Store.Post(c.g.ID, n.SourcePostID)

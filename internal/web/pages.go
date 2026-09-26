@@ -35,8 +35,8 @@ type groupCard struct {
 	Visibility  string
 }
 
-// home is the bare primary domain: a short splash, sign-in, and the groups
-// this visitor can see. (The root FAQ joins it in M3.)
+// home is a bare domain (any of them): a short splash, sign-in, and the
+// groups this visitor can see, linked in the same domain. (The root FAQ joins it in M3.)
 func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 	rt := routeOf(r)
 	u := s.user(r)
@@ -57,18 +57,15 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		cards = append(cards, groupCard{Name: g.Name, Description: st.Description,
-			URL: s.groupURL(g, rt.primary, "/"), Visibility: st.Visibility})
+			URL: s.groupURL(g, rt.domain, "/"), Visibility: st.Visibility})
 	}
-	s.render(w, r, http.StatusOK, "home", &page{Title: rt.primary, User: u, Data: cards})
+	s.render(w, r, http.StatusOK, "home", &page{Title: rt.domain, User: u, Data: cards})
 }
 
-// groupLogin sends sign-in to the primary domain, coming back here after.
+// groupLogin sends sign-in to the bare domain (the same one), coming back
+// here after.
 func (s *Server) groupLogin(w http.ResponseWriter, r *http.Request) {
 	rt := routeOf(r)
-	back := s.groupURL(rt.group, rt.primary, "/")
-	if ownDomain(rt) {
-		// Back through /bounce, which hands this domain its own session.
-		back = s.primaryURL(rt.primary, "/bounce?to="+queryEscape(back))
-	}
-	http.Redirect(w, r, s.primaryURL(rt.primary, "/login?next="+queryEscape(back)), http.StatusSeeOther)
+	back := s.groupURL(rt.group, rt.domain, "/")
+	http.Redirect(w, r, s.siteURL(rt.domain, "/login?next="+queryEscape(back)), http.StatusSeeOther)
 }

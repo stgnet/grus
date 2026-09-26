@@ -10,8 +10,6 @@ node_num = 2
 # The NAS gets the daily backups (deploy/grus-backup.sh).
 data_dir = /usr/local/var/grus
 
-primary_domain = nfb.group
-
 cluster_addr = :7946
 advertise    = studio.example.net:7946
 # Holds every group, as a non-voter: its home connection can drop without
@@ -23,10 +21,10 @@ tls_ca   = /etc/grus/cluster/ca.crt
 tls_cert = /etc/grus/cluster/studio.crt
 tls_key  = /etc/grus/cluster/studio.key
 
-# AI: the Studio runs the model through Ollama on the same machine. It works
-# the job queue (digests, link checks, notes) and answers searches the VPS
-# sends it. Pick the model with `grus bench-llm` (docs/operations.md).
-ai_url     = http://127.0.0.1:11434
-# A candidate, not a recommendation: run bench-llm on two or three first.
-ai_model   = qwen3:30b-a3b
-ai_context = 16384
+# AI: the Studio runs a model through Ollama on the same machine. It works
+# the job queue (digests, link checks, notes) and answers searches for
+# every node (they find it in the node map). Which model, and its context
+# window, are global settings (ai_model, ai_context on the admin page):
+# pick one with `grus bench-llm` (docs/operations.md), and pull it into
+# Ollama here first.
+ai_url = http://127.0.0.1:11434

@@ -14,8 +14,8 @@ import (
 // challenge through the DNS provider's API; per-host is simpler to start.)
 //
 // Two details matter:
-//   - The host policy allows exactly the hosts resolve() knows: the primary,
-//     www, groups, custom domains, aliases and alternates. A random
+//   - The host policy allows exactly the hosts resolve() knows: each listed
+//     domain, its www, and its groups. A random
 //     subdomain gets no certificate, so it can't burn Let's Encrypt's rate
 //     limit (50 new certificates per domain per week), and typo.nfb.group
 //     fails to connect rather than showing a page.
@@ -23,11 +23,13 @@ import (
 //     every node has every certificate and any node can answer any group's
 //     HTTPS.
 
-// CertManager returns the autocert manager for this server.
-func (s *Server) CertManager(email string) *autocert.Manager {
+// CertManager returns the autocert manager for this server. The contact
+// email is the acme_email global setting at start; Let's Encrypt only uses
+// it when the account is first made.
+func (s *Server) CertManager() *autocert.Manager {
 	return &autocert.Manager{
 		Prompt: autocert.AcceptTOS,
-		Email:  email,
+		Email:  s.global().ACMEEmail,
 		Cache:  certCache{s},
 		HostPolicy: func(_ context.Context, host string) error {
 			rt, err := s.resolve(host)

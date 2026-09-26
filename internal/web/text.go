@@ -13,10 +13,11 @@ import (
 
 // Members write plain text: no Markdown, nothing to learn or escape wrong.
 // On the way out it's HTML-escaped, line breaks are kept, and URLs become
-// links. Links to any of our own domains are rewritten to the current
-// address of what they point at, so a link typed before a domain change
-// still goes straight to the right page (the one exception to "we never
-// store our own absolute URLs" is text members type).
+// links. A link to one of our own hosts that now redirects (www.) is
+// rewritten to where it goes. A link to a group on any listed domain is
+// left as typed: every listed domain is the same site, so it works
+// wherever it's followed from (text members type is the one exception to
+// "we never store our own absolute URLs").
 
 var urlRE = regexp.MustCompile(`https?://[^\s<>"']+`)
 

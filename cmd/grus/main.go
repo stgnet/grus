@@ -34,7 +34,6 @@ import (
 	"github.com/stgnet/grus/internal/config"
 	"github.com/stgnet/grus/internal/fetch"
 	"github.com/stgnet/grus/internal/ids"
-	"github.com/stgnet/grus/internal/mail"
 	"github.com/stgnet/grus/internal/store"
 	"github.com/stgnet/grus/internal/web"
 )
@@ -105,7 +104,7 @@ func clusterOptions(c *config.Config) (cluster.Options, error) {
 	}
 	return cluster.Options{
 		ID: c.NodeID, Listen: c.ClusterAddr, Advertise: c.Advertise, TLS: t,
-		Bootstrap: c.Bootstrap, Voter: c.Voter, Full: c.Full, Join: c.Join,
+		Bootstrap: c.Bootstrap, Voter: c.Voter, Full: c.Full, Join: c.Join, AI: c.AIURL != "",
 	}, nil
 }
 
@@ -134,21 +133,26 @@ func serve(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// The first time the cluster runs, the domains table is empty: seed it
-	// from the config. After that the table is the truth.
+	// The first time the cluster runs (or the first time after upgrading
+	// to the global level), the global settings are seeded from this
+	// config. SeedGlobal does nothing after the first time: from then on
+	// site.db is the truth, and the admin page changes it.
 	if err := node.WaitLeader(30 * time.Second); err != nil {
 		log.Printf("warning: %v; continuing, waiting for the cluster", err)
 	}
 	if node.IsLeader() {
-		if p, err := st.PrimaryDomain(); err == nil && p == "" {
-			if _, err := node.Apply(&cmd.SetPrimaryDomain{Domain: c.PrimaryDomain, At: time.Now().Unix()}); err != nil {
-				return fmt.Errorf("seeding primary domain: %w", err)
-			}
+		seed := &cmd.SeedGlobal{Values: c.Seed.Values, Domains: c.Seed.Domains, MailFrom: c.Seed.MailFrom, At: time.Now().Unix()}
+		if _, err := node.Apply(seed); err != nil {
+			return fmt.Errorf("seeding the global settings from %s: %w", c.NodeID, err)
 		}
+	}
+	for _, k := range c.Obsolete {
+		log.Printf("config: %s no longer does anything and can be deleted", k)
 	}
 
 	go purgeDaily(ctx, node)
-	go faqNightly(ctx, node, c.FAQHour)
+	go faqNightly(ctx, node, st)
+	go exportSettings(ctx, node, st)
 
 	// Photos live on disk beside the databases, outside the Raft logs.
 	// Every node serves them to the others on the cluster port and keeps
@@ -173,31 +177,55 @@ func serve(args []string) error {
 	// of the nodes that have one.
 	meter := &ai.Meter{}
 	go meter.Report(ctx, node, c.NodeID, 5*time.Minute)
-	var pool *ai.Pool
 	var engine *ai.Engine
 	if c.AIURL != "" {
-		engine = &ai.Engine{LLM: ai.NewOllama(c.AIURL, c.AIModel, c.AIContext), Store: st, Meter: meter}
+		// The model and its context window are global settings, read on
+		// every call, so every node with a model runs the same one and a
+		// change on the admin page applies without a restart.
+		llm := ai.NewOllama(c.AIURL, "", 0)
+		llm.Current = func() (string, int) {
+			g, err := st.Global()
+			if err != nil {
+				return "", 16384
+			}
+			return g.AIModel, g.AIContext
+		}
+		engine = &ai.Engine{LLM: llm, Store: st, Meter: meter}
 		engine.Handler(rpcMux, node.AppliedIndex)
 		// The worker also reads outside pages for their summaries, with a
 		// fetcher that only reads what a group allows (internal/fetch).
 		w := &ai.Worker{Engine: engine, Log: node, IDs: gen, Name: c.NodeID, Now: time.Now, Fetch: fetch.New()}
 		go w.Run(ctx)
-		log.Printf("ai: model %s at %s", c.AIModel, c.AIURL)
+		if g, err := st.Global(); err == nil && g.AIModel == "" {
+			log.Printf("ai: ai_url is set but no ai_model is set on the admin page; model calls will fail until it is")
+		}
+		log.Printf("ai: local model at %s", c.AIURL)
 	}
-	if engine != nil || len(c.Workers) > 0 {
-		pool = &ai.Pool{Local: engine, Workers: c.Workers, Client: client, Applied: node.AppliedIndex}
-		go pool.Poll(ctx)
-	}
+	// Searches go to this node's own model and to every other node with
+	// one, from the node map (each node records there whether it has one).
+	pool := &ai.Pool{Local: engine, Client: client, Applied: node.AppliedIndex,
+		Workers: func() []string {
+			nodes, err := st.Nodes()
+			if err != nil {
+				return nil
+			}
+			var addrs []string
+			for _, n := range nodes {
+				if n.AI && n.ID != c.NodeID {
+					addrs = append(addrs, n.Addr)
+				}
+			}
+			return addrs
+		}}
+	go pool.Poll(ctx)
 
 	srv, err := web.New(&web.Server{
-		Store: st,
-		Log:   node,
-		IDs:   gen,
-		Mail: &mail.Mailer{Host: c.SMTPHost, Port: c.SMTPPort, User: c.SMTPUser, Pass: c.SMTPPass,
-			From: c.MailFrom, Dev: os.Stderr},
+		Store:      st,
+		Log:        node,
+		IDs:        gen,
+		MailLog:    os.Stderr,
 		Dev:        c.Dev,
 		PortSuffix: portSuffix(c),
-		IsOperator: c.IsOperator,
 		Blobs:      blobs,
 		PushBlob:   pushBlob(node, client, blobs),
 		FetchBlob:  fetchNow(node, client, blobs),
@@ -207,7 +235,6 @@ func serve(args []string) error {
 		Leads:      node.Leads,
 		AI:         pool,
 		Meter:      meter,
-		AskLimit:   c.AskLimit,
 	})
 	if err != nil {
 		return err
@@ -216,7 +243,7 @@ func serve(args []string) error {
 	// don't), on the cluster port.
 	node.ServeWeb(srv.Handler())
 	// Notification emails and the digest go out from each group's leader.
-	go srv.RunMail(ctx, c.DigestHour)
+	go srv.RunMail(ctx)
 
 	if c.HTTPAddr == "" && c.HTTPSAddr == "" {
 		// The Studio: a live full copy, serving pages only when another
@@ -254,9 +281,14 @@ func listen(ctx context.Context, c *config.Config, srv *web.Server) error {
 		s := newServer(c.HTTPAddr, srv.Handler())
 		servers = append(servers, s)
 		go func() { errc <- s.ListenAndServe() }()
-		log.Printf("dev: serving http on %s (http://%s%s/)", c.HTTPAddr, c.PrimaryDomain, portSuffix(c))
+		log.Printf("dev: serving http on %s", c.HTTPAddr)
+		if domains, err := srv.Store.Domains(); err == nil {
+			for _, d := range domains {
+				log.Printf("dev: http://%s%s/", d.Name, portSuffix(c))
+			}
+		}
 	} else {
-		m := srv.CertManager(c.ACMEEmail)
+		m := srv.CertManager()
 		s := newServer(c.HTTPSAddr, srv.Handler())
 		s.TLSConfig = m.TLSConfig()
 		servers = append(servers, s)
@@ -315,10 +347,10 @@ func purgeDaily(ctx context.Context, node *cluster.Node) {
 }
 
 // faqNightly has the leader queue the nightly FAQ batch (cmd.QueueFAQ) once
-// a day at faq_hour UTC, when the model is otherwise idle, and the weekly
-// outline pass and outside-page re-checks on Sundays. The batch only
-// queues jobs; workers do them.
-func faqNightly(ctx context.Context, node *cluster.Node, hour int) {
+// a day at the faq_hour global setting (UTC), when the model is otherwise
+// idle, and the weekly outline pass and outside-page re-checks on Sundays.
+// The batch only queues jobs; workers do them.
+func faqNightly(ctx context.Context, node *cluster.Node, st *store.Store) {
 	var lastDay string
 	tick := time.NewTicker(5 * time.Minute)
 	defer tick.Stop()
@@ -328,9 +360,13 @@ func faqNightly(ctx context.Context, node *cluster.Node, hour int) {
 			return
 		case <-tick.C:
 		}
+		g, err := st.Global()
+		if err != nil {
+			continue
+		}
 		now := time.Now().UTC()
 		day := now.Format("2006-01-02")
-		if !node.IsLeader() || now.Hour() != hour || day == lastDay {
+		if !node.IsLeader() || now.Hour() != g.FAQHour || day == lastDay {
 			continue
 		}
 		weekly := now.Weekday() == time.Sunday
@@ -339,6 +375,36 @@ func faqNightly(ctx context.Context, node *cluster.Node, hour int) {
 			continue
 		}
 		lastDay = day
+	}
+}
+
+// exportSettings copies the settings of groups made before settings moved
+// to site.db up from each group's own file, once (cmd.ExportSettings).
+// Only a group's leader can: it's a command on the group's log, and at
+// start the group's log may not have a leader yet. So it checks every few
+// seconds (one small query) until no group is left, which after an
+// upgrade is within moments of each group electing its leader, and then
+// stops for good; a new site has none to start with.
+func exportSettings(ctx context.Context, node *cluster.Node, st *store.Store) {
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for {
+		missing, err := st.GroupsMissingSettings()
+		if err == nil && len(missing) == 0 {
+			return
+		}
+		for _, g := range missing {
+			if node.Leads(g) {
+				if _, err := node.Apply(&cmd.ExportSettings{GroupID: g, At: time.Now().Unix()}); err != nil {
+					log.Printf("copying group %d's settings to site.db: %v", g, err)
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
 	}
 }
 

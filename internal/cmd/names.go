@@ -10,7 +10,7 @@ import (
 // commands because Apply is the last word on them; handlers check them first
 // only to give a friendlier error.
 
-// ReservedSlugs can never be group slugs. Subdomains of the primary are for
+// ReservedSlugs can never be group slugs. Subdomains of a domain are for
 // groups only, so nothing the system needs ever takes a group's name. This
 // list is the reverse protection: nobody can make login.nfb.group and
 // imitate the sign-in page, or claim a name that looks official.

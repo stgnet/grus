@@ -18,7 +18,6 @@ import (
 	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/cmd"
 	"github.com/stgnet/grus/internal/ids"
-	"github.com/stgnet/grus/internal/mail"
 	"github.com/stgnet/grus/internal/store"
 )
 
@@ -46,7 +45,7 @@ func newSite(t *testing.T) *testSite {
 	if err != nil {
 		t.Fatal(err)
 	}
-	must(t, lg, &cmd.SetPrimaryDomain{Domain: "nfb.group", At: 1})
+	must(t, lg, &cmd.SeedGlobal{Domains: []string{"nfb.group"}, Values: map[string]string{"operators": "scott@example.com"}, At: 1})
 	must(t, lg, &cmd.CreateGroup{GroupID: 42, Slug: "travato", Name: "Travato Owners", Description: "Vans", At: 1})
 	g, _ := st.GroupBySlug("travato")
 
@@ -56,12 +55,11 @@ func newSite(t *testing.T) *testSite {
 	}
 	buf := &bytes.Buffer{}
 	srv, err := New(&Server{
-		Blobs:      blobs,
-		Store:      st,
-		Log:        lg,
-		IDs:        ids.New(1),
-		Mail:       &mail.Mailer{From: "login@nfb.group", Dev: buf},
-		IsOperator: func(e string) bool { return e == "scott@example.com" },
+		Blobs:   blobs,
+		Store:   st,
+		Log:     lg,
+		IDs:     ids.New(1),
+		MailLog: buf,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -81,8 +79,9 @@ func must(t *testing.T, lg cluster.Log, c cmd.Command) {
 type browser struct {
 	site    *testSite
 	cookies map[string]*http.Cookie // for nfb.group and its subdomains
-	// Cookies for a group's own domain (by host): a real browser keeps
-	// them apart from the primary's, and so must this one for the bounce.
+	// Cookies for other domains (by domain): a real browser keeps them
+	// apart from nfb.group's, and so must this one, to test that each
+	// domain has its own sign-in.
 	other map[string]map[string]*http.Cookie
 }
 
@@ -98,9 +97,13 @@ func (b *browser) jar(host string) map[string]*http.Cookie {
 	if host == "nfb.group" || strings.HasSuffix(host, ".nfb.group") {
 		return b.cookies
 	}
-	if b.other[host] == nil {
-		b.other[host] = map[string]*http.Cookie{}
+	// Other domains: a cookie set for example.org covers its groups too.
+	for d := range b.other {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return b.other[d]
+		}
 	}
+	b.other[host] = map[string]*http.Cookie{}
 	return b.other[host]
 }
 
@@ -168,16 +171,66 @@ func TestRouting(t *testing.T) {
 	expect(t, b.do("GET", "https://a.travato.nfb.group/", nil), 404, "")
 	expect(t, b.do("GET", "https://example.com/", nil), 404, "")
 
-	// An alias host redirects to its group, keeping the path.
-	must(t, s.log, &cmd.AddHostAlias{Host: "travatoowners.org", GroupID: 42, At: 2})
-	expect(t, b.do("GET", "https://travatoowners.org/p/5", nil), 301, "https://travato.nfb.group/p/5")
-
-	// Changing the primary: the old one becomes an alternate, and every old
-	// link redirects to the same page on the new primary.
-	must(t, s.log, &cmd.SetPrimaryDomain{Domain: "grus.example", At: 3})
-	expect(t, b.do("GET", "https://travato.nfb.group/p/5", nil), 301, "https://travato.grus.example/p/5")
-	expect(t, b.do("GET", "https://nfb.group/login", nil), 301, "https://grus.example/login")
+	// A second domain is the same site, answered in its own domain: no
+	// redirects, and its links point at itself.
+	must(t, s.log, &cmd.AddDomain{Domain: "grus.example", At: 3})
+	expect(t, b.do("GET", "https://travato.nfb.group/", nil), 200, "")
+	w = b.do("GET", "https://grus.example/", nil)
+	expect(t, w, 200, "")
+	if !strings.Contains(w.Body.String(), "https://travato.grus.example/") || strings.Contains(w.Body.String(), "nfb.group") {
+		t.Fatalf("home page on grus.example should link only within grus.example:\n%s", w.Body.String())
+	}
 	expect(t, b.do("GET", "https://travato.grus.example/", nil), 200, "")
+	expect(t, b.do("GET", "https://www.grus.example/faq", nil), 301, "https://grus.example/faq")
+
+	// A domain under another listed domain goes by its own rules.
+	must(t, s.log, &cmd.AddDomain{Domain: "eu.nfb.group", At: 4})
+	expect(t, b.do("GET", "https://eu.nfb.group/", nil), 200, "")
+	expect(t, b.do("GET", "https://travato.eu.nfb.group/", nil), 200, "")
+
+	// Taken off the list, a domain is no longer answered.
+	must(t, s.log, &cmd.RemoveDomain{Domain: "grus.example"})
+	expect(t, b.do("GET", "https://travato.grus.example/", nil), 404, "")
+	must(t, s.log, &cmd.RemoveDomain{Domain: "eu.nfb.group"})
+	if _, err := s.log.Apply(&cmd.RemoveDomain{Domain: "nfb.group"}); !cmd.IsInput(err) {
+		t.Fatalf("removing the last domain: %v", err)
+	}
+}
+
+// TestDomainsAreSeparate: signing in on one domain signs in on that
+// domain (and its groups) only, the sign-in email comes in that domain's
+// name and through its own relay settings, and the account remembers the
+// domain for later email.
+func TestDomainsAreSeparate(t *testing.T) {
+	s := newSite(t)
+	must(t, s.log, &cmd.AddDomain{Domain: "grus.example", At: 2})
+	must(t, s.log, &cmd.SetDomainMail{Domain: "grus.example", MailFrom: "hello@grus.example"})
+
+	b := s.browser()
+	expect(t, b.do("POST", "https://grus.example/login", url.Values{"email": {"bob@example.com"}}), 303, "/code")
+	body := s.mail.String()
+	if !strings.Contains(body, "From: hello@grus.example") || !strings.Contains(body, "https://grus.example/link/") {
+		t.Fatalf("sign-in email for grus.example:\n%s", body)
+	}
+	token := regexp.MustCompile(`https://grus\.example/link/([A-Za-z0-9_-]+)`).FindStringSubmatch(body)[1]
+	w := b.do("POST", "https://grus.example/link/"+token, url.Values{})
+	expect(t, w, 303, "")
+	var domain string
+	for _, c := range w.Result().Cookies() {
+		if c.Name == sessionCookie {
+			domain = c.Domain
+		}
+	}
+	if domain != "grus.example" {
+		t.Fatalf("session cookie for %q, want grus.example", domain)
+	}
+	if b.jar("nfb.group")[sessionCookie] != nil {
+		t.Fatal("signing in on grus.example signed in on nfb.group")
+	}
+	u, _ := s.st.UserByName("bob@example.com")
+	if u == nil || u.Domain != "grus.example" {
+		t.Fatalf("account's domain: %+v", u)
+	}
 }
 
 func TestReservedSlug(t *testing.T) {
@@ -372,17 +425,16 @@ func TestAdminIsOperatorOnly(t *testing.T) {
 
 func TestPrivateAndHiddenGroups(t *testing.T) {
 	s := newSite(t)
-	db, _ := s.st.Group(42)
 	b := s.browser()
 
-	db.Exec(`UPDATE settings SET visibility = 'private'`)
+	s.st.Site().Exec(`UPDATE group_settings SET visibility = 'private' WHERE group_id = 42`)
 	w := b.do("GET", "https://travato.nfb.group/", nil)
 	expect(t, w, 200, "")
 	if !strings.Contains(w.Body.String(), "This group is private") {
 		t.Fatal("private group shows content to a signed-out reader")
 	}
 
-	db.Exec(`UPDATE settings SET visibility = 'hidden'`)
+	s.st.Site().Exec(`UPDATE group_settings SET visibility = 'hidden' WHERE group_id = 42`)
 	expect(t, b.do("GET", "https://travato.nfb.group/", nil), 404, "")
 	if strings.Contains(b.do("GET", "https://nfb.group/", nil).Body.String(), "Travato") {
 		t.Fatal("hidden group listed on the home page")
@@ -416,53 +468,6 @@ func TestPassOn(t *testing.T) {
 	s.srv.PassOn = func(http.ResponseWriter, *http.Request, int64) bool { return false }
 	if code := b.do("GET", "https://travato.nfb.group/", nil).Code; code != 200 {
 		t.Fatalf("fallback: %d", code)
-	}
-}
-
-// TestOwnDomainSignIn gives the group its own domain and checks the
-// bounce: a signed-in member arriving there is signed in on it after two
-// redirects, a signed-out visitor is bounced once and then left alone, and
-// /bounce only ever sends a code to a group's own domain.
-func TestOwnDomainSignIn(t *testing.T) {
-	s := newSite(t)
-	D := "https://travato-owners.com"
-	must(t, s.log, &cmd.SetGroupHost{GroupID: 42, Host: "travato-owners.com", At: 1})
-	// The old address now redirects to the new one.
-	expect(t, s.browser().do("GET", "https://travato.nfb.group/about", nil), 301, D+"/about")
-
-	alice := s.signedIn("alice@example.com", "alice")
-	w := alice.do("GET", D+"/about", nil)
-	expect(t, w, 303, "https://nfb.group/bounce?to="+url.QueryEscape(D+"/about"))
-	w = alice.do("GET", w.Header().Get("Location"), nil)
-	if w.Code != 303 || !strings.HasPrefix(w.Header().Get("Location"), D+"/_bounce?code=") {
-		t.Fatalf("bounce: %d %s", w.Code, w.Header().Get("Location"))
-	}
-	back := w.Header().Get("Location")
-	expect(t, alice.do("GET", back, nil), 303, "/about")
-	if p := alice.do("GET", D+"/about", nil).Body.String(); !strings.Contains(p, ">alice<") {
-		t.Fatalf("not signed in on the group's domain:\n%s", p)
-	}
-	// The code worked once.
-	other := s.browser()
-	expect(t, other.do("GET", back, nil), 303, "/about")
-	if other.jar("travato-owners.com")[sessionCookie] != nil {
-		t.Fatal("a used bounce code signed someone in")
-	}
-
-	// Signed out: bounced once, straight back, then served.
-	anon := s.browser()
-	w = anon.do("GET", D+"/", nil)
-	expect(t, w, 303, "")
-	expect(t, anon.do("GET", w.Header().Get("Location"), nil), 303, D+"/")
-	expect(t, anon.do("GET", D+"/", nil), 200, "")
-
-	// /bounce won't hand a code to anywhere but a group's own domain.
-	expect(t, alice.do("GET", "https://nfb.group/bounce?to="+url.QueryEscape("https://evil.example/x"), nil), 303, "/")
-	expect(t, alice.do("GET", "https://nfb.group/bounce?to="+url.QueryEscape("https://travato.nfb.group/"), nil), 303, "/")
-
-	// A domain under the primary, or already in use, is refused.
-	if _, err := s.log.Apply(&cmd.SetGroupHost{GroupID: 42, Host: "x.nfb.group", At: 2}); !cmd.IsInput(err) {
-		t.Fatalf("domain under the primary: %v", err)
 	}
 }
 

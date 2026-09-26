@@ -50,8 +50,48 @@ checkout before `sudo make install`.
 
 Open ports 80 and 443 to everyone, and the cluster port (7946) to the
 Studio. The first start (with `bootstrap = true`) creates the cluster and
-seeds the primary domain from `primary_domain`. Sign in with an `operator`
-email to reach `/admin`.
+seeds the global level from the config's seed lines: the first `domain`,
+the `operator` emails, the SMTP relay and the rest (see
+deploy/grus.conf.example). Sign in with an `operator` email to reach
+`/admin`, where all of that is changed from then on; the seed lines are
+never read again.
+
+### The global level
+
+grus.conf holds only what's particular to one node: its id, its files,
+where it listens, the cluster, and `ai_url` if it has a model. Everything
+else lives in site.db, is the same on every node, and is changed on
+`/admin`:
+
+- **Domains.** One list for the whole site, every domain equal. Any node
+  answers any listed domain, the same way, and every request is answered
+  in the domain it came in on: its links, sign-in, the group list, the
+  FAQ. So each domain's DNS can point at different nodes, and a node can
+  be tried out on its own by the domain that leads to it. Sign-in is per
+  domain (a browser keeps each domain's cookie apart). Each domain can have
+  its own SMTP relay and sender; without one it uses the global relay and
+  `login@<domain>`.
+- **Global settings.** Operators, the default SMTP relay, the Let's
+  Encrypt contact, the AI model and context window, the daily question
+  limit, and the FAQ and digest hours.
+- **Groups and their settings.** Every group's settings (name,
+  visibility, joining, AI and the rest) live in site.db beside the group
+  list; the group's own file keeps a copy for its own commands, and holds
+  the group's content: posts, members, the FAQ.
+
+Email that isn't a reply to a request (notifications, the digest) goes out
+in the domain the person last signed in on, through that domain's relay.
+
+**Upgrading** a site from before the global level: its `primary_domain`,
+`smtp_*`, `mail_from`, `operator`, `acme_email`, `ai_model`, `ai_context`,
+`ask_daily_limit`, `faq_hour` and `digest_hour` lines are adopted as the
+seed on the first start, so nothing needs editing first. Alternate
+domains become full, equal domains (they no longer redirect). A group's
+own domain and host aliases are dropped: add a domain to the list instead
+if it should keep being answered. `worker` lines are ignored (nodes with a
+model are found from the node map). Each group's settings are copied up
+to site.db by its leader within a minute or two of the start; settings
+changes wait for that. Afterwards the seed lines can be deleted.
 
 ## 3. The Studio
 
@@ -122,24 +162,18 @@ Nothing is lost but writes the Studio hadn't received when the VPS died
 isn't a recovery at all: the others hold a majority of each log's voters
 and carry on. `recover` is for when the voters are gone.
 
-## 6. Changing the primary domain
+## 6. Adding and removing domains
 
-1. Set up the new domain's DNS (docs/dns.md), including mail records.
-2. On `/admin`, add it as an alternate, then click **Make primary**.
-3. Every group's address, the home page and sign-in move at once. The old
-   primary becomes an alternate that 301-redirects every old link to the
-   same page on the new one.
-4. Update `mail_from` in grus.conf and restart, and keep renewing the old
-   domain for as long as links to it are out there.
+1. Set up the new domain's DNS (docs/dns.md), including mail records,
+   pointing at whichever nodes should answer it.
+2. On `/admin`, add it. It's live on every node at once, with the same
+   groups and content, and pages asked for on it link within it.
+3. If mail for it should go through a different relay, or come from a
+   different sender, set that on the domain's row.
 
-Sessions on the old domain don't carry over (people sign in again once).
-
-A group can also have its own domain (the admin page's "A group's own
-domain"): point the domain's DNS at the nodes, set it, and the group's
-`<slug>.<primary>` address redirects there. Sign-in still happens on the
-primary. A member arriving on the group's domain is bounced through the
-primary once, invisibly, and comes back signed in there too (a one-time
-code, good for a minute, traded for a session on that domain).
+Removing a domain stops every node answering it. Keep renewing a domain
+for as long as links to it are out there. The last domain can't be
+removed.
 
 ## 7. The model (AI)
 
@@ -161,8 +195,10 @@ and summaries and link notes wait in the job queue until a worker is back.
    often an expected thread made the top three and how long 90% of
    searches took. The site gives up on a search after 8 seconds, so that
    number needs to be comfortably under it.
-3. Set `ai_url`, `ai_model` and `ai_context` in the Studio's grus.conf and
-   `worker = <studio cluster address>` in the VPS's, then restart both.
+3. Set `ai_url` in the Studio's grus.conf and restart it; it records in
+   the node map that it has a model, and every other node sends it
+   searches from then on. Set `ai_model` (and `ai_context`) on `/admin`:
+   every node with a model runs that one, and a change applies at once.
 4. `/admin` shows, per day, how many model calls each kind of work made,
    tokens in and out, seconds, soft fails by cause, and the job queue.
 
@@ -172,7 +208,7 @@ about it. Nothing is ever sent to an outside AI service.
 
 ## 8. The FAQ and outside sources
 
-Each night at `faq_hour` (UTC, default 8) the leader queues the FAQ batch:
+Each night at `faq_hour` (a global setting; UTC, default 8) the leader queues the FAQ batch:
 entries whose threads changed are rewritten, and threads that grew into a
 well-answered cluster get a new entry (at most 20 a night per group). On
 Sundays the batch also tidies the topic outline and re-reads outside pages
@@ -183,7 +219,7 @@ Mods (or anyone they trust) can edit any entry; a locked entry keeps its
 wording and the model only leaves a suggestion beside it. Every change is
 kept in the entry's history and can be rolled back.
 
-The FAQ on the bare primary domain is the site-wide one. Its list of groups
+The FAQ on the bare domain (any of them) is the site-wide one. Its list of groups
 and their top topics is automatic; its entries are written by operators on
 that page.
 

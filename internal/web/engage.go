@@ -125,7 +125,7 @@ func noticePath(n store.Notification) string {
 }
 
 // noticeViews words a list of notifications, all from one group.
-func (s *Server) noticeViews(g *store.Group, primary string, list []store.Notification) ([]noticeView, error) {
+func (s *Server) noticeViews(g *store.Group, domain string, list []store.Notification) ([]noticeView, error) {
 	var ids []int64
 	for _, n := range list {
 		ids = append(ids, n.ActorID)
@@ -137,12 +137,12 @@ func (s *Server) noticeViews(g *store.Group, primary string, list []store.Notifi
 	var out []noticeView
 	for _, n := range list {
 		out = append(out, noticeView{Notification: n, Group: g.Name, Text: noticeText(n, g.Name, names),
-			URL: s.groupURL(g, primary, noticePath(n)), Unread: n.ReadAt == 0})
+			URL: s.groupURL(g, domain, noticePath(n)), Unread: n.ReadAt == 0})
 	}
 	return out, nil
 }
 
-// notificationsPage is the bell's page, on the primary domain: the newest
+// notificationsPage is the bell's page, on the bare domain: the newest
 // notifications from every group, newest first. Opening it marks what it
 // shows as read (up to the newest shown in each group, so anything that
 // arrives meanwhile stays unread); they're still highlighted this once.
@@ -165,7 +165,7 @@ func (s *Server) notificationsPage(w http.ResponseWriter, r *http.Request) {
 		if err != nil || len(list) == 0 {
 			continue // a group whose file isn't on this node, or nothing there
 		}
-		views, err := s.noticeViews(g, rt.primary, list)
+		views, err := s.noticeViews(g, rt.domain, list)
 		if err != nil {
 			s.serverError(w, r, err)
 			return

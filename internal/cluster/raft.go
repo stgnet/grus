@@ -38,6 +38,10 @@ type Options struct {
 	// non-voter (the Studio). A node can be neither: a small VPS that
 	// holds only the groups an operator places on it.
 	Voter, Full bool
+	// AI: this node runs a model (ai_url in its config). It's recorded in
+	// the node map, which is how the other nodes find where to send
+	// searches, rather than each listing the workers in its own config.
+	AI bool
 	// Join lists other nodes' cluster addresses. A new node registers
 	// itself in the node map through them; after that, the map is how the
 	// nodes find each other.

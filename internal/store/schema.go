@@ -218,6 +218,83 @@ CREATE TABLE bounces (
   expires_at INTEGER NOT NULL
 );
 `,
+	// 7: the global level. site.db holds everything needed to run the
+	// system except the groups' own content: the list of domains, the
+	// global settings, and every group's settings. grus.conf keeps only
+	// what a node needs before it can read site.db (who it is, where its
+	// files are, how to reach the cluster).
+	//
+	// Domains: there's no primary any more. Every listed domain is equal:
+	// any node answers any of them, the same way, and a request is answered
+	// in the domain it came in on (links, sign-in, the group list). So
+	// alternates, a group's own domain, host aliases and the sign-in bounce
+	// between domains all go. A domain can have its own mail settings,
+	// since sign-in email for a domain should come from that domain.
+	`
+CREATE TABLE domains_v7 (
+  name       TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  -- Mail for this domain. smtp_host '' means the global SMTP settings;
+  -- mail_from '' means login@<name>.
+  smtp_host  TEXT    NOT NULL DEFAULT '',
+  smtp_port  INTEGER NOT NULL DEFAULT 0,
+  smtp_user  TEXT    NOT NULL DEFAULT '',
+  smtp_pass  TEXT    NOT NULL DEFAULT '',
+  mail_from  TEXT    NOT NULL DEFAULT ''
+);
+INSERT INTO domains_v7 (name, created_at) SELECT name, created_at FROM domains;
+DROP TABLE domains;
+ALTER TABLE domains_v7 RENAME TO domains;
+
+-- groups.main_host is no longer used. SQLite can't drop a UNIQUE column,
+-- so it stays, always NULL.
+UPDATE groups SET main_host = NULL;
+DROP TABLE host_aliases;
+DROP TABLE bounces;
+
+-- The domain someone last signed in on. Email that isn't a reply to a
+-- request (notifications, the digest) links to, and is sent through, that
+-- domain. login_tokens carries it from the sign-in form to the account.
+ALTER TABLE users ADD COLUMN domain TEXT NOT NULL DEFAULT '';
+ALTER TABLE login_tokens ADD COLUMN domain TEXT NOT NULL DEFAULT '';
+
+-- Global settings, one row per key (see store.Global for the keys). A
+-- missing key means its default.
+CREATE TABLE settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- Every group's settings: the same columns as the settings row in the
+-- group's own file, which from here on is a copy kept in step by
+-- UpdateSettings (the group's own commands read that copy, since a
+-- command reads only its own file). Groups made before this migration get
+-- their row from that file (cmd.ExportSettings); until then, reads fall
+-- back to it.
+CREATE TABLE group_settings (
+  group_id        INTEGER PRIMARY KEY,
+  name            TEXT NOT NULL,
+  description     TEXT NOT NULL DEFAULT '',
+  rules           TEXT NOT NULL DEFAULT '',
+  visibility      TEXT NOT NULL DEFAULT 'public'
+                  CHECK (visibility IN ('public', 'private', 'hidden')),
+  join_policy     TEXT NOT NULL DEFAULT 'open'
+                  CHECK (join_policy IN ('open', 'approval', 'invite')),
+  join_questions  TEXT NOT NULL DEFAULT '',
+  allow_anonymous INTEGER NOT NULL DEFAULT 0,
+  hold_first_post INTEGER NOT NULL DEFAULT 0,
+  allow_indexing  INTEGER NOT NULL DEFAULT 0,
+  ai_enabled      INTEGER NOT NULL DEFAULT 1,
+  ai_local_only   INTEGER NOT NULL DEFAULT 1,
+  public_faq      INTEGER NOT NULL DEFAULT 1,
+  vote_threshold  INTEGER NOT NULL DEFAULT 5,
+  notify_hidden   INTEGER NOT NULL DEFAULT 1
+);
+
+-- Nodes that run a model, found from the node map rather than listed in
+-- each node's config (was the worker key).
+ALTER TABLE nodes ADD COLUMN ai INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 var groupMigrations = []string{
