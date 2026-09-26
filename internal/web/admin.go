@@ -20,8 +20,7 @@ type adminData struct {
 	Global  []globalField  // the global settings, in store.GlobalKeys order
 	DNS     []domainChecks // what DNS says about each domain (dnscheck.go)
 	Version string
-	Nodes   []adminNode // the node map (M7); empty on a single node with none registered
-	Cluster map[string]string
+	Nodes   []adminNode       // the node map (M7); empty on a single node with none registered
 	Form    map[string]string // values to refill after an error
 
 	AI         []*aiDay
@@ -40,9 +39,6 @@ type adminNode struct {
 	store.Node
 	Groups []string // slugs, "(main)" marked
 }
-
-// statser is implemented by the cluster node (not by the local test log).
-type statser interface{ Stats() map[string]string }
 
 func (s *Server) operator(w http.ResponseWriter, r *http.Request) *store.User {
 	u := s.user(r)
@@ -84,9 +80,6 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, u *store.Us
 	}
 	for _, g := range groups {
 		d.Groups = append(d.Groups, adminGroup{Group: g, URL: s.groupURL(&g, rt.domain, "/")})
-	}
-	if st, ok := s.Log.(statser); ok {
-		d.Cluster = st.Stats()
 	}
 	if err := s.adminNodes(&d, groups); err != nil {
 		s.serverError(w, r, err)

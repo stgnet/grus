@@ -52,6 +52,7 @@ func (n *Node) upkeepOnce(ctx context.Context) {
 	n.register()
 	n.checkNumber()
 	n.placeFiles(ctx)
+	n.refreshStatus()
 	n.swapReports(ctx)
 	n.catchUp(ctx)
 	for _, l := range n.heldLogs() {

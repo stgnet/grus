@@ -760,3 +760,68 @@ func TestTwoSitesFindEachOther(t *testing.T) {
 		})
 	}
 }
+
+// TestNetworkStatus: any node's Network view shows every node, who hears
+// whom (from the other nodes' own reports, not only this node's), and how
+// far along each copy of each file is; and a node that stops shows up as
+// not heard from, in every other node's row.
+func TestNetworkStatus(t *testing.T) {
+	caDir := testCA(t, "n1", "n2", "n3")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	n2 := newNode(t, caDir, "n2", 2, n1.addr()).start()
+	n3 := newNode(t, caDir, "n3", 3, n1.addr()).start()
+	ready(t, n1, n2, n3)
+	newGroup(n1, 100, "travato", 7)
+	waitHolds(t, n1, 100, 7)
+
+	allHear := func(nw Network) bool {
+		if len(nw.Nodes) != 3 {
+			return false
+		}
+		for i := range nw.Heard {
+			for _, c := range nw.Heard[i] {
+				if !c.Self && !c.OK {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	waitFor(t, "n3 to see every node hearing every other", func() bool { return allHear(n3.n.Network()) })
+
+	nw := n3.n.Network()
+	for _, nd := range nw.Nodes {
+		if !nd.InMap || nd.Status == nil || !nd.Fresh {
+			t.Errorf("node %s: %+v", nd.ID, nd)
+		}
+	}
+	var site *NetFile
+	for i := range nw.Files {
+		if nw.Files[i].Log == cmd.SiteLog {
+			site = &nw.Files[i]
+		}
+	}
+	if site == nil || len(site.Holders) != 3 {
+		t.Fatalf("site.db holders: %+v", site)
+	}
+
+	// n2 stops: n1 and n3 each say they stopped hearing from it, and n1's
+	// view shows that n3 did too (from n3's report).
+	n2.stop()
+	waitFor(t, "n1 to see that nobody hears from n2", func() bool {
+		nw := n1.n.Network()
+		col := -1
+		for j, nd := range nw.Nodes {
+			if nd.ID == "n2" {
+				col = j
+			}
+		}
+		for i, nd := range nw.Nodes {
+			if nd.ID != "n2" && nw.Heard[i][col].OK {
+				return false
+			}
+		}
+		return true
+	})
+}

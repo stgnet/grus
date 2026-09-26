@@ -48,6 +48,9 @@ type Report struct {
 	// Seen, in a report sent back to a caller, is the address the caller's
 	// request came from: how a node learns its public IP.
 	Seen string `json:"seen,omitempty"`
+	// Status is the node's account of its own health (status.go). Older
+	// versions don't send it.
+	Status *NodeStatus `json:"status,omitempty"`
 }
 
 // LogReport is a node's report on one file it holds.
@@ -64,7 +67,8 @@ type LogReport struct {
 
 // report builds this node's report.
 func (n *Node) report() (*Report, error) {
-	r := &Report{ID: n.o.ID, Origin: n.id.origin(), Clock: n.clock.Now(), Logs: map[string]LogReport{}, Addr: n.dialable()}
+	r := &Report{ID: n.o.ID, Origin: n.id.origin(), Clock: n.clock.Now(), Logs: map[string]LogReport{}, Addr: n.dialable(),
+		Status: n.status.Load()}
 	for _, l := range n.heldLogs() {
 		e := n.engineFor(l)
 		e.mu.Lock()

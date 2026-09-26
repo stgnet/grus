@@ -106,6 +106,14 @@ func OpsAfter(q Querier, p Position, upTo int64) ([]OpRow, error) {
 	return scanOps(q.Query(query+` ORDER BY stamp, origin, seq`, args...))
 }
 
+// CountOpsAfter counts a copy's operations after position p: for a live
+// copy and its stable copy's position, how many aren't final yet.
+func CountOpsAfter(q Querier, p Position) (int, error) {
+	var n int
+	err := q.QueryRow(`SELECT COUNT(*) FROM ops WHERE (stamp, origin, seq) > (?, ?, ?)`, p.Stamp, p.Origin, p.Seq).Scan(&n)
+	return n, err
+}
+
 // OpsNewerThan lists up to limit of a copy's operations that someone whose
 // version vector is have hasn't got, oldest first for each origin, so they
 // can be applied as they come. gap reports that some they need have been

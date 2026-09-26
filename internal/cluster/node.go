@@ -49,9 +49,12 @@ type Options struct {
 
 	tick     time.Duration                // how often upkeep runs (default 2s)
 	publicIP func(context.Context) string // tests: this node's public IP (default: ask via the domains)
-	joinWait time.Duration                // tests: give up joining after this (0 = never)
-	ackWait  time.Duration                // how long a write waits for another node to have it (default 500ms)
-	now      func() time.Time             // the wall clock (tests replace it)
+	// Version is this build's version, for the network status page.
+	Version string
+
+	joinWait time.Duration    // tests: give up joining after this (0 = never)
+	ackWait  time.Duration    // how long a write waits for another node to have it (default 500ms)
+	now      func() time.Time // the wall clock (tests replace it)
 }
 
 // Node is this server's part of the cluster.
@@ -75,6 +78,13 @@ type Node struct {
 	// lastLook: when a node alone in its map last looked for others
 	// (swapReports; only the upkeep loop touches it).
 	lastLook time.Time
+
+	// This node's own status for its reports (status.go), and when it was
+	// read. statusAt is only touched by the upkeep loop; the page reads
+	// status through the atomic pointer.
+	status   atomic.Pointer[NodeStatus]
+	statusAt time.Time
+	started  time.Time
 
 	where   addrState    // where others reach this node (addr.go)
 	refuse  atomic.Value // string: why this node won't take writes, "" when it will
@@ -124,6 +134,7 @@ func Start(o Options, st *store.Store) (*Node, error) {
 		mux: mux, client: NewClient(o.TLS), engines: map[cmd.LogID]*engine{}, copies: map[cmd.LogID]bool{},
 		peers: map[string]peerState{}, warned: map[string]time.Time{}, kick: make(chan struct{}, 1), done: make(chan struct{}), cancel: cancel}
 	n.refuse.Store("")
+	n.started = time.Now()
 	n.rpc = mux.listen(rpcProto, hostAddr(o.Listen))
 	n.serveRPC()
 
@@ -432,63 +443,6 @@ func (n *Node) heardFromAll() bool {
 		}
 	}
 	return true
-}
-
-// Stats is a summary for the admin page: this node, and each file it
-// holds, with how far it has got.
-func (n *Node) Stats() map[string]string {
-	st := map[string]string{"node": n.o.ID, "origin": n.id.origin(), "rewinds": fmt.Sprint(n.rewinds.Load())}
-	n.where.mu.Lock()
-	switch {
-	case n.where.dialable != "":
-		st["reached at"] = n.where.dialable
-	case n.where.publicIP != "":
-		st["reached at"] = "nowhere: public IP " + n.where.publicIP + " can't be reached on the cluster port, so this node does the talking"
-	default:
-		st["reached at"] = "nowhere yet: its public IP isn't known, so this node does the talking"
-	}
-	n.where.mu.Unlock()
-	if why := n.refuse.Load().(string); why != "" {
-		st["refusing writes"] = why
-	}
-	var logs []string
-	for _, l := range n.heldLogs() {
-		e := n.engineFor(l)
-		e.mu.Lock()
-		f := n.stablePoint(e)
-		var waiting int
-		if live, err := n.st.Live(e.gid()); err == nil {
-			if stable, err := n.st.Stable(e.gid()); err == nil {
-				if spos, err := store.PositionOf(stable); err == nil {
-					if rows, err := store.OpsAfter(live, spos, 0); err == nil {
-						waiting = len(rows)
-					}
-				}
-			}
-		}
-		e.mu.Unlock()
-		desc := fmt.Sprintf("%s (%d not yet stable", l, waiting)
-		if f == 0 {
-			desc += ", waiting to hear from every node"
-		}
-		logs = append(logs, desc+")")
-	}
-	st["files"] = fmt.Sprint(logs)
-	nodes, _ := n.st.Nodes()
-	var heard []string
-	for _, nd := range nodes {
-		if nd.ID == n.o.ID {
-			continue
-		}
-		p := n.peer(nd.ID)
-		if p.heard.IsZero() {
-			heard = append(heard, nd.ID+": never")
-		} else {
-			heard = append(heard, fmt.Sprintf("%s: %s ago", nd.ID, time.Since(p.heard).Round(time.Second)))
-		}
-	}
-	st["last heard from"] = fmt.Sprint(heard)
-	return st
 }
 
 // Shutdown stops this node. The others carry on without it.

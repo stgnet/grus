@@ -68,6 +68,7 @@ func clusterOptions(c *config.Config) (cluster.Options, error) {
 	return cluster.Options{
 		ID: c.NodeID, Listen: c.ClusterAddr, Advertise: c.Advertise, TLS: t,
 		Num: c.NodeNum, Voter: c.Voter, Full: c.Full, Join: c.Join, AI: c.AIURL != "",
+		Version: version,
 	}, nil
 }
 

@@ -136,6 +136,7 @@ func New(s *Server) (*Server, error) {
 	h.HandleFunc("POST /admin/domains/mail", s.adminDomainMail)
 	h.HandleFunc("POST /admin/global", s.adminGlobal)
 	h.HandleFunc("GET /admin/tools", s.adminTools)
+	h.HandleFunc("GET /admin/network", s.adminNetwork)
 	h.HandleFunc("POST /admin/tools/import", s.toolImport)
 	h.HandleFunc("POST /admin/tools/bench", s.toolBench)
 	h.HandleFunc("POST /admin/tools/loadtest", s.toolLoad)

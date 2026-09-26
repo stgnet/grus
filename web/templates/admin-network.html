@@ -1,0 +1,43 @@
+{{define "content"}}
+<p><a href="/admin">Admin</a></p>
+<h1>Network</h1>
+
+{{with .Data}}
+{{if not .Self}}
+<p class="muted">This is a single node with no cluster.</p>
+{{else}}
+<p class="muted">As {{.Self}} knows it, at {{.At}}. Each node sends every other its report every couple of seconds, so this shows every node's view, not only this one's. The page refreshes itself.</p>
+
+{{if .Warnings}}
+<h2>Needs looking at</h2>
+<ul>{{range .Warnings}}<li class="error">{{.}}</li>{{end}}</ul>
+{{else}}
+<p>All nodes are in touch and up to date.</p>
+{{end}}
+
+<h2>Nodes</h2>
+<div class="scroll-x"><table>
+  <tr><th>Node</th><th>Reached at</th><th>Role</th><th>Version</th><th>Up</th><th>Last heard</th><th>Rewinds</th><th>State</th></tr>
+  {{range .Nodes}}<tr{{if .Bad}} class="bad"{{end}}>
+    <td>{{.ID}}{{if .Self}} (this one){{end}}</td><td><code{{if .IsAddr}} class="nowrap"{{end}}>{{.Reach}}</code></td><td>{{.Role}}</td>
+    <td><code>{{.Version}}</code></td><td>{{.Up}}</td><td>{{.Heard}}</td><td>{{.Rewinds}}</td><td>{{.State}}</td></tr>{{end}}
+</table></div>
+
+<h2>Who hears from whom</h2>
+<p class="muted">Each row is a node; each column, how long ago it last heard from that node. A node others can't reach still shows as heard: it connects to them.</p>
+<div class="scroll-x"><table>
+  <tr><th></th>{{range .Names}}<th>{{.}}</th>{{end}}</tr>
+  {{range $i, $row := .Grid}}<tr><th>{{index $.Data.Names $i}}</th>{{range $row}}<td{{if .Bad}} class="bad"{{end}}>{{.Text}}</td>{{end}}</tr>{{end}}
+</table></div>
+
+<h2>Files</h2>
+<p class="muted">Each file and the nodes holding it: how many changes each is missing (as of its last report; a few for a moment is normal), and how many it has that aren't final yet. "Final up to" is how old the point is up to which every holder has everything; it only falls behind while some node isn't heard from.</p>
+<div class="scroll-x"><table>
+  <tr><th>File</th><th>Holders</th><th>Final up to</th></tr>
+  {{range .Files}}<tr{{if .Bad}} class="bad"{{end}}><td>{{.Name}}</td>
+    <td>{{range $i, $h := .Holders}}{{if $i}}<br>{{end}}<span{{if $h.Bad}} class="error"{{end}}>{{$h.Text}}</span>{{end}}</td>
+    <td>{{.Final}}</td></tr>{{end}}
+</table></div>
+{{end}}
+{{end}}
+{{end}}

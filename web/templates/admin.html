@@ -1,5 +1,6 @@
 {{define "content"}}
 <h1>Admin</h1>
+<p><a href="/admin/network">Network</a>: every node, who hears from whom, and how far along each copy is.</p>
 <p><a href="/admin/tools">Tools</a>: import an archive, measure a model, load test.</p>
 
 <h2>Groups</h2>
@@ -125,8 +126,4 @@ Job queue: {{.Data.QueueDue}} ready to run, {{.Data.QueueLater}} waiting for thr
 
 {{if .Data.Version}}<p class="muted">grus {{.Data.Version}}</p>{{end}}
 
-{{if .Data.Cluster}}
-<h2>Cluster</h2>
-<table>{{range $k, $v := .Data.Cluster}}<tr><th>{{$k}}</th><td><code>{{$v}}</code></td></tr>{{end}}</table>
-{{end}}
 {{end}}

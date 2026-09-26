@@ -17,6 +17,9 @@ h1 { font-size: 1.6rem; line-height: 1.25; }
 .lead { font-size: 1.1rem; }
 .muted { color: var(--muted); }
 .error { color: var(--err); font-weight: 500; }
+/* A row or cell that needs looking at (the admin Network page). */
+.bad, .bad code { color: var(--err); }
+code.nowrap { white-space: nowrap; word-break: normal; }
 .tag { font-size: .8rem; color: var(--muted); border: 1px solid var(--line); border-radius: 1rem; padding: 0 .5rem; }
 .cards { list-style: none; padding: 0; }
 .cards li { border: 1px solid var(--line); border-radius: .5rem; padding: .8rem 1rem; margin: .6rem 0; }

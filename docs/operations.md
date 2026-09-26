@@ -141,12 +141,29 @@ within seconds and the Studio re-registers itself at it.
 
 Without the forward the Studio still keeps its full copy: it finds that
 the VPS can't reach it and makes every connection itself. Only quick
-answers are lost. The admin page's Cluster section shows which it is
+answers are lost. The admin page's Network page shows which it is
 ("reached at", or that it does the talking).
 
-The admin page's Cluster section shows, for this node, each file it
-holds and how many of its operations aren't stable yet, when it last
-heard from each other node, and how many rewinds it has done.
+### The Network page
+
+`/admin/network` (linked from the admin page; operators only, like the
+rest of `/admin`) shows the whole network from whichever node answers it,
+because every node's report to the others carries its own status:
+
+- **Needs looking at:** a node not heard from, one that answers but isn't
+  in the node map (a second site started by mistake: they merge by
+  themselves), one refusing writes, a node that runs the model but can't
+  be reached (searches get plain results), different versions, and a file
+  whose changes haven't become final for a while.
+- **Nodes:** where each is reached, its role, version, how long it's been
+  up, when this node last heard from it, and its rewinds.
+- **Who hears from whom:** every node's view of every other, so a link
+  down between two other nodes shows too.
+- **Files:** site.db and each group, with each holder's copy: up to date
+  or how many changes behind, how many aren't final yet, and how old the
+  point is up to which they are.
+
+It refreshes itself every 10 seconds.
 
 ## 4. No backups, no restores
 

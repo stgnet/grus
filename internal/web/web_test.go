@@ -389,10 +389,12 @@ func TestAdminIsOperatorOnly(t *testing.T) {
 
 	member := signIn("someone@example.com")
 	expect(t, member.do("GET", "https://nfb.group/admin", nil), 404, "")
+	expect(t, member.do("GET", "https://nfb.group/admin/network", nil), 404, "")
 	expect(t, member.do("POST", "https://nfb.group/admin/groups", url.Values{"slug": {"x1"}, "name": {"X"}}), 404, "")
 
 	op := signIn("scott@example.com")
 	expect(t, op.do("GET", "https://nfb.group/admin", nil), 200, "")
+	expect(t, op.do("GET", "https://nfb.group/admin/network", nil), 200, "")
 	expect(t, op.do("POST", "https://nfb.group/admin/groups",
 		url.Values{"slug": {"promaster"}, "name": {"ProMaster Vans"}}), 303, "/admin")
 	expect(t, op.do("GET", "https://promaster.nfb.group/", nil), 200, "")
