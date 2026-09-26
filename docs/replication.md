@@ -1,222 +1,227 @@
-# Replication without a leader (design)
+# Replication without a leader
 
-Status: proposed, not built. This replaces Raft (internal/cluster) with
-replication that keeps working at any number of nodes, down to one, with no
-leader, no quorum, no recovery procedure and no backups.
+This replaced Raft (M9). Every node applies every write it can see, in one
+order that every node works out for itself, so there is no leader, no
+quorum, no election and no recovery procedure. A node that can reach no
+other node carries on, reads and writes, and merges with the others when
+it can reach them again.
 
-## What it has to do
+## What it guarantees
 
-1. **Any node alone keeps working.** A node that can reach no other node
-   still serves every group it holds and accepts every kind of write. No
-   read-only mode, ever.
-2. **Nothing is lost while a node is alive.** A write is stored on the node
-   that accepted it before the person is told it worked, and it's copied to
-   the other nodes as soon as they can be reached. The only loss possible
-   is a node destroyed before it could pass on its latest writes; with other
-   nodes reachable that's a fraction of a second (see "Passing writes on").
-3. **Every node ends up the same.** Once nodes can reach each other again,
-   directly or through any chain of other nodes, every copy of a file
-   converges to the same content, without anyone doing anything.
-4. **Growth is just starting a node.** The first node starts empty. Every
-   other node starts with a `join` line naming any running node, copies the
-   files it should hold, and stays in step. Losing nodes is just losing
-   copies: as long as one copy of each file survives anywhere, starting new
-   nodes pointed at the survivors rebuilds everything. A node that holds
-   everything (the Studio) is the copy of last resort.
-5. **The engine doesn't care what's under `data_dir`.** It's a directory.
+1. **Any node alone keeps working.** A node serves every group it holds
+   and accepts every kind of write, whether or not it can reach any other
+   node. There is no read-only mode.
+2. **A write is stored before it's acknowledged.** It's in the accepting
+   node's own file (in the same SQLite transaction as its effects) before
+   the page says it worked, and it's sent to the other nodes at once. It
+   can be lost only if that node is destroyed before any other node heard
+   of it.
+3. **Every node ends up the same.** Once nodes can reach each other, even
+   through a chain of other nodes, every copy of a file converges to the
+   same content, by itself.
+4. **Growing is starting a node.** The first node starts empty. Every
+   other node starts with a `join` line naming any running node, copies
+   the files it should hold, and stays in step. Losing nodes is losing
+   copies; as long as one copy of a file survives, starting a node pointed
+   at it rebuilds the rest. A node that holds everything (the Studio) is
+   the copy of last resort.
+5. **The engine doesn't care what's under `data_dir`.** It's a directory
+   that behaves like a local disk.
 
-## The idea in one paragraph
+## The idea
 
 Every write is still a command (internal/cmd), and every node still applies
-commands one at a time to its own SQLite files. What changes is who decides
-the order. Today a Raft leader does, so nothing can be written without one.
-Instead, each command gets a timestamp from the node that accepted it, and
-the order is simply "by timestamp". Each node applies commands as they
-arrive; when one arrives late (it was made on the far side of a network
-split, or on a node that was offline), the node rewinds that file to just
-before where the late command belongs and applies everything again in the
-right order. Since every node ends up applying the same commands in the
-same order, every node ends up with the same files. This is the design of
-Bayou (Xerox PARC, 1995), adapted to one log per file, which Grus already
-has.
+commands one at a time to its own SQLite files; the rules in
+internal/cmd/applier.go still hold. What changed is who decides the order.
 
-What this keeps: every command's Apply works as it does now. They're
-deterministic, carry their own values, may read the file, and may fail.
-The rules in internal/cmd/applier.go stay true, with "in the same order"
-meaning the timestamp order rather than a leader's.
-
-## The pieces
+Each command becomes an **operation**, stamped by the node that accepted
+it. Operations on a file are applied in stamp order. When an operation
+arrives that belongs before ones already applied (it was made during a
+split, or on a node that was briefly unreachable), the node **rewinds**
+that file to a saved copy from before it and applies everything again in
+order. Every node applies the same operations in the same order, so every
+node ends up with the same file. (This is the design of Bayou, Xerox PARC,
+1995, with one log per file, which Grus already had.)
 
 ### Operations
 
-An operation is a command plus where it came from:
-
 ```
-origin   the node that accepted it (node id)
-seq      that node's count of operations on this file: 1, 2, 3, ... no gaps
+origin   who accepted it: the node's id plus an incarnation (the time its
+         data directory was created), so a node rebuilt from scratch
+         never reuses an old origin's numbers
+seq      that origin's count of operations on this file: 1, 2, 3, no gaps
 stamp    a hybrid logical clock reading (below)
-file     site, or a group id (cmd.LogOf, as now)
-command  the encoded command (cmd.Encode, as now)
+cause    for a follow-up sent by another operation, that operation's
+         identity, so a follow-up sent twice applies once
+command  the encoded command
 ```
 
-Every node keeps, per file, every operation it has, in an `ops` table in
-that file itself. Adding an operation and applying it happen in the same
-SQLite transaction, so a node can never have one without the other. The
-`applied` table (today's Raft index) becomes the node's version vector for
-the file: for each origin, the highest seq it has.
+A file's `ops` table holds its operations, and its `seqs` table (the
+version vector) holds, for each origin, the highest seq it has. An
+operation's row and its effects are written in one transaction.
 
-### The order
+### Order
 
-Operations on a file are ordered by `(stamp, origin, seq)`. That's a total
-order every node computes identically from the operations alone.
+Operations are ordered by `(stamp, origin, seq)`, a total order any node
+computes from the operations alone.
 
-The stamp is a hybrid logical clock: the node's wall clock in milliseconds,
-but never less than one past the largest stamp the node has seen. So an
-operation made after seeing another always sorts after it, whatever the
-clocks say. A comment made on a post always sorts after the post, even when
-the commenter's node has a slow clock. Clocks only need to be roughly right
-(NTP); the clock keeps order correct even if they aren't.
+The stamp is a hybrid logical clock: wall-clock milliseconds, but never
+less than one more than the largest stamp or clock reading this node has
+seen. So something done after seeing something else always sorts after
+it, whatever the clocks say. Clocks only need to be roughly right.
 
-### Applying late operations: rewind and replay
+A node's own new operation always sorts after everything it has seen, so
+it's applied straight away, and the page that made it gets the real
+result.
 
-When an operation arrives that sorts after everything the node has applied
-to the file (the usual case), it's simply applied.
+### Stable point, and rewinding
 
-When it sorts earlier, the node rewinds the file and replays: it restores
-the file's last checkpoint (below), then applies every operation after it,
-the late one included, in order. Files are per group, so a rewind touches
-one group; the replay is a few thousand commands at most in practice, and
-commands take well under a millisecond each. A node keeps serving reads
-from the old state while it replays into a copy, then swaps the copy in.
+Each node keeps two copies of each file:
 
-A command that fails in the final order fails on every node, and does
-nothing on any of them. See "When a write fails after it succeeded" for
-what the person who made it sees.
+- **live** (site.db, groups/<id>/group.db): everything this node has,
+  applied in order. Pages read this one.
+- **stable** (site.stable.db, groups/<id>/stable.db): only the operations
+  up to the file's **stable point**, applied in order.
 
-### Checkpoints: how far back a rewind can go
+The stable point is the stamp below which no operation can ever appear
+again. Every node regularly tells every other node its clock and how many
+of its own operations on each file it has made. A node's clock only moves
+forward, so once node X has said "my clock is at T, and I've made N
+operations on this file", and this node has all N, nothing more from X
+can have a stamp at or below T. The stable point is the smallest such T
+over **every node in the node map**, including this one.
 
-A rewind needs a copy of the file from before the late operation. Keeping
-every past state is impossible, so nodes agree, with an operation, on a
-point before which nothing can move any more:
+When an operation arrives that sorts before the end of the live file,
+the node rewinds. It copies the stable file to a new live file, applies
+every operation after the stable point in order, and switches pages over
+to the new file. Normally the stable point is a few seconds old, so a
+rewind replays a handful of operations.
 
-- A **checkpoint operation** `Checkpoint{Upto: vector}` says "these
-  operations (a version vector) are final". Any node may issue one for a
-  file once it has heard, recently, from every node that holds the file
-  (their version vectors reach at least `Upto`). It's an ordinary
-  operation, ordered and replicated like any other.
-- Each node keeps a physical copy of each file as of its latest applied
-  checkpoint (SQLite `VACUUM INTO`, as `CopyTo` does now), and deletes the
-  operations it covers, apart from a short tail kept for nodes catching up.
-- **Late after a checkpoint:** an operation not in a checkpoint's `Upto`
-  that would sort before the checkpoint is ordered just after the
-  checkpoint instead (its stamp is treated as the checkpoint's). Every node
-  does the same, because the rule depends only on the checkpoint operation
-  itself. So a node that was offline for a week comes back, and its week of
-  writes is applied as if made at the moment the others last checkpointed:
-  nothing is lost, nothing old is rewritten, and no rewind goes back
-  further than the last checkpoint.
-- A node that holds a file but hasn't been heard from for a day stops
-  counting when deciding whether a checkpoint can be issued, so one dead
-  node can't hold checkpoints back forever. When it comes back, the rule
-  above takes care of its writes.
+While a node in the map can't be heard from, the stable point waits for
+it. Nothing is ever wrongly treated as final, but rewinds get longer and
+operations are kept longer. That's the only cost of a node being down.
+Taking a dead node out of the map (below) ends it.
 
-Two partitions may each issue a checkpoint. That's fine: both are
-operations; each covers what it names; the rule is applied for each in
-order.
+Operations up to the stable point are applied to the stable file too. An
+operation is deleted once every node in the map has it.
 
-### Passing writes on
+### Passing operations on
 
-- **Push:** a node that accepts a write sends it to every reachable node
-  that holds the file (the node map says which) straight away.
-- **Pull (anti-entropy):** every few seconds, each node swaps version
-  vectors with a few other holders of each file it holds, and each sends
-  the other what it's missing. So writes spread even through nodes that
-  aren't directly connected, and a node that was offline catches up
+- **Push:** a new operation goes straight to every node that holds its
+  file and can be reached.
+- **Pull:** every few seconds each node tells a few others what it has,
+  and each sends the other what it's missing. So operations spread
+  through chains of nodes, and a node back from being offline catches up
   without anyone noticing it was gone.
-- **Forwarding:** a node that accepts a write for a file it doesn't hold
-  (a small VPS answering for a group it doesn't have, when the request
-  can't be passed on) keeps the operation in an outbox until some holder
-  confirms it has it.
-- **Best-effort acknowledgement:** after storing a write locally, the node
-  waits up to about a second for one other holder to confirm it has it,
-  then answers the person either way. With other nodes reachable, that
-  shrinks the "destroyed before passing it on" window to nothing in
-  practice. Alone, it answers at once. It never blocks.
+- **Best-effort acknowledgement:** after storing a write, the node waits
+  up to half a second for one other node that holds the file to confirm
+  it has it, then answers either way. It never blocks, and alone it
+  answers at once.
 
-### New nodes and snapshots
+A write for a group this node doesn't hold is passed on, as a page
+request, to a node that does, as before. A follow-up for such a group
+(below) is made here and pushed to its holders.
 
-A node joining, or taking on a group, copies the file's checkpoint and the
-operations after it from any holder, then keeps in step by push and pull.
-This is today's snapshot install, minus Raft. A node too far behind (its
-vector is older than a holder's retained tail) gets a fresh copy the same
-way, with its own unshared operations kept and applied on top.
+### New nodes, and nodes that fell behind
 
-### Node identity
+A node copies a file by fetching another node's stable file and the
+operations after it. It does this when a group is placed on it, when it
+first joins, and when it's missing operations that have been deleted
+everywhere else.
+
+### Follow-ups between files
+
+Some commands change another file too (a new group's settings, a sister
+pairing ending in both groups). They write the follow-up into their
+file's outbox, as before. A follow-up is made into an operation on its
+target file once the command that sent it is stable, since a tentative
+command could still be reordered. The node on duty for the source file
+(below) does this. The operation carries the sending operation's identity
+as its `cause`, and a cause that has been applied once is skipped after
+that, so a follow-up sent twice still applies once.
+
+### Duties: email, the nightly batch, the purge
+
+The things one node should do for the whole site are done by the **node
+on duty**: the node with the lowest id among those it has heard from in
+the last minute. For a group's email, it's the node on duty among that
+group's holders. During a split each side has one on duty, so an email
+could go out twice. A duplicate is better than a lost one, and the
+records of what was sent are operations that merge.
+
+### Node numbers
 
 Ids (internal/ids) include a node number, and two nodes with the same
-number could make the same id, which multi-writer replication would turn
-into lost data. So node numbers are no longer typed into grus.conf: a
-joining node is given a free one by the node it joins through, recorded in
-the node map. A node that sees its number used by a different node refuses
-to accept writes and says so, rather than risk it.
+number could make the same id. The node map records each node's number.
+A node that sees its number held by another node refuses to accept writes
+and says so in its log. A node that starts with no `node_num` gets a free
+one from the node it joins through.
 
-### Side effects: email, the job queue, nightly work
+### Removing a node that's gone for good
 
-Today "the leader does it" guarantees once. Without a leader, each such
-duty goes to one node chosen from what the node map and recent contact
-say: the lowest-id holder that has been heard from recently. When nodes
-are split, each side may choose its own, so an email could be sent twice.
-That's the rule already chosen for email ("a rare duplicate is better than
-a lost one"); the records of what was sent (MarkEmailed, DigestSent) are
-operations and merge. AI jobs are claimed by operations, so a job may run
-twice during a split; results are written the same way either time.
+"Remove node" on the admin page records the node's version vector as it
+stood then. Its operations beyond that are ignored by everyone, and the
+stable point stops waiting for it. If the node was not in fact gone and
+comes back, it finds itself removed, sends back the operations that were
+ignored (as a new origin, which applies them now, after everything else),
+replaces its files with fresh copies, and carries on as a new node.
+Nothing it accepted is lost.
 
 ## When a write fails after it succeeded
 
-Most writes can't conflict: posts, comments, photos, votes, reports,
-sign-ins and follows all make new rows with new ids, and apply in any
-order. The cases that can (a command that succeeds where it was made but
-fails in the final order) get a rule each, so that nothing a person wrote
-is silently dropped:
+A command that succeeds where it's made can fail when it's applied in its
+final place. For example, a comment on a post that was locked on the
+other side of a split. A command that fails in its final place fails on
+every node, is recorded in the file's `conflicts` table with the reason,
+and is shown to operators and the group's mods on their pages, so nothing
+anyone wrote disappears without trace.
 
-- **Names that must be unique** (handles, group addresses): the command
-  itself resolves it deterministically: the later one gets the name with a
-  suffix (`alice-2`), and the person is told next time they visit.
-- **Content added to something that changed meanwhile** (a comment on a
-  post that was locked or deleted on the other side): the content is kept,
-  held for the mods rather than shown, as a held first post is now.
-- **Anything else that fails** is recorded with the reason in a `conflicts`
-  table on the file, shown to operators and the group's mods, instead of
-  vanishing.
-
-The table below lists every command and its rule.
+Most commands can't fail that way. Anything that only adds rows with new
+ids (posts, comments, photos, votes, reports, sessions, follows) applies
+in any order, and counters and version numbers are the same on every node
+because every node applies the same order.
 
 ## Per-command rules
 
-(Filled in from the command inventory.)
+Commands keep their Apply code. These are the changes, from reading every
+one of them:
 
-## What goes away
+| What | Commands | Rule |
+|---|---|---|
+| Rows referenced by a SQLite row number, which can differ between nodes until a rewind settles the order | jobs (ClaimJob, FailJob and every job result), faq_history (RollbackFAQEntry), nudges (ReverseNudge) | these rows get ids computed from what they are (a job's kind and subject; a nudge's post, kind, target and time; a history row's entry, time and text), so every node gives a row the same id in any order |
+| "Everything up to id N" | MarkRead, MarkEmailed | by the notification's time instead of its row number |
+| The outbox's "done up to N" | OutboxDone | gone: follow-ups are made from the stable file, and the cause rule makes them apply once |
+| Names that must be unique | CreateGroup (slug), SetHandle | the second to claim a name in the final order gets it with a number added (`travato-2`, `alice-2`); the page they made it on already showed the name as free |
+| One email, two first sign-ins on two sides of a split | RedeemLogin | the second finds the account already made and uses it; the id the second side made is recorded as another name for the same account, so what was written under it stays theirs |
+| Validation that can come out differently in the final order | CreateComment (locked post), JoinGroup (used-up invite), SetRole and LeaveGroup (last owner), UnplaceGroup (last host), Vote, AnswerSister, and the rest of the "rejects on state" checks | fails the same way on every node and is recorded in `conflicts` |
+| Leases and version gates | ClaimJob, every job result | unchanged: they're already decided by the file's state, which is the same everywhere in the final order; a job run twice during a split keeps the result that fits |
+| Deciding who acts | the daily purge, the nightly FAQ batch, seeding the global settings, email and the digest, copying settings up | the node on duty, not a leader |
 
-- hashicorp/raft and raft-boltdb, `bootstrap`, `voter`, leaders and
-  elections, quorum, `grus recover`, the recovery runbook.
-- `grus backup`, deploy/grus-backup.sh and the restore steps. Every full
-  node is a live, complete copy, and losing all but one node is repaired by
-  starting new nodes pointed at it.
+## What went away
 
-## Testing
-
-- The existing command tests, unchanged.
-- A convergence test: several nodes in one process, random writes on
-  random nodes, random splits and rejoins, nodes stopped and started, then
-  everything reconnected. Every copy of every file must end up
-  byte-for-byte identical, and every write accepted anywhere must be
-  present or recorded in `conflicts`.
-- The scenarios by name: one node alone; two nodes split and rejoined; a
-  node offline for a simulated week; every node but the Studio destroyed
-  and rebuilt from it.
+- hashicorp/raft and raft-boltdb, leaders, elections, quorum, `voter` and
+  `bootstrap` in grus.conf, `grus recover` and the recovery runbook.
+- `grus backup`, deploy/grus-backup.sh and restoring from backups. Every
+  full node is a live, complete copy, and losing all but one node is
+  repaired by starting new nodes pointed at it.
 
 ## Upgrading from Raft
 
-Each node's current files become its first checkpoint. The first start of
-the new version on each node converts its files; all nodes are upgraded
-together (the new version doesn't talk to the old).
+All nodes are upgraded together. On its first start, each node makes its
+current files the starting point: live and stable are the same, with no
+operations yet. A node whose copy was behind (a non-voter that hadn't
+received the last few Raft entries) would then differ forever, so each
+file also records the Raft index it was at. Nodes compare it the first
+time they talk, and one that's behind takes the other's copy.
+
+## Testing
+
+- The existing command and web tests, unchanged in what they check.
+- Named scenarios: one node alone; two nodes split, both writing, then
+  rejoined; a node offline while the others write; a follow-up sent
+  twice; a name claimed on both sides of a split; every node but one
+  destroyed and rebuilt from it.
+- A convergence test: several nodes in one process, random writes on
+  random nodes, random splits and rejoins, nodes stopped and restarted.
+  Afterwards every copy of every file must hold the same rows, and every
+  write accepted anywhere must be present, or recorded in `conflicts`.
