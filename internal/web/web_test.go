@@ -2,6 +2,8 @@ package web
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -60,6 +62,10 @@ func newSite(t *testing.T) *testSite {
 		Log:     lg,
 		IDs:     ids.New(1),
 		MailLog: buf,
+		// No DNS in tests: every lookup fails at once.
+		Resolver: &net.Resolver{PreferGo: true, Dial: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("no DNS in tests")
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)

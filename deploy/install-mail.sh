@@ -2,9 +2,9 @@
 # Sets up outbound mail on a Linux VPS so grus can send sign-in and
 # notification email itself, with no outside mail service: Postfix as a
 # send-only server on loopback, OpenDKIM signing, and grus pointed at it.
-# Run as root after `make install`:
+# make install runs it (deploy/install.sh, step 5), as root:
 #
-#   sudo deploy/install-mail.sh [domain] [helo-name]
+#   deploy/install-mail.sh [domain] [helo-name]
 #
 # Each run sets up DKIM for one domain; run it once per domain on the
 # admin page's list, since each domain's email comes from that domain.
@@ -16,7 +16,7 @@
 set -eu
 
 conf=/etc/grus/grus.conf
-[ -f "$conf" ] || { echo "No $conf: run 'sudo make install' first." >&2; exit 1; }
+[ -f "$conf" ] || { echo "No $conf: run 'make install' first." >&2; exit 1; }
 
 domain=${1:-$(sed -n -E 's/^(primary_)?domain *= *//p' "$conf" | head -n 1 | tr -d ' ')}
 helo=${2:-$(hostname -f)}
@@ -112,6 +112,11 @@ grep -q '^smtp_host' "$conf" || printf 'smtp_host = 127.0.0.1\nsmtp_port = 25\n'
 ip=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')
 dkim=$(sed -n 's/.*"\(.*\)".*/\1/p' "$keys/$sel.txt" | tr -d '\n')
 echo "$dkim" > "/root/dkim-$domain.txt"
+# And where the admin page's DNS check looks for it, to compare with what
+# DNS has (internal/web/dnscheck.go).
+install -d -m 750 /var/lib/grus/dkim /var/lib/grus/dkim/"$domain"
+echo "$dkim" > /var/lib/grus/dkim/"$domain"/"$sel".txt
+id grus >/dev/null 2>&1 && chown -R grus:grus /var/lib/grus/dkim
 
 cat <<EOF
 

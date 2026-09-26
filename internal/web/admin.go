@@ -17,8 +17,10 @@ import (
 type adminData struct {
 	Groups  []adminGroup
 	Domains []store.Domain
-	Global  []globalField // the global settings, in store.GlobalKeys order
-	Nodes   []adminNode   // the node map (M7); empty on a single node with none registered
+	Global  []globalField  // the global settings, in store.GlobalKeys order
+	DNS     []domainChecks // what DNS says about each domain (dnscheck.go)
+	Version string
+	Nodes   []adminNode // the node map (M7); empty on a single node with none registered
 	Cluster map[string]string
 	Form    map[string]string // values to refill after an error
 
@@ -90,6 +92,13 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, u *store.Us
 		s.serverError(w, r, err)
 		return
 	}
+	nodes, err := s.Store.Nodes()
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	d.DNS = s.checkDomains(domains, nodes)
+	d.Version = s.Version
 	if err := s.adminAI(&d); err != nil {
 		s.serverError(w, r, err)
 		return

@@ -633,3 +633,35 @@ func TestUpgradeFromRaft(t *testing.T) {
 		t.Fatalf("studio after the upgrade: %v", got)
 	}
 }
+
+// TestEnsureCerts: the first node makes the site's CA and its own
+// certificate; a node given a copy of the CA (make install copies it)
+// makes its own from it; a node with neither is told what's missing.
+func TestEnsureCerts(t *testing.T) {
+	first := t.TempDir()
+	if err := EnsureCerts(first+"/ca.crt", first+"/node.crt", first+"/node.key", "n1", true); err != nil {
+		t.Fatal(err)
+	}
+	joiner := t.TempDir()
+	for _, f := range []string{"ca.crt", "ca.key"} {
+		data, _ := os.ReadFile(first + "/" + f)
+		os.WriteFile(joiner+"/"+f, data, 0o600)
+	}
+	if err := EnsureCerts(joiner+"/ca.crt", joiner+"/node.crt", joiner+"/node.key", "n2", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadTLS(joiner+"/ca.crt", joiner+"/node.crt", joiner+"/node.key"); err != nil {
+		t.Fatal(err)
+	}
+	// Run again: nothing changes.
+	before, _ := os.ReadFile(joiner + "/node.crt")
+	EnsureCerts(joiner+"/ca.crt", joiner+"/node.crt", joiner+"/node.key", "n2", false)
+	if after, _ := os.ReadFile(joiner + "/node.crt"); string(after) != string(before) {
+		t.Fatal("a second run replaced the certificate")
+	}
+	empty := t.TempDir()
+	if err := EnsureCerts(empty+"/ca.crt", empty+"/node.crt", empty+"/node.key", "n3", false); err == nil ||
+		!strings.Contains(err.Error(), "make install") {
+		t.Fatalf("no CA and not the first node: %v", err)
+	}
+}

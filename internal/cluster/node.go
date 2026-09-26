@@ -28,7 +28,7 @@ import (
 // Options configure a node.
 type Options struct {
 	ID        string      // stable node id: "n1", "studio"
-	Num       int         // node number in ids (internal/ids); no two nodes may share one
+	Num       int         // node number in ids (internal/ids); no two nodes may share one; -1: choose one
 	Listen    string      // cluster port to listen on, e.g. ":7946"
 	Advertise string      // host:port other nodes dial to reach this one
 	TLS       *tls.Config // from LoadTLS
@@ -136,10 +136,51 @@ func Start(o Options, st *store.Store) (*Node, error) {
 		return nil, err
 	}
 
+	if n.o.Num < 0 {
+		if err := n.chooseNum(); err != nil {
+			n.Shutdown()
+			return nil, err
+		}
+	}
+
 	n.wg.Add(1)
 	go n.upkeep(ctx)
 	return n, nil
 }
+
+// chooseNum gives a node with no node_num in its config a number: the one
+// it chose before, or the lowest no other node in the map has (site.db has
+// just been copied, so the map is current). Two nodes joining at the same
+// moment could choose the same; checkNumber catches that, and one of them
+// is then given another in its config.
+func (n *Node) chooseNum() error {
+	if n.id.Num != nil {
+		n.o.Num = *n.id.Num
+		return nil
+	}
+	nodes, err := n.st.Nodes()
+	if err != nil {
+		return err
+	}
+	used := map[int]bool{}
+	for _, nd := range nodes {
+		if nd.ID != n.o.ID {
+			used[nd.Num] = true
+		}
+	}
+	num := 1
+	for used[num] {
+		num++
+	}
+	if num > 1022 {
+		return errors.New("no free node number: give this node a node_num in its config")
+	}
+	n.o.Num = num
+	return n.id.setNum(num)
+}
+
+// Num is this node's node number, for its id generator.
+func (n *Node) Num() int { return n.o.Num }
 
 func mustIDs(ids []int64, err error) []int64 {
 	if err != nil {

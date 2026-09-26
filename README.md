@@ -65,7 +65,6 @@ when it's back in touch, and there are no backups or restores to do.
 
 ```sh
 make                    # or: go build -o grus ./cmd/grus
-./grus ca init -dir certs && ./grus ca issue -dir certs n1
 cat > dev.conf <<EOF
 node_id = n1
 data_dir = ./data
@@ -74,25 +73,31 @@ dev = true
 http_addr = 127.0.0.1:8080
 cluster_addr = 127.0.0.1:7946
 advertise = 127.0.0.1:7946
-bootstrap = true
-tls_ca = certs/ca.crt
-tls_cert = certs/n1.crt
-tls_key = certs/n1.key
 operator = you@example.com
 EOF
-./grus serve -config dev.conf
+./grus -config dev.conf
 ```
 
 Open <http://grus.localhost:8080/> (browsers send any `*.localhost` name to
 your machine), sign in as the operator email, and pick the link out of the
-server's output (with no `smtp_host`, emails are printed rather than sent).
-Create a group on the admin page and it's live at
-`http://<name>.grus.localhost:8080/`.
+server's output (with no SMTP relay set, emails are printed rather than
+sent). Create a group on the admin page and it's live at
+`http://<name>.grus.localhost:8080/`. The first start makes the cluster's
+certificates in `./data/cluster`.
+
+## Installing for real
+
+`make install`, on a fresh or running Ubuntu or macOS machine: it
+installs what's missing, builds, sets the machine up (asking which
+existing machine to copy the setup from, if any) and starts it.
+[docs/operations.md](docs/operations.md) has the rest. There are no other
+commands: everything an operator adjusts is on the admin page.
 
 ## Layout
 
 ```
-cmd/grus/           the binary: serve, ca, import-archive, bench-llm, loadtest
+cmd/grus/           the binary: the service, and nothing else
+internal/tools/     the admin page's tools: archive import, model measurement, load test
 internal/cmd/       every write, as a command struct + Apply (the only code that writes SQL)
 internal/cluster/   the Log interface; replication without a leader, over mutual TLS; the node map
 internal/store/     SQLite files, schemas and migrations, read queries
@@ -102,7 +107,7 @@ internal/mail/      SMTP (or print, on a laptop)
 internal/ids/       time-ordered 64-bit ids
 internal/config/    grus.conf
 web/                templates and static files (embedded)
-deploy/             example configs, systemd and launchd units, mail setup
+deploy/             make install (install.sh), example configs, systemd and launchd units, mail setup
 docs/               operations runbook, DNS records for mail
 ```
 

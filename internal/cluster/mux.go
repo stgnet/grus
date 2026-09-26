@@ -35,7 +35,10 @@ func newMux(listen string, conf *tls.Config) (*muxListener, error) {
 	// completes the handshake and route then hangs up.
 	sconf.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		for _, p := range hello.SupportedProtos {
-			if p == rpcProto {
+			// Plain HTTP/1.1 is the API too, for curl: make install checks
+			// a new node is up by asking for its report, with the node's
+			// own certificate.
+			if p == rpcProto || p == "http/1.1" {
 				c := conf.Clone()
 				c.NextProtos = []string{p}
 				return c, nil
@@ -73,6 +76,9 @@ func (m *muxListener) route(c *tls.Conn) {
 	}
 	c.SetDeadline(time.Time{})
 	proto := c.ConnectionState().NegotiatedProtocol
+	if proto == "http/1.1" {
+		proto = rpcProto
+	}
 	m.mu.Lock()
 	sub := m.subs[proto]
 	m.mu.Unlock()

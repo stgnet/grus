@@ -1,18 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- launchd job for the Studio (macOS).
-     Installed by deploy/install-launchd.sh (sudo make install). -->
+     Installed by make install (deploy/install.sh). -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.stgnet.grus</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/grus</string>
-    <string>serve</string>
     <string>-config</string>
     <string>/etc/grus/grus.conf</string>
   </array>
-  <key>UserName</key><string>_grus</string><!-- set to your account by install-launchd.sh -->
+  <key>UserName</key><string>_grus</string><!-- set to your account by make install -->
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardErrorPath</key><string>/usr/local/var/log/grus/grus.log</string>

@@ -1,11 +1,10 @@
-package main
+package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"sort"
@@ -14,22 +13,24 @@ import (
 	"github.com/stgnet/grus/internal/ai"
 	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/cmd"
-	"github.com/stgnet/grus/internal/config"
 	"github.com/stgnet/grus/internal/ids"
 	"github.com/stgnet/grus/internal/store"
 )
 
-// bench-llm measures a model on real content before it's trusted with the
+// Bench measures a model on real content before it's trusted with the
 // site (plan section 9, "Capacity: measure, then buy"). It loads an archive
-// file (the same format as import-archive) into a throwaway database, runs
-// each kind of AI job on a sample of its threads through the same code the
-// site uses, and reports jobs per hour and search latency. With a questions
-// file it also scores search: for each question, whether a thread you
-// expect shows up in the top three cards.
+// (the same format as an import) into a throwaway database, runs each kind
+// of AI job on a sample of its threads through the same code the site
+// uses, and reports jobs per hour and search latency. With questions it
+// also scores search: for each question, whether a thread you expect
+// shows up in the top three cards.
 //
-//	grus bench-llm -model <name> [-url http://127.0.0.1:11434] [-n 20] [-questions q.json] archive.json
-//
-// Run it on the Studio with two or three candidate models and compare.
+// It runs on a node with a model; the admin page's Tools section sends it
+// there. Try two or three candidate models and compare.
+
+// Question is a search to score: a question, and the refs of threads (in
+// the archive) that answer it.
+type Question = benchQuestion
 
 type benchQuestion struct {
 	Q      string   `json:"q"`
@@ -63,27 +64,29 @@ func (b *benchStat) String() string {
 		b.n, avg.Seconds(), b.worst.Seconds(), float64(time.Hour)/float64(avg), b.failed)
 }
 
-func benchLLM(args []string) error {
-	fs := flag.NewFlagSet("bench-llm", flag.ExitOnError)
-	url := fs.String("url", "http://127.0.0.1:11434", "Ollama address")
-	model := fs.String("model", "", "model to test (required)")
-	ctxTokens := fs.Int("context", 16384, "context window in tokens")
-	n := fs.Int("n", 20, "threads to sample for each job type")
-	qfile := fs.String("questions", "", "JSON list of {\"q\": question, \"expect\": [thread refs]}")
-	fs.Parse(args)
-	if *model == "" || fs.NArg() != 1 {
-		return errors.New("usage: grus bench-llm -model <name> [-url ...] [-n 20] [-questions q.json] archive.json")
-	}
+// BenchOptions says what to measure.
+type BenchOptions struct {
+	URL       string // the model server (Ollama), e.g. http://127.0.0.1:11434
+	Model     string
+	Context   int // context window in tokens (0: 16384)
+	N         int // threads to sample for each job type (0: 20)
+	Questions []Question
+}
 
+// Bench runs the measurement and writes the report to out.
+func Bench(ctx context.Context, a *Archive, o BenchOptions, out io.Writer) error {
+	if o.Model == "" {
+		return errors.New("which model?")
+	}
+	if o.Context == 0 {
+		o.Context = 16384
+	}
+	if o.N == 0 {
+		o.N = 20
+	}
+	n := &o.N
 	// Load the archive into a throwaway database.
-	data, err := os.ReadFile(fs.Arg(0))
-	if err != nil {
-		return err
-	}
-	var f archiveFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return err
-	}
+	f := a.file
 	dir, err := os.MkdirTemp("", "grus-bench-")
 	if err != nil {
 		return err
@@ -103,7 +106,9 @@ func benchLLM(args []string) error {
 	if _, err := lg.Apply(&cmd.CreateGroup{GroupID: group, Slug: "bench", Name: "Bench", At: now}); err != nil {
 		return err
 	}
-	gen := ids.New(config.ToolNodeNum)
+	// The throwaway database's ids never meet the site's, so any node
+	// number will do.
+	gen := ids.New(1023)
 	names := namesRE(authorNames(f.Threads))
 	noPhotos := func(string) (*cmd.Image, error) { return nil, nil }
 	var postIDs []int64
@@ -122,11 +127,10 @@ func benchLLM(args []string) error {
 		postIDs = append(postIDs, id)
 		refs[t.Ref] = id
 	}
-	fmt.Printf("loaded %d threads\n", len(postIDs))
+	fmt.Fprintf(out, "loaded %d threads\n", len(postIDs))
 
-	eng := &ai.Engine{LLM: ai.NewOllama(*url, *model, *ctxTokens), Store: st, Meter: &ai.Meter{}}
+	eng := &ai.Engine{LLM: ai.NewOllama(o.URL, o.Model, o.Context), Store: st, Meter: &ai.Meter{}}
 	w := &ai.Worker{Engine: eng, Log: lg, IDs: gen, Name: "bench", Now: time.Now}
-	ctx := context.Background()
 
 	// A sample spread across the archive, not just its first threads.
 	sample := postIDs
@@ -156,28 +160,28 @@ func benchLLM(args []string) error {
 			lg.Apply(res)
 		}
 		if err != nil {
-			fmt.Printf("  %s %d: %v\n", kind, ref, err)
+			fmt.Fprintf(out, "  %s %d: %v\n", kind, ref, err)
 		}
 	}
 	var digests, checks, notes benchStat
-	fmt.Println("digests…")
+	fmt.Fprintln(out, "digests…")
 	for _, id := range postIDs {
 		// Search reads digests, so with questions to ask every thread gets
 		// one; only the sample's are timed.
 		stat := &digests
 		if !slices.Contains(sample, id) {
-			if *qfile == "" {
+			if len(o.Questions) == 0 {
 				continue
 			}
 			stat = &benchStat{}
 		}
 		run(cmd.JobDigest, id, stat)
 	}
-	fmt.Println("link checks…")
+	fmt.Fprintln(out, "link checks…")
 	for _, id := range sample {
 		run(cmd.JobCheck, id, &checks)
 	}
-	fmt.Println("link notes…")
+	fmt.Fprintln(out, "link notes…")
 	db, _ := st.Group(group)
 	rows, err := db.Query(`SELECT ref_id FROM jobs WHERE kind = 'note' AND done_at IS NULL LIMIT ?`, *n)
 	if err != nil {
@@ -196,25 +200,18 @@ func benchLLM(args []string) error {
 	var example string
 	db.QueryRow(`SELECT text FROM notes WHERE text != '' LIMIT 1`).Scan(&example)
 
-	fmt.Printf("\nmodel %s\n", *model)
-	fmt.Printf("  digest:     %s\n", &digests)
-	fmt.Printf("  link check: %s\n", &checks)
-	fmt.Printf("  link note:  %s\n", &notes)
+	fmt.Fprintf(out, "\nmodel %s\n", o.Model)
+	fmt.Fprintf(out, "  digest:     %s\n", &digests)
+	fmt.Fprintf(out, "  link check: %s\n", &checks)
+	fmt.Fprintf(out, "  link note:  %s\n", &notes)
 	if example != "" {
-		fmt.Printf("  example note: %s\n", example)
+		fmt.Fprintf(out, "  example note: %s\n", example)
 	}
 
-	if *qfile == "" {
+	if len(o.Questions) == 0 {
 		return nil
 	}
-	qdata, err := os.ReadFile(*qfile)
-	if err != nil {
-		return err
-	}
-	var qs []benchQuestion
-	if err := json.Unmarshal(qdata, &qs); err != nil {
-		return err
-	}
+	qs := o.Questions
 	var search benchStat
 	hits, scored := 0, 0
 	var lat []time.Duration
@@ -226,9 +223,9 @@ func benchLLM(args []string) error {
 		d := time.Since(start)
 		search.add(d, err)
 		lat = append(lat, d)
-		fmt.Printf("\nQ: %s (%.1fs)\n", q.Q, d.Seconds())
+		fmt.Fprintf(out, "\nQ: %s (%.1fs)\n", q.Q, d.Seconds())
 		if err != nil {
-			fmt.Printf("  error: %v\n", err)
+			fmt.Fprintf(out, "  error: %v\n", err)
 			continue
 		}
 		found := false
@@ -238,7 +235,7 @@ func benchLLM(args []string) error {
 			if p != nil {
 				title = p.Title
 			}
-			fmt.Printf("  %d. %s: %s\n", i+1, title, c.Statement)
+			fmt.Fprintf(out, "  %d. %s: %s\n", i+1, title, c.Statement)
 			for _, ref := range q.Expect {
 				if refs[ref] == c.PostID && i < 3 {
 					found = true
@@ -253,13 +250,13 @@ func benchLLM(args []string) error {
 		}
 	}
 	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
-	fmt.Printf("\nsearch: %s\n", &search)
+	fmt.Fprintf(out, "\nsearch: %s\n", &search)
 	if len(lat) > 0 {
 		p90 := lat[len(lat)*9/10]
-		fmt.Printf("  90%% of searches took under %.1fs (the site gives up at 8s)\n", p90.Seconds())
+		fmt.Fprintf(out, "  90%% of searches took under %.1fs (the site gives up at 8s)\n", p90.Seconds())
 	}
 	if scored > 0 {
-		fmt.Printf("  an expected thread was in the top 3 for %d of %d questions\n", hits, scored)
+		fmt.Fprintf(out, "  an expected thread was in the top 3 for %d of %d questions\n", hits, scored)
 	}
 	return nil
 }

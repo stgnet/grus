@@ -1,12 +1,10 @@
-package main
+package tools
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -14,35 +12,28 @@ import (
 	"time"
 )
 
-// loadtest reads a group's public pages as fast as a number of signed-out
-// visitors can, for a while, and reports how the site held up (plan, M8).
-// It's what to run against a new setup before opening it to a group, and
-// while killing nodes to see the others carry the load.
-//
-//	grus loadtest -url https://travato.nfb.group -c 20 -d 30s
+// LoadTest reads a group's public pages as fast as conc signed-out
+// visitors can, for dur, and writes how the site held up to out (plan,
+// M8). It's what to run against a new setup before opening it to a group,
+// and while stopping nodes to see the others carry the load; the admin
+// page's Tools section runs it.
 //
 // It starts from the group's front page and its FAQ, and adds every post
 // the front page links to, so it reads the pages people actually read.
 // It only reads: nothing it does changes the site.
-func loadtest(args []string) error {
-	fs := flag.NewFlagSet("loadtest", flag.ExitOnError)
-	base := fs.String("url", "", "a group's address, like https://travato.nfb.group")
-	conc := fs.Int("c", 10, "visitors reading at once")
-	dur := fs.Duration("d", 30*time.Second, "how long to run")
-	extra := fs.String("paths", "", "more paths to read, comma-separated (like /search?q=solar)")
-	fs.Parse(args)
-	if *base == "" {
-		return fmt.Errorf("loadtest: -url is required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), *dur)
+func LoadTest(ctx context.Context, base string, conc int, dur time.Duration, extra []string, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, dur)
 	defer cancel()
-	r, err := runLoad(ctx, strings.TrimSuffix(*base, "/"), *conc, splitPaths(*extra))
+	r, err := runLoad(ctx, strings.TrimSuffix(base, "/"), conc, extra)
 	if err != nil {
 		return err
 	}
-	r.print(os.Stdout, *dur)
+	r.print(out, dur)
 	return nil
 }
+
+// SplitPaths reads a comma-separated list of extra paths.
+func SplitPaths(s string) []string { return splitPaths(s) }
 
 func splitPaths(s string) []string {
 	var out []string

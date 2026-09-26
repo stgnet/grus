@@ -1,14 +1,14 @@
 # Grus: build, check and install.
 #
-#   make                 build ./grus for this machine
+#   make install         everything: from a fresh machine (or over a running
+#                        node) to a running node; see deploy/install.sh
+#   make                 build ./grus for this machine (for development)
 #   make check           what CI runs: gofmt, vet, race tests, static build
-#   sudo make install    install the binary and the service for this OS
 #   make dist            binaries for the starting setup's two machines
 #
-# Build as yourself and install with sudo, as two steps. Under sudo, root's
-# PATH usually has no Go, and a build as root would leave root-owned files
-# in your module cache. So `install` never builds; it uses the ./grus that
-# `make` left.
+# make install is the only command an operator needs. It installs Go if
+# it's missing, builds as you (using sudo only for the steps that need
+# root), and asks what it needs the first time.
 
 GO    ?= go
 BIN   := grus
@@ -30,18 +30,8 @@ check:
 	$(GO) test -race ./...
 	CGO_ENABLED=0 $(GO) build -o /dev/null ./cmd/grus
 
-# The OS decides the service manager: systemd on the Linux VPS, launchd on
-# the Studio. Each script is safe to re-run: it upgrades the binary and
-# service, keeps an existing config, and restarts the service.
 install:
-	@test -x $(BIN) || (echo "No ./$(BIN) yet: run 'make' first, as yourself (not with sudo)."; exit 1)
-ifeq ($(OS),Linux)
-	deploy/install-service.sh
-else ifeq ($(OS),Darwin)
-	deploy/install-launchd.sh
-else
-	@echo "No service setup for $(OS); copy ./$(BIN) to /usr/local/bin by hand."; exit 1
-endif
+	deploy/install.sh
 
 # Build on one machine, copy to the others: the VPS is Linux on x86-64,
 # the Studio is macOS on Apple silicon.

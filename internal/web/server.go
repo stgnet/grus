@@ -6,11 +6,13 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -23,6 +25,7 @@ import (
 	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/ids"
 	"github.com/stgnet/grus/internal/store"
+	"github.com/stgnet/grus/internal/tools"
 	webfiles "github.com/stgnet/grus/web"
 )
 
@@ -72,7 +75,17 @@ type Server struct {
 	// counting. The per-person daily question limit is a global setting.
 	AI    *ai.Pool
 	Meter *ai.Meter
+	// Bench measures a model (tools.Bench) on a node that has one: this
+	// one, or another over the cluster port. nil when no node has one.
+	Bench func(ctx context.Context, a *tools.Archive, o tools.BenchOptions, out io.Writer) error
 
+	Version string // shown on the admin page
+
+	// Resolver is for the admin page's DNS checks (nil: the system's).
+	// Tests give one that answers at once.
+	Resolver *net.Resolver
+
+	tool      toolRun // the admin page's current (or last) tool, tools.go
 	pages     map[string]*template.Template
 	fragments *template.Template // pieces of pages the scripts fetch
 	asks      askCounter
@@ -122,6 +135,10 @@ func New(s *Server) (*Server, error) {
 	h.HandleFunc("POST /admin/domains", s.adminDomain)
 	h.HandleFunc("POST /admin/domains/mail", s.adminDomainMail)
 	h.HandleFunc("POST /admin/global", s.adminGlobal)
+	h.HandleFunc("GET /admin/tools", s.adminTools)
+	h.HandleFunc("POST /admin/tools/import", s.toolImport)
+	h.HandleFunc("POST /admin/tools/bench", s.toolBench)
+	h.HandleFunc("POST /admin/tools/loadtest", s.toolLoad)
 	h.HandleFunc("POST /admin/place", s.adminPlace)
 	h.HandleFunc("POST /admin/nodes/remove", s.adminRemoveNode)
 	h.HandleFunc("POST /admin/suspend", s.adminSuspend)

@@ -1,7 +1,9 @@
-package main
+package tools
 
 import (
+	"archive/zip"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -87,5 +89,32 @@ func TestArchiveTimeFormats(t *testing.T) {
 	var a archiveTime
 	if json.Unmarshal([]byte(`"last Tuesday"`), &a) == nil {
 		t.Error("nonsense date accepted")
+	}
+}
+
+// TestUnpackArchive: a zip with the archive and a photo unpacks, and one
+// with a path outside it is refused.
+func TestUnpackArchive(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, files map[string]string) string {
+		p := dir + "/" + name
+		f, _ := os.Create(p)
+		zw := zip.NewWriter(f)
+		for n, body := range files {
+			w, _ := zw.Create(n)
+			w.Write([]byte(body))
+		}
+		zw.Close()
+		f.Close()
+		return p
+	}
+	ok := write("ok.zip", map[string]string{"kb/archive.json": `{"threads":[{"ref":"a","created":1,"title":"x"}]}`, "kb/p.jpg": "jpeg"})
+	a, err := UnpackArchive(ok, "ok.zip", t.TempDir())
+	if err != nil || a.Threads() != 1 {
+		t.Fatalf("unpack: %v", err)
+	}
+	bad := write("bad.zip", map[string]string{"../escape.json": "{}"})
+	if _, err := UnpackArchive(bad, "bad.zip", t.TempDir()); err == nil {
+		t.Fatal("a path outside the archive was accepted")
 	}
 }

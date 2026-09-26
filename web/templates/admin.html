@@ -1,5 +1,6 @@
 {{define "content"}}
 <h1>Admin</h1>
+<p><a href="/admin/tools">Tools</a>: import an archive, measure a model, load test.</p>
 
 <h2>Groups</h2>
 <table>
@@ -44,6 +45,16 @@
   <label>Domain <input name="domain" value="{{index .Data.Form "domain"}}" required></label>
   <button name="action" value="add">Add domain</button>
 </form>
+
+<h2>DNS and mail</h2>
+<p class="muted">What the world sees for each domain now (docs/dns.md). A record that's missing or wrong shows what it should be.</p>
+{{range .Data.DNS}}
+<h3>{{.Domain}}</h3>
+<div class="scroll-x"><table>
+  <tr><th></th><th>Record</th><th>Found</th><th>Should be</th></tr>
+  {{range .Checks}}<tr><td>{{if .OK}}✓{{else}}✗{{end}}</td><td>{{.What}}</td><td><code>{{.Found}}</code></td><td>{{if not .OK}}<code>{{.Wanted}}</code>{{end}}</td></tr>{{end}}
+</table></div>
+{{end}}
 
 <h2>Global settings</h2>
 <form method="post" action="/admin/global" class="stack">
@@ -111,6 +122,8 @@ Job queue: {{.Data.QueueDue}} ready to run, {{.Data.QueueLater}} waiting for thr
 {{else}}
 <p class="muted">No nodes registered: this is a single node, or a test.</p>
 {{end}}
+
+{{if .Data.Version}}<p class="muted">grus {{.Data.Version}}</p>{{end}}
 
 {{if .Data.Cluster}}
 <h2>Cluster</h2>

@@ -4,7 +4,6 @@
 # it copies site.db from the VPS, registers itself, and copies every group.
 
 node_id  = studio
-node_num = 2
 # Anywhere that behaves like a local disk (a disk image on the NAS is fine;
 # a share mounted straight over SMB or NFS isn't: SQLite needs real locks).
 data_dir = /usr/local/var/grus
@@ -16,14 +15,10 @@ advertise    = studio.example.net:7946
 full         = true
 join         = vps1.nfb.group:7946
 
-tls_ca   = /etc/grus/cluster/ca.crt
-tls_cert = /etc/grus/cluster/studio.crt
-tls_key  = /etc/grus/cluster/studio.key
-
 # AI: the Studio runs a model through Ollama on the same machine. It works
 # the job queue (digests, link checks, notes) and answers searches for
 # every node (they find it in the node map). Which model, and its context
 # window, are global settings (ai_model, ai_context on the admin page):
-# pick one with `grus bench-llm` (docs/operations.md), and pull it into
-# Ollama here first.
+# pick one with the admin page's Tools, "Measure a model"
+# (docs/operations.md), and pull it into Ollama here first.
 ai_url = http://127.0.0.1:11434

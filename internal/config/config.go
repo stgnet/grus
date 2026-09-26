@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -30,9 +32,9 @@ import (
 // Config is everything a node needs to start. Zero values are filled in by
 // Load with the defaults noted beside each field.
 type Config struct {
-	NodeID  string // Raft id of this node, e.g. "n1" or "studio" (required)
-	NodeNum int    // 0-1023, distinct per node; goes into every id (default 1)
-	DataDir string // databases, raft log, blobs (default /var/lib/grus)
+	NodeID  string // this node's id, e.g. "n1" or "studio" (default: the host name, up to the first dot)
+	NodeNum int    // 0-1022, distinct per node; goes into every id (default -1: a free one, chosen at first start)
+	DataDir string // databases, photos, cluster certificates (default /var/lib/grus; /usr/local/var/grus on macOS)
 
 	// Web serving. A node with neither address set (the Studio) runs only
 	// the cluster side: it keeps a full live copy and serves nothing.
@@ -41,14 +43,17 @@ type Config struct {
 	Dev       bool   // plain HTTP on HTTPAddr, no certificates, non-Secure cookies
 
 	// Cluster.
-	ClusterAddr string   // listen address for node-to-node mTLS, e.g. ":7946"
-	Advertise   string   // host:port other nodes use to reach this one
+	ClusterAddr string   // listen address for node-to-node mTLS (default ":7946")
+	Advertise   string   // host:port other nodes use to reach this one (default <host name>:7946)
 	Voter       bool     // new groups are placed on it (a VPS that serves pages)
 	Full        bool     // holds every group (the Studio)
 	Join        []string // other nodes' cluster addresses; none means this is the first node
-	TLSCA       string   // cluster CA certificate (made by `grus ca init`)
-	TLSCert     string   // this node's certificate (made by `grus ca issue`)
-	TLSKey      string   // this node's key
+	// The cluster certificates (default <data_dir>/cluster/ca.crt,
+	// node.crt, node.key). The service makes the node's own, and on the
+	// first node the CA, when they're missing (cluster.EnsureCerts).
+	TLSCA   string
+	TLSCert string
+	TLSKey  string
 
 	// AIURL is this machine's own model server (Ollama, e.g.
 	// http://127.0.0.1:11434), if it has one. It's a fact about this
@@ -87,7 +92,7 @@ func Load(path string) (*Config, error) {
 	}
 	defer f.Close()
 
-	c := &Config{NodeNum: 1, DataDir: "/var/lib/grus", Seed: Seed{Values: map[string]string{}}}
+	c := &Config{NodeNum: -1, Seed: Seed{Values: map[string]string{}}}
 	sc := bufio.NewScanner(f)
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
@@ -177,28 +182,55 @@ func (c *Config) set(key, val string) error {
 // ToolNodeNum is the id node number that operator tools use.
 const ToolNodeNum = 1023
 
-func (c *Config) check() error {
+// defaults fills in what the config leaves out. Only what's particular to
+// a machine has a default here; a node needs nothing in grus.conf at all
+// if the defaults suit it, apart from a join line on every node but the
+// first.
+func (c *Config) defaults() error {
+	host, err := os.Hostname()
+	if err != nil {
+		host = "localhost"
+	}
 	if c.NodeID == "" {
-		return fmt.Errorf("node_id is required")
+		c.NodeID, _, _ = strings.Cut(strings.ToLower(host), ".")
 	}
-	// 1023 is kept for offline tools like import-archive, which make ids
-	// while the nodes are running and must never collide with them.
-	if c.NodeNum < 0 || c.NodeNum > ToolNodeNum-1 {
+	if c.DataDir == "" {
+		c.DataDir = "/var/lib/grus"
+		if runtime.GOOS == "darwin" {
+			c.DataDir = "/usr/local/var/grus"
+		}
+	}
+	if c.ClusterAddr == "" {
+		c.ClusterAddr = ":7946"
+	}
+	if c.Advertise == "" {
+		_, port, _ := net.SplitHostPort(c.ClusterAddr)
+		c.Advertise = net.JoinHostPort(strings.ToLower(host), port)
+	}
+	certs := filepath.Join(c.DataDir, "cluster")
+	if c.TLSCA == "" {
+		c.TLSCA = filepath.Join(certs, "ca.crt")
+	}
+	if c.TLSCert == "" {
+		c.TLSCert = filepath.Join(certs, "node.crt")
+	}
+	if c.TLSKey == "" {
+		c.TLSKey = filepath.Join(certs, "node.key")
+	}
+	return nil
+}
+
+func (c *Config) check() error {
+	if err := c.defaults(); err != nil {
+		return err
+	}
+	// 1023 is kept for ids made by nothing but a node (it was for the
+	// offline tools, which are gone); -1 means "choose one".
+	if c.NodeNum < -1 || c.NodeNum > ToolNodeNum-1 {
 		return fmt.Errorf("node_num must be 0-%d", ToolNodeNum-1)
-	}
-	if len(c.Join) == 0 && len(c.Seed.Domains) == 0 {
-		// The first node lists the site's first domain, or the site
-		// would have no address to reach the admin page on.
-		return fmt.Errorf("the first node (no join line) needs a domain line")
-	}
-	if c.ClusterAddr == "" || c.Advertise == "" {
-		return fmt.Errorf("cluster_addr and advertise are required")
 	}
 	if _, _, err := net.SplitHostPort(c.Advertise); err != nil {
 		return fmt.Errorf("advertise: %v", err)
-	}
-	if c.TLSCA == "" || c.TLSCert == "" || c.TLSKey == "" {
-		return fmt.Errorf("tls_ca, tls_cert and tls_key are required (see `grus ca`)")
 	}
 	if len(c.Join) == 0 {
 		// The first node takes new groups; there's nowhere else for them.

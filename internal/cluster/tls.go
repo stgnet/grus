@@ -22,16 +22,56 @@ import (
 //
 // Membership is proven by a private certificate authority that exists only
 // for this cluster (never Let's Encrypt): a certificate signed by it is a
-// cluster member, anything else is refused. `grus ca init` makes the CA once;
-// `grus ca issue <node-id>` makes each node's certificate.
+// cluster member, anything else is refused. Nobody makes them by hand: the
+// first node of a new site makes the CA the first time it starts, and every
+// node makes its own certificate from the CA when it has none
+// (EnsureCerts). `make install` copies the CA to a new node from the
+// machine it's set up from, over the operator's own ssh login; it's never
+// in the repository, so having the source gets nobody into the cluster.
 //
 // Every node certificate carries the same DNS name, clusterName, and the
 // connecting side checks for that name. We deliberately don't check the
 // node's real hostname: nodes are found by hostname, but the Studio's home
 // IP (and so what its name points at) can change, and identity comes from
 // the CA's signature, not from DNS. The certificate's CommonName is the
-// node's Raft id, for logs.
+// node's id, for logs.
 const clusterName = "grus-node"
+
+// EnsureCerts makes whatever cluster certificates this node is missing,
+// in the files the config names: the CA (caCrt, with its key beside it as
+// ca.key) only when makeCA is set (the first node of a new site) and
+// there's none, then this node's own certificate and key, signed by the
+// CA, when there are none. A node joining a site needs the site's CA
+// copied in first (make install does it); without it this says so.
+func EnsureCerts(caCrt, crt, key, id string, makeCA bool) error {
+	dir := filepath.Dir(caCrt)
+	caKey := filepath.Join(dir, "ca.key")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if _, err := os.Stat(caCrt); errors.Is(err, os.ErrNotExist) {
+		if !makeCA {
+			return fmt.Errorf("no cluster CA at %s: copy ca.crt and ca.key from a node of the site (make install does this)", caCrt)
+		}
+		if err := InitCA(dir); err != nil {
+			return err
+		}
+		if caCrt != filepath.Join(dir, "ca.crt") {
+			if err := os.Rename(filepath.Join(dir, "ca.crt"), caCrt); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := os.Stat(crt); err == nil {
+		if _, err := os.Stat(key); err == nil {
+			return nil
+		}
+	}
+	if _, err := os.Stat(caKey); err != nil {
+		return fmt.Errorf("no certificate for this node at %s, and no CA key (%s) to make one with", crt, caKey)
+	}
+	return issueNodeCert(caCrt, caKey, crt, key, id)
+}
 
 // InitCA creates ca.crt and ca.key in dir. It refuses to overwrite an
 // existing CA, since that would cut every existing node out of the cluster.
@@ -63,7 +103,12 @@ func InitCA(dir string) error {
 // IssueNodeCert creates <id>.crt and <id>.key in dir, signed by the CA in
 // the same directory.
 func IssueNodeCert(dir, id string) error {
-	ca, err := tls.LoadX509KeyPair(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key"))
+	return issueNodeCert(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key"),
+		filepath.Join(dir, id+".crt"), filepath.Join(dir, id+".key"), id)
+}
+
+func issueNodeCert(caCrt, caKey, crtPath, keyPath, id string) error {
+	ca, err := tls.LoadX509KeyPair(caCrt, caKey)
 	if err != nil {
 		return err
 	}
@@ -89,7 +134,7 @@ func IssueNodeCert(dir, id string) error {
 	if err != nil {
 		return err
 	}
-	return writePair(filepath.Join(dir, id+".crt"), filepath.Join(dir, id+".key"), der, key)
+	return writePair(crtPath, keyPath, der, key)
 }
 
 func serial() *big.Int {

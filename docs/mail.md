@@ -23,15 +23,17 @@ There are two ways to give it one:
 
 ## Sending from the VPS
 
-After `sudo make install`:
+make install does this (deploy/install-mail.sh): on a new site's first
+node it offers it for the site's domain, and on another node that serves
+pages it asks which domain, if any. To add a domain on a machine that's
+set up already:
 
 ```sh
-sudo deploy/install-mail.sh                 # the first domain line in grus.conf
-sudo deploy/install-mail.sh nfb.group g.stg.net   # or name both
+GRUS_MAIL_DOMAIN=example.org make install
 ```
 
-The second argument is the name Postfix greets other servers with; it
-defaults to `hostname -f`. Use the VPS's reverse-DNS name. The script:
+Postfix greets other servers with the machine's `hostname -f`, which
+should be its reverse-DNS name. The script:
 
 - installs Postfix and OpenDKIM;
 - makes a 2048-bit DKIM key for the domain under

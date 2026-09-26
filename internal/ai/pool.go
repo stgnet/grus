@@ -48,7 +48,7 @@ func (e *Engine) Health(applied uint64) Health {
 	avg := e.avgAsk
 	e.mu.Unlock()
 	if avg == 0 {
-		avg = 3 // a guess until the first real search (or bench-llm) says otherwise
+		avg = 3 // a guess until the first real search (or a model measurement) says otherwise
 	}
 	return Health{Applied: applied, Queue: e.gate.load(), AvgAsk: avg}
 }

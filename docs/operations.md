@@ -18,40 +18,59 @@ root FAQ's, which every node holds too, and one set per group, held only
 by the nodes the group is placed on. The node map in site.db says which
 nodes there are and which groups each holds.
 
-## 1. The cluster CA (once, on your own machine)
+## 1. Installing a node: make install
+
+On any machine, fresh or already running an older version, Ubuntu (or
+Debian) or macOS:
 
 ```sh
-grus ca init  -dir ./cluster
-grus ca issue -dir ./cluster n1
-grus ca issue -dir ./cluster studio
+git clone https://github.com/stgnet/grus && cd grus    # the first time
+git pull                                               # later
+make install
 ```
 
-Copy `ca.crt` plus each node's `<id>.crt` and `<id>.key` to that node's
-`/etc/grus/cluster/`. Keep `ca.key` off the nodes, somewhere safe: it's what
-admits new members. Any certificate it signed is a cluster member, so if a
-node's key leaks, make a new CA and reissue every node's certificate.
+That's the only command there is. It installs what's missing (Go
+included), builds, installs the service (systemd, or launchd on macOS),
+starts it, and waits until the node answers as itself before it returns
+(deploy/install.sh has every step). There are no other command-line
+controls: everything an operator adjusts is on the admin page.
 
-## 2. The VPS
+The first time on a machine, it asks one question: which machine to copy
+the setup from.
 
-```sh
-make                               # builds ./grus (static; needs Go, see go.mod)
-sudo make install                  # user, directories, systemd unit, example config
-sudoedit /etc/grus/grus.conf       # from deploy/grus.conf.example
-sudo systemctl enable --now grus
-journalctl -u grus -f
-```
+- **Leave it empty** to start a new site here. It asks the site's domain
+  and your email (you sign in with it to reach `/admin`), offers to set the
+  machine up to send the site's email (Postfix with DKIM,
+  [mail.md](mail.md)), and writes `/etc/grus/grus.conf`. The service makes
+  the site's cluster certificate authority, and its own certificate, the
+  first time it starts.
+- **Give the name of a machine already running the site** (as you'd ssh to
+  it). make install fetches the site's cluster CA and that machine's
+  cluster address over your own ssh login, and asks whether this machine
+  holds a full copy (as the Studio does) and whether it serves pages. The
+  service makes its own certificate from the CA, copies site.db from that
+  machine, picks a free node number, registers itself, and copies the
+  groups it's given.
 
-Build as yourself and install with sudo, as two steps (`install` never
-builds). To upgrade later: `git pull && make && sudo make install`, which
-keeps the config and restarts the service. If the VPS has no Go, run
-`make dist` elsewhere and copy `dist/grus-linux-amd64` to `./grus` in the
-checkout before `sudo make install`.
+On a machine that's set up already, make install keeps its config and
+certificates, and upgrades and restarts it.
 
-Open ports 80 and 443 to everyone, and the cluster port (7946) to the
-Studio. The first start (with `bootstrap = true`) creates the cluster and
-seeds the global level from the config's seed lines: the first `domain`,
-the `operator` emails, the SMTP relay and the rest (see
-deploy/grus.conf.example). Sign in with an `operator` email to reach
+Nothing secret is in the repository: the CA's key is only on the site's
+nodes, and a new node gets it over ssh with an operator's own login, so
+the source code gets nobody into the cluster. Any certificate the CA
+signed is a cluster member; if a node's key leaks, remove that node and
+treat the CA as compromised.
+
+Open ports 80 and 443 to everyone on the nodes that serve pages, and the
+cluster port (7946) between the nodes. Point the domain's DNS at the
+nodes that serve pages; the admin page's **DNS and mail** section shows
+each record as the world sees it, and what it should be.
+
+## 2. The first node's settings
+
+The first node's first start seeds the global level from the config's
+seed lines: the `domain`, the `operator` email, the SMTP relay and the rest
+(see deploy/grus.conf.example). Sign in with the operator email to reach
 `/admin`, where all of that is changed from then on; the seed lines are
 never read again.
 
@@ -94,17 +113,14 @@ changes wait for that. Afterwards the seed lines can be deleted.
 
 ## 3. The Studio
 
-In a checkout on the Studio, `make` then `sudo make install`. The first
-run installs the binary, the directories and the launchd job, and puts
-`deploy/studio.conf.example` at `/etc/grus/grus.conf`; edit that, add the
-certificates, and run `sudo make install` again to start it. The job runs
-as the account that ran sudo (the Studio's node binds no low ports, so it
-needs no service account), and logs to `/usr/local/var/log/grus/grus.log`.
-`data_dir` is just a directory: put it wherever the Studio keeps its
-data, as long as it behaves like a local disk (a disk image on the NAS
-does; a share mounted straight over SMB or NFS can corrupt SQLite files).
+On the Studio (macOS), `make install`, giving the VPS as the machine to
+copy from, and yes to a full copy. The service runs as the account that
+ran make install (the Studio binds no low ports, so it needs no service
+account), and logs to `/usr/local/var/log/grus/grus.log`. Its data is in
+`/usr/local/var/grus`: just a directory, which can be anywhere that
+behaves like a local disk (a disk image on the NAS does; a share mounted
+straight over SMB or NFS can corrupt SQLite files).
 
-The Studio's config has `full = true` and `join = <VPS cluster address>`.
 On its first start it copies site.db from the VPS, registers itself in
 the node map, and, being a full node, is placed on every group and copies
 each one. After that the two pass operations back and forth; a Studio
@@ -167,23 +183,21 @@ Everything the model does is optional: with no worker reachable, search
 shows plain results with one line saying quick answers aren't available,
 and summaries and link notes wait in the job queue until a worker is back.
 
-1. On the Studio, install Ollama and pull two or three candidate models.
-2. Pick one on real content (plan section 9, "Choosing the model"):
-
-   ```sh
-   grus bench-llm -model <name> -n 20 -questions questions.json travato.json
-   ```
-
-   It loads the archive into a throwaway database, runs digests, link
+1. On the Studio, install Ollama and pull two or three candidate models,
+   then run `make install` again: it finds Ollama and adds `ai_url` to the
+   Studio's config, and the Studio records in the node map that it has a
+   model, so every other node sends it searches from then on.
+2. Pick one on real content (plan section 9, "Choosing the model"), on the
+   admin page's **Tools**, "Measure a model": the model's name, an archive
+   (the import format), and optionally a questions file (`[{"q": "...",
+   "expect": ["ref"]}]`, refs from the archive). It runs where the model
+   is, loads the archive into a throwaway database, runs digests, link
    checks and link notes through the same code the site uses, and reports
-   runs per hour. With a questions file (`[{"q": "...", "expect":
-   ["ref"]}]`, refs from the archive) it also runs searches and reports how
+   runs per hour; with questions it also runs searches and reports how
    often an expected thread made the top three and how long 90% of
    searches took. The site gives up on a search after 8 seconds, so that
    number needs to be comfortably under it.
-3. Set `ai_url` in the Studio's grus.conf and restart it; it records in
-   the node map that it has a model, and every other node sends it
-   searches from then on. Set `ai_model` (and `ai_context`) on `/admin`:
+3. Set `ai_model` (and `ai_context`) in the admin page's global settings:
    every node with a model runs that one, and a change applies at once.
 4. `/admin` shows, per day, how many model calls each kind of work made,
    tokens in and out, seconds, soft fails by cause, and the job queue.
@@ -316,9 +330,11 @@ Photos follow their groups: the node that receives one pushes it to the
 other nodes holding the group, and a node fetches any it's missing, on a
 page view or within a minute otherwise.
 
-Every node's `node_num` must be different: it goes into every id the node
-makes. A node that finds its number in use by another stops taking writes
-and says so in its log and on the admin page.
+Every node's number must be different: it goes into every id the node
+makes. A new node picks a free one by itself. One that finds its number
+in use by another (two nodes set up at the same moment) stops taking
+writes and says so in its log and on the admin page; give one of them a
+`node_num` line in its config, and run make install on it again.
 
 ### An off-site copy
 
@@ -330,12 +346,12 @@ both lost.
 
 ## 13. Before opening a group: load test
 
-`grus loadtest -url https://travato.nfb.group -c 20 -d 60s` reads the
-group's public pages (its front page, FAQ, and every post the front page
-links to) as 20 signed-out visitors at once, and reports pages a second
-and how long pages took. It only reads. Run it from another machine, and
-try stopping a node partway through: the other nodes should carry on
-without a pause.
+The admin page's **Tools**, "Load test", reads a group's public pages
+(its front page, FAQ, and every post the front page links to) as, say, 20
+signed-out visitors at once, from the node serving the admin page, and
+reports pages a second and how long pages took. It only reads. Try
+stopping a node partway through: the other nodes should carry on without
+a pause.
 
 Signed-out views of a public group come from the render cache: each page
 is rendered once and kept until the group or site.db changes, so a busy

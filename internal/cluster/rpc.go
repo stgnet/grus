@@ -278,6 +278,33 @@ func (c *Client) apply(addr string, cm cmd.Command, cause string) (json.RawMessa
 	return rep.Value, nil
 }
 
+// PostStream sends in as JSON to another node's internal API and copies
+// the answer to out as it arrives, however long it takes (ctx bounds it).
+func (c *Client) PostStream(ctx context.Context, addr, path string, in any, out io.Writer) error {
+	body, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+addr+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	hc := *c.hc
+	hc.Timeout = 0
+	resp, err := hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("%s %s: %s %s", addr, path, resp.Status, bytes.TrimSpace(msg))
+	}
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
 // PostJSON sends in as JSON to another node's internal API and decodes the
 // JSON answer into out. The API's other endpoints (search on a worker, its
 // health) are registered by their own packages on the same handler.

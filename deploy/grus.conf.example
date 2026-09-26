@@ -1,6 +1,11 @@
 # grus.conf: one "key = value" per line; # starts a comment.
 # Keys that take a list (join, domain, operator) are repeated.
 #
+# make install writes this file; this example lists every key, for
+# reference. Every key has a default, so a node's file only needs what
+# differs: usually a join line (every node but the first) and, on the first
+# node, the seed lines at the end.
+#
 # grus.conf holds only what's particular to this node. Everything else is
 # the global level, kept in site.db, the same on every node, and changed on
 # the admin page: the list of domains (all equal, any node answers any of
@@ -10,11 +15,14 @@
 # starts"): the first node, serving every group, with the Studio as a
 # full copy. deploy/studio.conf.example is the Studio's side.
 
-# This node's stable id in the cluster, and its number for ids (0-1023,
-# different on every node).
+# This node's stable id in the cluster (default: the host name, up to the
+# first dot), and its number for ids (0-1022, different on every node;
+# default: a free one, chosen at first start and kept in node.json).
 node_id  = n1
-node_num = 1
+# node_num = 1
 
+# Databases, photos and cluster certificates (default /var/lib/grus;
+# /usr/local/var/grus on macOS).
 data_dir = /var/lib/grus
 
 # Web. Port 80 answers Let's Encrypt and redirects to HTTPS.
@@ -27,7 +35,8 @@ https_addr = :443
 # dev = true
 # http_addr = :8080
 
-# Cluster: node-to-node mutual TLS on one port.
+# Cluster: node-to-node mutual TLS on one port (default :7946), and the
+# address other nodes reach this one at (default <host name>:7946).
 cluster_addr = :7946
 advertise    = vps1.nfb.group:7946
 # New groups are placed on nodes with voter = true (a VPS that serves
@@ -39,9 +48,13 @@ voter        = true
 # is how the nodes find each other.
 # join = vps2.nfb.group:7946
 
-tls_ca   = /etc/grus/cluster/ca.crt
-tls_cert = /etc/grus/cluster/n1.crt
-tls_key  = /etc/grus/cluster/n1.key
+# The cluster certificates (default <data_dir>/cluster/ca.crt, node.crt,
+# node.key). The service makes this node's own, and on the first node the
+# site's CA, when they're missing; make install copies the CA to a new node
+# from the machine it's set up from.
+# tls_ca   = /var/lib/grus/cluster/ca.crt
+# tls_cert = /var/lib/grus/cluster/node.crt
+# tls_key  = /var/lib/grus/cluster/node.key
 
 # ---------------------------------------------------------------------
 # Seeds. Everything below is used once, when the cluster is first

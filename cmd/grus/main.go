@@ -1,21 +1,21 @@
-// Command grus runs a Grus node, and has the few operator tools that go
-// with it.
+// Command grus is a Grus node. It runs as a service (systemd on Linux,
+// launchd on macOS), which `make install` sets up; it has no other
+// commands. Everything an operator adjusts is on the admin page, and
+// everything a node needs to start is in its grus.conf, which make install
+// writes:
 //
-//	grus serve   -config /etc/grus/grus.conf    run the node
-//	grus ca init  -dir /etc/grus/cluster        make the cluster CA (once)
-//	grus ca issue -dir /etc/grus/cluster <id>   make a node's certificate
-//	grus import-archive -config ... -group <slug> <file>   load a knowledge base as archive threads
-//	grus bench-llm -model <name> <archive.json>            measure a model on real threads
-//	grus loadtest -url https://<group address> [-c 10] [-d 30s]   read public pages hard, report timings
+//	grus -config /etc/grus/grus.conf
 //
-// See docs/operations.md for how they fit together.
+// See docs/operations.md.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -33,6 +33,7 @@ import (
 	"github.com/stgnet/grus/internal/fetch"
 	"github.com/stgnet/grus/internal/ids"
 	"github.com/stgnet/grus/internal/store"
+	"github.com/stgnet/grus/internal/tools"
 	"github.com/stgnet/grus/internal/web"
 )
 
@@ -41,55 +42,25 @@ var version = "dev"
 
 func main() {
 	log.SetFlags(0) // journald adds timestamps
-	if len(os.Args) < 2 {
-		usage()
+	path := flag.String("config", "/etc/grus/grus.conf", "config file")
+	flag.Parse()
+	// A service file from before the binary had only one job says
+	// `grus serve -config ...`; read what follows "serve" the same way.
+	if flag.Arg(0) == "serve" {
+		flag.CommandLine.Parse(flag.Args()[1:])
 	}
-	var err error
-	switch os.Args[1] {
-	case "serve":
-		err = serve(os.Args[2:])
-	case "ca":
-		err = ca(os.Args[2:])
-	case "import-archive":
-		err = importArchive(os.Args[2:])
-	case "bench-llm":
-		err = benchLLM(os.Args[2:])
-	case "loadtest":
-		err = loadtest(os.Args[2:])
-	case "version":
-		fmt.Println("grus", version)
-	default:
-		usage()
-	}
-	if err != nil {
+	if err := serve(*path); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func usage() {
-	fmt.Fprintln(os.Stderr, `usage:
-  grus serve   -config /etc/grus/grus.conf
-  grus ca init  -dir <dir>
-  grus ca issue -dir <dir> <node-id>
-  grus import-archive -config <file> -group <slug> [-n] <archive.json>
-  grus bench-llm -model <name> [-url ...] [-n 20] [-questions q.json] <archive.json>
-  grus loadtest -url https://<group address> [-c 10] [-d 30s] [-paths /a,/b]
-  grus version`)
-	os.Exit(2)
-}
-
-func loadConfig(args []string, name string, extra func(*flag.FlagSet)) (*config.Config, *flag.FlagSet, error) {
-	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	path := fs.String("config", "/etc/grus/grus.conf", "config file")
-	if extra != nil {
-		extra(fs)
-	}
-	fs.Parse(args)
-	c, err := config.Load(*path)
-	return c, fs, err
-}
-
+// clusterOptions makes whatever cluster certificates are missing (the CA
+// too, on the first node of a new site: one with no join line), then
+// loads them.
 func clusterOptions(c *config.Config) (cluster.Options, error) {
+	if err := cluster.EnsureCerts(c.TLSCA, c.TLSCert, c.TLSKey, c.NodeID, len(c.Join) == 0); err != nil {
+		return cluster.Options{}, err
+	}
 	t, err := cluster.LoadTLS(c.TLSCA, c.TLSCert, c.TLSKey)
 	if err != nil {
 		return cluster.Options{}, err
@@ -100,8 +71,8 @@ func clusterOptions(c *config.Config) (cluster.Options, error) {
 	}, nil
 }
 
-func serve(args []string) error {
-	c, _, err := loadConfig(args, "serve", nil)
+func serve(path string) error {
+	c, err := config.Load(path)
 	if err != nil {
 		return err
 	}
@@ -145,6 +116,10 @@ func serve(args []string) error {
 	for _, k := range c.Obsolete {
 		log.Printf("config: %s no longer does anything and can be deleted", k)
 	}
+	if domains, err := st.Domains(); err == nil && len(domains) == 0 {
+		log.Printf("warning: the site has no domain, so no page can be reached; " +
+			"add a domain line to this node's grus.conf and restart (make install asks for one)")
+	}
 
 	go purgeDaily(ctx, node)
 	go faqNightly(ctx, node, st)
@@ -165,7 +140,7 @@ func serve(args []string) error {
 
 	// One id generator for everything this node creates: two generators
 	// with the same node number could hand out the same id.
-	gen := ids.New(c.NodeNum)
+	gen := ids.New(node.Num())
 
 	// AI (plan section 9). Usage is counted on every node and reported to
 	// the replicated daily totals. A node with a model runs the job queue
@@ -231,6 +206,8 @@ func serve(args []string) error {
 		Leads:      node.OnDutyFor,
 		AI:         pool,
 		Meter:      meter,
+		Bench:      benchOn(c, st, client, rpcMux),
+		Version:    version,
 	})
 	if err != nil {
 		return err
@@ -250,6 +227,74 @@ func serve(args []string) error {
 		return nil
 	}
 	return listen(ctx, c, srv)
+}
+
+// benchRequest is a model measurement sent to a node with a model.
+type benchRequest struct {
+	Options tools.BenchOptions `json:"options"`
+	Archive []byte             `json:"archive"` // the archive's JSON (no photos)
+}
+
+// benchOn is how the admin page measures a model (tools.Bench): on this
+// node when it runs one, otherwise on a node that does, over the cluster
+// port, with its report streamed back. A node with a model also answers
+// those requests from the others.
+func benchOn(c *config.Config, st *store.Store, client *cluster.Client, rpcMux *http.ServeMux) func(context.Context, *tools.Archive, tools.BenchOptions, io.Writer) error {
+	if c.AIURL != "" {
+		rpcMux.HandleFunc("POST /tools/bench", func(w http.ResponseWriter, r *http.Request) {
+			var req benchRequest
+			if err := json.NewDecoder(io.LimitReader(r.Body, 1<<30)).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			a, err := tools.ArchiveFromJSON(req.Archive)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			req.Options.URL = c.AIURL
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			out := flushWriter{w, http.NewResponseController(w)}
+			if err := tools.Bench(r.Context(), a, req.Options, out); err != nil {
+				fmt.Fprintf(out, "\n%v\n", err)
+			}
+		})
+		return func(ctx context.Context, a *tools.Archive, o tools.BenchOptions, out io.Writer) error {
+			o.URL = c.AIURL
+			return tools.Bench(ctx, a, o, out)
+		}
+	}
+	return func(ctx context.Context, a *tools.Archive, o tools.BenchOptions, out io.Writer) error {
+		nodes, err := st.Nodes()
+		if err != nil {
+			return err
+		}
+		for _, nd := range nodes {
+			if !nd.AI {
+				continue
+			}
+			data, err := a.JSON()
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "measuring on %s\n", nd.ID)
+			return client.PostStream(ctx, nd.Addr, "/tools/bench", benchRequest{Options: o, Archive: data}, out)
+		}
+		return errors.New("no node runs a model: set ai_url in a node's grus.conf (the Studio's)")
+	}
+}
+
+// flushWriter sends each write to the other node as it's made, so a long
+// report arrives as it goes.
+type flushWriter struct {
+	w  io.Writer
+	rc *http.ResponseController
+}
+
+func (f flushWriter) Write(p []byte) (int, error) {
+	n, err := f.w.Write(p)
+	f.rc.Flush()
+	return n, err
 }
 
 // portSuffix is ":8080" in dev when not on port 80, so links we build work.
@@ -405,35 +450,4 @@ func exportSettings(ctx context.Context, node *cluster.Node, st *store.Store) {
 		case <-tick.C:
 		}
 	}
-}
-
-func ca(args []string) error {
-	if len(args) < 1 {
-		usage()
-	}
-	fs := flag.NewFlagSet("ca", flag.ExitOnError)
-	dir := fs.String("dir", "/etc/grus/cluster", "directory holding ca.crt and ca.key")
-	fs.Parse(args[1:])
-	if err := os.MkdirAll(*dir, 0o700); err != nil {
-		return err
-	}
-	switch args[0] {
-	case "init":
-		if err := cluster.InitCA(*dir); err != nil {
-			return err
-		}
-		fmt.Printf("made %s/ca.crt and ca.key; keep ca.key somewhere safe and off the nodes\n", *dir)
-	case "issue":
-		if fs.NArg() != 1 {
-			usage()
-		}
-		id := fs.Arg(0)
-		if err := cluster.IssueNodeCert(*dir, id); err != nil {
-			return err
-		}
-		fmt.Printf("made %s/%s.crt and %s.key; copy them and ca.crt to node %s\n", *dir, id, id, id)
-	default:
-		usage()
-	}
-	return nil
 }

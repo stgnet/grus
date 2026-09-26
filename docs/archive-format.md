@@ -1,7 +1,8 @@
 # Importing an existing knowledge base
 
-`grus import-archive` loads threads from an existing knowledge base (the
-Travato group's history) into a group as **archive threads**:
+The admin page's **Tools**, "Import an archive", loads threads from an
+existing knowledge base (the Travato group's history) into a group as
+**archive threads**:
 
 - Each thread keeps its original date and is locked. An archive thread is a
   record of what was said, not a place to reply.
@@ -17,24 +18,20 @@ Travato group's history) into a group as **archive threads**:
 
 ## Running it
 
-Run it on a node, while the server is running, using that node's own
-config:
+On the admin page's Tools, upload the file (or a .zip of the file and its
+photos), choose the group, and start. The site stays up while it runs, and
+the page shows the report as it goes.
 
-    grus import-archive -config /etc/grus/grus.conf -group travato -n travato.json
-    grus import-archive -config /etc/grus/grus.conf -group travato travato.json
-
-`-n` is a dry run. It converts every thread and processes every photo,
-which catches bad dates, missing refs and unreadable photos, but it sends
-nothing. Without `-n`, photos go to this node, which shares them with the
-others, and each thread is sent through the node as one write, so the
-import replicates like anything else.
-
-New items get ids made with node number 1023, which is reserved for tools
-(`node_num` must be below it). So run one import at a time.
+"Only check the file" is a dry run. It converts every thread and processes
+every photo, which catches bad dates, missing refs and unreadable photos,
+but it imports nothing. Otherwise, photos go to the node serving the admin
+page, which shares them with the others, and each thread is one write, so
+the import replicates like anything else.
 
 ## The file
 
-The file is JSON. Photo paths are relative to the JSON file.
+The file is JSON. Photo paths are relative to the JSON file (inside the
+zip, when it's uploaded as one).
 
 ```json
 {

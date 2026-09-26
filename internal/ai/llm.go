@@ -62,7 +62,7 @@ type Usage struct {
 // Ollama calls Ollama's native chat API.
 type Ollama struct {
 	URL     string // e.g. http://127.0.0.1:11434
-	Model   string // e.g. a small model picked with `grus bench-llm`
+	Model   string // e.g. a small model picked with the admin page's "Measure a model"
 	Context int    // context window in tokens; Ollama's default (2048-4096) silently truncates threads
 	HTTP    *http.Client
 	// Current, if set, is asked for the model and context window on every

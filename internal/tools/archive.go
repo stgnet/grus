@@ -1,10 +1,15 @@
-package main
+// Package tools holds the operator's tools that the admin page's Tools
+// section runs: importing an archive, measuring a model, and a load test.
+// Each writes its report to an io.Writer the page shows.
+package tools
 
 import (
+	"archive/zip"
+	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,22 +19,18 @@ import (
 	"time"
 
 	"github.com/stgnet/grus/internal/blob"
-	"github.com/stgnet/grus/internal/cluster"
 	"github.com/stgnet/grus/internal/cmd"
-	"github.com/stgnet/grus/internal/config"
 	"github.com/stgnet/grus/internal/ids"
 	"github.com/stgnet/grus/internal/img"
 )
 
-// import-archive loads an existing knowledge base (Scott's Travato posts)
-// into a group as locked archive threads. The file format is in
+// Importing an archive loads an existing knowledge base (Scott's Travato
+// posts) into a group as locked archive threads. The file format is in
 // docs/archive-format.md.
 //
-// It runs on a node, beside the running server, and talks to it over the
-// cluster port with that node's own certificate: photos go to the node's
-// blob store, and each thread is one ImportPost command, which the node
-// forwards to the leader. So an import is replicated like any other write,
-// and can run while the site is up.
+// It runs inside the node serving the admin page, while the site is up:
+// photos go to that node's blob store (and on to the others), and each
+// thread is one ImportPost command, replicated like any other write.
 //
 // Authors never come across. Any "author" field in the file is used only to
 // scrub those names out of the text, along with @mentions.
@@ -89,101 +90,184 @@ func (t *archiveTime) UnmarshalJSON(b []byte) error {
 	return fmt.Errorf("unrecognized date %q", s)
 }
 
-func importArchive(args []string) error {
-	var group *string
-	var dry *bool
-	c, fs, err := loadConfig(args, "import-archive", func(fs *flag.FlagSet) {
-		group = fs.String("group", "", "slug of the group to import into")
-		dry = fs.Bool("n", false, "check the file and report, without importing")
-	})
-	if err != nil {
-		return err
+// Archive is an archive file read in, and the directory its photos are
+// relative to.
+type Archive struct {
+	file archiveFile
+	dir  string
+}
+
+// JSON is the archive file itself (without its photos), to send to
+// another node.
+func (a *Archive) JSON() ([]byte, error) { return json.Marshal(a.file) }
+
+// ArchiveFromJSON reads an archive sent as JSON (no photos).
+func ArchiveFromJSON(data []byte) (*Archive, error) {
+	var f archiveFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return nil, err
 	}
-	if fs.NArg() != 1 || (*group == "" && !*dry) {
-		return errors.New("usage: grus import-archive -config <file> -group <slug> [-n] <archive.json>")
-	}
-	path := fs.Arg(0)
+	return &Archive{file: f}, nil
+}
+
+// Threads is how many threads the archive has.
+func (a *Archive) Threads() int { return len(a.file.Threads) }
+
+// OpenArchive reads an archive file; its photos are relative to its
+// directory.
+func OpenArchive(path string) (*Archive, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var f archiveFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return fmt.Errorf("%s: %v", path, err)
+		return nil, fmt.Errorf("%s: %v", filepath.Base(path), err)
 	}
-	names := namesRE(authorNames(f.Threads))
-	gen := ids.New(config.ToolNodeNum)
-	base := filepath.Dir(path)
+	return &Archive{file: f, dir: filepath.Dir(path)}, nil
+}
 
-	// A dry run converts everything (so bad dates, missing refs, and
-	// unreadable photos show up) but sends nothing.
-	var client *cluster.Client
-	var groupID int64
-	if !*dry {
-		opts, err := clusterOptions(c)
-		if err != nil {
-			return err
+// maxUnzipped bounds what an uploaded zip may unpack to.
+const maxUnzipped = 8 << 30
+
+// UnpackArchive reads an uploaded archive, saved at path: a .json file, or
+// a .zip (by its original name) holding one .json file and the photos it
+// names (relative to it). A zip is unpacked into dir, which the caller
+// removes afterwards.
+func UnpackArchive(path, name, dir string) (*Archive, error) {
+	if !strings.HasSuffix(strings.ToLower(name), ".zip") {
+		return OpenArchive(path)
+	}
+	zf, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, err
+	}
+	defer zf.Close()
+	zr := &zf.Reader
+	var jsonPath string
+	var total int64
+	for _, f := range zr.File {
+		// Only plain paths inside dir: a name like "../x" or "/etc/x"
+		// could otherwise write anywhere.
+		clean := filepath.Clean(filepath.FromSlash(f.Name))
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("%s: a path outside the archive", f.Name)
 		}
-		client = cluster.NewClient(opts.TLS)
-		if groupID, err = client.GroupID(c.Advertise, *group); err != nil {
-			return err
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		total += int64(f.UncompressedSize64)
+		if total > maxUnzipped {
+			return nil, errors.New("the zip unpacks to more than 8 GB")
+		}
+		dst := filepath.Join(dir, clean)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return nil, err
+		}
+		if err := unzipOne(f, dst); err != nil {
+			return nil, err
+		}
+		if strings.HasSuffix(strings.ToLower(clean), ".json") && !strings.Contains(clean, "__MACOSX") {
+			if jsonPath != "" {
+				return nil, errors.New("the zip has more than one .json file")
+			}
+			jsonPath = dst
 		}
 	}
+	if jsonPath == "" {
+		return nil, errors.New("the zip has no .json file")
+	}
+	return OpenArchive(jsonPath)
+}
 
+func unzipOne(f *zip.File, dst string) error {
+	r, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	w, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(w, io.LimitReader(r, maxUnzipped)); err != nil {
+		w.Close()
+		return err
+	}
+	return w.Close()
+}
+
+// ImportOptions is where an import goes.
+type ImportOptions struct {
+	GroupID int64
+	// Dry converts everything (so bad dates, missing refs and unreadable
+	// photos show up) but sends nothing.
+	Dry bool
+	// Apply submits a command; PutPhoto stores one photo (both sizes)
+	// under its hash.
+	Apply    func(cmd.Command) (any, error)
+	PutPhoto func(hash string, full, thumb []byte) error
+	IDs      *ids.Generator
+}
+
+// Import loads an archive's threads into a group, one ImportPost each, and
+// writes what happened to out. Importing the same file again updates the
+// threads in place.
+func Import(ctx context.Context, a *Archive, o ImportOptions, out io.Writer) error {
+	names := namesRE(authorNames(a.file.Threads))
 	var done, failed int
-	for i, t := range f.Threads {
-		// photo loads, processes, and (unless dry) uploads one photo.
+	for i, t := range a.file.Threads {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// photo loads, processes, and (unless dry) stores one photo.
 		photo := func(rel string) (*cmd.Image, error) {
 			if rel == "" {
 				return nil, nil
 			}
-			return uploadPhoto(client, c.Advertise, filepath.Join(base, rel), gen)
+			return storePhoto(filepath.Join(a.dir, rel), o)
 		}
-		p, err := convertThread(t, names, gen, photo)
-		if err == nil && !*dry {
-			p.GroupID = groupID
-			_, err = client.Apply(c.Advertise, p)
+		p, err := convertThread(t, names, o.IDs, photo)
+		if err == nil && !o.Dry {
+			p.GroupID = o.GroupID
+			_, err = o.Apply(p)
 		}
 		if err != nil {
 			failed++
-			fmt.Fprintf(os.Stderr, "thread %d (%s): %v\n", i+1, t.Ref, err)
+			fmt.Fprintf(out, "thread %d (%s): %v\n", i+1, t.Ref, err)
 			continue
 		}
 		done++
 	}
 	verb := "imported"
-	if *dry {
+	if o.Dry {
 		verb = "checked"
 	}
-	fmt.Printf("%s %d threads, %d failed\n", verb, done, failed)
+	fmt.Fprintf(out, "%s %d threads, %d failed\n", verb, done, failed)
 	if failed > 0 {
 		return fmt.Errorf("%d threads failed", failed)
 	}
 	return nil
 }
 
-// uploadPhoto re-encodes a photo like any upload (which strips its
-// metadata) and stores it on the local node, which shares it with the
-// others. With no client (a dry run) it only processes it.
-func uploadPhoto(client *cluster.Client, addr, path string, gen *ids.Generator) (*cmd.Image, error) {
+// storePhoto re-encodes a photo like any upload (which strips its
+// metadata) and, unless it's a dry run, stores it.
+func storePhoto(path string, o ImportOptions) (*cmd.Image, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	res, err := img.Process(data)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %v", path, err)
+		return nil, fmt.Errorf("%s: %v", filepath.Base(path), err)
 	}
 	hash := blob.Hash(res.Full)
-	if client != nil {
-		if err := client.PutBlob(addr, hash, false, res.Full); err != nil {
-			return nil, err
-		}
-		if err := client.PutBlob(addr, hash, true, res.Thumb); err != nil {
+	if !o.Dry {
+		if err := o.PutPhoto(hash, res.Full, res.Thumb); err != nil {
 			return nil, err
 		}
 	}
-	return &cmd.Image{ID: gen.Next(), Hash: hash, Width: res.Width, Height: res.Height, Bytes: len(res.Full)}, nil
+	return &cmd.Image{ID: o.IDs.Next(), Hash: hash, Width: res.Width, Height: res.Height, Bytes: len(res.Full)}, nil
 }
 
 // convertThread turns one thread from the file into an ImportPost.

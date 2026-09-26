@@ -90,8 +90,11 @@ type identity struct {
 	// mixed up with the ones its old self made.
 	Origin    string `json:"origin"`
 	HighWater int64  `json:"high_water"` // see clock
-	path      string
-	mu        sync.Mutex // Origin can change (rejoin) while it's read
+	// Num is the node number this node chose for itself, when grus.conf
+	// doesn't give one (see Node.chooseNum); nil until then.
+	Num  *int `json:"num,omitempty"`
+	path string
+	mu   sync.Mutex // Origin can change (rejoin) while it's read
 }
 
 // origin is the node's current origin.
@@ -123,6 +126,14 @@ func loadIdentity(dir, nodeID string, now time.Time) (*identity, error) {
 		}
 	}
 	return id, nil
+}
+
+// setNum records the node number this node chose.
+func (id *identity) setNum(num int) error {
+	id.mu.Lock()
+	defer id.mu.Unlock()
+	id.Num = &num
+	return id.save()
 }
 
 // newIncarnation gives the node a new origin, after it found itself

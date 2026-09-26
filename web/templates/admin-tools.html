@@ -1,0 +1,47 @@
+{{define "content"}}
+<p><a href="/admin">Admin</a></p>
+<h1>Tools</h1>
+
+{{with .Data}}
+{{if .Name}}
+<h2>{{.Name}}</h2>
+<p class="muted">Started {{.Started}}. {{if .Running}}Running: this page refreshes itself.{{else if .Err}}Finished with a problem: {{.Err}}.{{else}}Finished.{{end}}</p>
+<pre class="scroll-x">{{.Output}}</pre>
+{{end}}
+
+<h2>Import an archive</h2>
+<form method="post" action="/admin/tools/import" enctype="multipart/form-data" class="stack">
+  <label>Archive: a .json file, or a .zip of the .json and its photos (docs/archive-format.md)
+    <input type="file" name="archive" accept=".json,.zip" required></label>
+  <label>Into group <select name="group">{{range .Groups}}<option value="{{.Slug}}" {{if eq (index $.Data.Form "group") .Slug}}selected{{end}}>{{.Name}} ({{.Slug}})</option>{{end}}</select></label>
+  <label class="check"><input type="checkbox" name="dry"> Only check the file: convert everything and report, without importing</label>
+  <button>Start</button>
+  <p class="muted">Each thread becomes a locked archive thread. Authors' names are scrubbed from the text and never come across. Importing the same file again updates the threads in place.</p>
+</form>
+
+<h2>Measure a model</h2>
+{{if .HasModel}}
+<form method="post" action="/admin/tools/bench" enctype="multipart/form-data" class="stack">
+  <label>Model (its name in Ollama, pulled on the node that runs models) <input name="model" value="{{index .Form "model"}}" required></label>
+  <label>Archive to try it on (.json or .zip, as above) <input type="file" name="archive" accept=".json,.zip" required></label>
+  <label>Threads to sample for each kind of job <input name="n" value="{{or (index .Form "n") "20"}}" inputmode="numeric"></label>
+  <label>Questions to score search with (optional: a .json list of {"q": question, "expect": [thread refs]})
+    <input type="file" name="questions" accept=".json"></label>
+  <button>Start</button>
+  <p class="muted">Runs digests, link checks and link notes on a sample of the archive's threads, through the same code the site uses, and reports how many an hour. With questions, it also reports how often an expected thread made the top three and how long 90% of searches took (the site gives up at 8 seconds). Try two or three models, then set the chosen one as ai_model in the global settings.</p>
+</form>
+{{else}}
+<p class="muted">No node runs a model: set ai_url in a node's grus.conf (the Studio's) to have one.</p>
+{{end}}
+
+<h2>Load test</h2>
+<form method="post" action="/admin/tools/loadtest" class="stack">
+  <label>A group's address <input name="url" value="{{index .Form "url"}}" placeholder="https://travato.nfb.group" required></label>
+  <label>Visitors reading at once <input name="c" value="{{or (index .Form "c") "20"}}" inputmode="numeric"></label>
+  <label>For how many seconds <input name="d" value="{{or (index .Form "d") "30"}}" inputmode="numeric"></label>
+  <label>More paths to read, comma-separated (optional) <input name="paths" value="{{index .Form "paths"}}" placeholder="/search?q=solar"></label>
+  <button>Start</button>
+  <p class="muted">Reads the group's public pages (its front page, FAQ, and every post the front page links to) as signed-out visitors, from this node, and reports pages a second and how long they took. It only reads. Try stopping a node partway through: the others should carry on without a pause.</p>
+</form>
+{{end}}
+{{end}}
