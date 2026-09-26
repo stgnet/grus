@@ -3,6 +3,8 @@ package web
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strings"
 
 	"golang.org/x/crypto/acme/autocert"
 
@@ -36,7 +38,9 @@ func (s *Server) CertManager() *autocert.Manager {
 			if err != nil {
 				return err
 			}
-			if rt.kind == siteUnknown {
+			// localhost is plain HTTP only (LocalOr): no certificate can be
+			// had for it, and asking Let's Encrypt would only fail.
+			if rt.kind == siteUnknown || isLocal(host) {
 				return errUnknownHost
 			}
 			return nil
@@ -68,4 +72,20 @@ func (c certCache) Put(_ context.Context, name string, data []byte) error {
 func (c certCache) Delete(_ context.Context, name string) error {
 	_, err := c.s.Log.Apply(&cmd.DeleteCert{Name: name})
 	return err
+}
+
+// LocalOr serves requests for localhost from this machine as the site, over
+// plain HTTP, and hands everything else to next: on port 80 that's the
+// certificate manager's handler, which answers Let's Encrypt and redirects
+// the rest to HTTPS. So http://localhost/ (or an ssh tunnel to port 80)
+// reaches the site on a node with no DNS pointing at it yet.
+func (s *Server) LocalOr(next http.Handler) http.Handler {
+	site := s.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isLocal(strings.ToLower(r.Host)) && isLoopback(r) {
+			site.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

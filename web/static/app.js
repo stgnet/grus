@@ -33,6 +33,10 @@
     }).catch(function () { return file; });
   }
 
+  // A group reached as <domain>/g/<slug> has its paths under that prefix
+  // (the server puts it on the page's links; these are made here).
+  var base = document.body.getAttribute("data-base") || "";
+
   function post(url, fields) {
     var body = new URLSearchParams();
     Object.keys(fields).forEach(function (k) { body.append(k, fields[k]); });
@@ -54,7 +58,7 @@
     }, 10000);
     cards.innerHTML = '<p class="muted">Looking for quick answers…</p>';
     cards.hidden = false;
-    post("/ask", { q: cards.getAttribute("data-q"), prev: cards.getAttribute("data-prev") || "" }).then(function (html) {
+    post(base + "/ask", { q: cards.getAttribute("data-q"), prev: cards.getAttribute("data-prev") || "" }).then(function (html) {
       if (done) { return; }
       done = true;
       clearTimeout(fallback);
@@ -81,7 +85,7 @@
       // Keep what's already ticked across refreshes.
       var ticked = {};
       similar.querySelectorAll("input[name=link]:checked").forEach(function (i) { ticked[i.value] = true; });
-      fetch("/similar?q=" + encodeURIComponent(q), { credentials: "same-origin" }).then(function (r) { return r.text(); }).then(function (html) {
+      fetch(base + "/similar?q=" + encodeURIComponent(q), { credentials: "same-origin" }).then(function (r) { return r.text(); }).then(function (html) {
         if (source.value.trim() !== q) { return; }
         similar.innerHTML = html;
         similar.querySelectorAll("input[name=link]").forEach(function (i) { if (ticked[i.value]) { i.checked = true; } });

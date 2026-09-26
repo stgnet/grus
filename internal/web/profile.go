@@ -115,9 +115,9 @@ func (s *Server) profileAbout(w http.ResponseWriter, r *http.Request) {
 
 // profileURL is where an author's name links to: their public profile,
 // or "" for an anonymous post, an archive post, or a deleted account.
-func (s *Server) profileURL(domain string, names map[int64]string, id int64, anonymous bool) string {
+func (s *Server) profileURL(at site, names map[int64]string, id int64, anonymous bool) string {
 	if anonymous || id == 0 || names[id] == "" {
 		return ""
 	}
-	return s.siteURL(domain, "/u/"+names[id])
+	return s.siteURL(at, "/u/"+names[id])
 }

@@ -119,7 +119,7 @@ func (s *Server) invitePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := c.page("Join "+c.g.Name, joinData{Settings: c.st, Invite: inv.Code})
-	p.LoginURL = s.siteURL(c.rt.domain, "/login?next="+queryEscape(s.groupURL(c.g, c.rt.domain, "/invite/"+inv.Code)))
+	p.LoginURL = s.siteURL(c.rt.at, "/login?next="+queryEscape(s.groupURL(c.g, c.rt.at, "/invite/"+inv.Code)))
 	s.render(w, r, http.StatusOK, "join", p)
 }
 
@@ -171,7 +171,7 @@ func (s *Server) modMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if code := r.URL.Query().Get("new"); code != "" {
-		d.NewURL = s.groupURL(c.g, c.rt.domain, "/invite/"+code)
+		d.NewURL = s.groupURL(c.g, c.rt.at, "/invite/"+code)
 	}
 	s.render(w, r, http.StatusOK, "mod-members", c.page("Members", d))
 }
@@ -213,7 +213,7 @@ func (s *Server) membersData(c *greq) (*modMembersData, error) {
 		return nil, err
 	}
 	for _, i := range invites {
-		d.Invites = append(d.Invites, inviteView{Invite: i, URL: s.groupURL(c.g, c.rt.domain, "/invite/"+i.Code)})
+		d.Invites = append(d.Invites, inviteView{Invite: i, URL: s.groupURL(c.g, c.rt.at, "/invite/"+i.Code)})
 	}
 	return d, nil
 }
@@ -386,7 +386,7 @@ func (s *Server) sisterViews(c *greq, activeOnly bool) ([]sisterView, error) {
 		if activeOnly && g.Visibility == "hidden" {
 			continue
 		}
-		out = append(out, sisterView{Pair: p, Group: g, URL: s.groupURL(g, c.rt.domain, "/")})
+		out = append(out, sisterView{Pair: p, Group: g, URL: s.groupURL(g, c.rt.at, "/")})
 	}
 	return out, nil
 }

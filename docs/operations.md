@@ -205,7 +205,9 @@ up the same.
 1. Set up the new domain's DNS (docs/dns.md), including mail records,
    pointing at whichever nodes should answer it.
 2. On `/admin`, add it. It's live on every node at once, with the same
-   groups and content, and pages asked for on it link within it.
+   groups and content, and pages asked for on it link within it. Before
+   its DNS is right, try a node through `http://localhost/` over an ssh
+   tunnel, and groups as `<domain>/g/<slug>` (docs/dns.md, "Before DNS").
 3. If mail for it should go through a different relay, or come from a
    different sender, set that on the domain's row.
 

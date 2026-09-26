@@ -125,7 +125,7 @@ func noticePath(n store.Notification) string {
 }
 
 // noticeViews words a list of notifications, all from one group.
-func (s *Server) noticeViews(g *store.Group, domain string, list []store.Notification) ([]noticeView, error) {
+func (s *Server) noticeViews(g *store.Group, at site, list []store.Notification) ([]noticeView, error) {
 	var ids []int64
 	for _, n := range list {
 		ids = append(ids, n.ActorID)
@@ -137,7 +137,7 @@ func (s *Server) noticeViews(g *store.Group, domain string, list []store.Notific
 	var out []noticeView
 	for _, n := range list {
 		out = append(out, noticeView{Notification: n, Group: g.Name, Text: noticeText(n, g.Name, names),
-			URL: s.groupURL(g, domain, noticePath(n)), Unread: n.ReadAt == 0})
+			URL: s.groupURL(g, at, noticePath(n)), Unread: n.ReadAt == 0})
 	}
 	return out, nil
 }
@@ -165,7 +165,7 @@ func (s *Server) notificationsPage(w http.ResponseWriter, r *http.Request) {
 		if err != nil || len(list) == 0 {
 			continue // a group whose file isn't on this node, or nothing there
 		}
-		views, err := s.noticeViews(g, rt.domain, list)
+		views, err := s.noticeViews(g, rt.at, list)
 		if err != nil {
 			s.serverError(w, r, err)
 			return

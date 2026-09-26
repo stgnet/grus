@@ -338,8 +338,9 @@ func listen(ctx context.Context, c *config.Config, srv *web.Server) error {
 		go func() { errc <- s.ListenAndServeTLS("", "") }()
 		if c.HTTPAddr != "" {
 			// Port 80 answers Let's Encrypt's HTTP challenge and redirects
-			// everything else to HTTPS.
-			h := newServer(c.HTTPAddr, m.HTTPHandler(nil))
+			// everything else to HTTPS, except localhost from this machine,
+			// which it serves (for testing without DNS: web.LocalOr).
+			h := newServer(c.HTTPAddr, srv.LocalOr(m.HTTPHandler(nil)))
 			servers = append(servers, h)
 			go func() { errc <- h.ListenAndServe() }()
 		}

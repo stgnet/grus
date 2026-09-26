@@ -6,6 +6,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"html/template"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -276,9 +278,13 @@ func (s *Server) Handler() http.Handler {
 
 // route sends the request to the home site or a group, or redirects it.
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
-	rt, err := s.resolve(r.Host)
+	// orig is the request as it came in, for passing on to another node,
+	// which works out the site from it the same way; r is the one to
+	// answer here (for <domain>/g/<slug>, with the group's own path).
+	orig := r
+	rt, r, err := s.resolveRequest(r)
 	if err != nil {
-		s.serverError(w, r, err)
+		s.serverError(w, orig, err)
 		return
 	}
 	// Pass the request on to a node with the data, when this one hasn't
@@ -287,11 +293,11 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	if s.PassOn != nil {
 		switch {
 		case rt.kind == siteGroup && s.Holds != nil && !s.Holds(rt.group.ID):
-			if s.PassOn(w, r, rt.group.ID) {
+			if s.PassOn(w, orig, rt.group.ID) {
 				return
 			}
 		case rt.kind == siteHome && gathers(r.URL.Path) && s.HoldsAll != nil && !s.HoldsAll():
-			if s.PassOn(w, r, 0) {
+			if s.PassOn(w, orig, 0) {
 				return
 			}
 		}
@@ -303,6 +309,9 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	case siteHome:
 		s.homeMux.ServeHTTP(w, withRoute(r, rt))
 	case siteGroup:
+		if rt.prefix != "" {
+			w = &prefixRedirects{ResponseWriter: w, prefix: rt.prefix}
+		}
 		if s.cacheable(r, rt) {
 			s.serveCached(w, withRoute(r, rt), rt, s.groupMux)
 			return
@@ -311,6 +320,42 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.render(w, withRoute(r, rt), http.StatusNotFound, "notfound", &page{Title: "No such group"})
 	}
+}
+
+// prefixRedirects puts a path-addressed group's /g/<slug> back on the
+// redirects its pages make: they redirect to their own paths ("/p/12"),
+// which on <domain>/g/<slug> would land on the home site instead.
+type prefixRedirects struct {
+	http.ResponseWriter
+	prefix string
+}
+
+func (p *prefixRedirects) WriteHeader(code int) {
+	if loc := p.Header().Get("Location"); strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") {
+		p.Header().Set("Location", p.prefix+loc)
+	}
+	p.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap lets http.ResponseController reach the connection (the tools'
+// upload deadline, flushing).
+func (p *prefixRedirects) Unwrap() http.ResponseWriter { return p.ResponseWriter }
+
+// ownLink matches a link to one of this site's own paths in a page: an
+// href, action or src starting with a single "/" (not "//", which is
+// another host).
+var ownLink = regexp.MustCompile(`((?:href|action|src)=")/([^/])`)
+
+// withBase puts base (a path-addressed group's "/g/<slug>") in front of
+// every link in page to one of the site's own paths. Templates write a
+// group's links as "/p/12", as they are at <slug>.<domain>; this keeps
+// them within the group on <domain>/g/<slug>, without every template
+// having to know which way the group was reached.
+func withBase(page []byte, base string) []byte {
+	if base == "" {
+		return page
+	}
+	return ownLink.ReplaceAll(page, []byte("${1}"+base+"/${2}"))
 }
 
 // gathers reports whether a page on a bare domain reads from
@@ -355,8 +400,9 @@ type page struct {
 	Manage   bool // show the group's Settings link
 	NoIndex  bool // ask search engines not to list this page
 	Error    string
-	Unread   int // the bell: unread notifications (set by render)
-	Data     any // the page's own data
+	Unread   int    // the bell: unread notifications (set by render)
+	Base     string // "/g/<slug>" on a group reached by path (set by render), for app.js
+	Data     any    // the page's own data
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name string, p *page) {
@@ -370,17 +416,22 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 	}
 	if p.HomeURL == "" {
 		if rt := routeOf(r); rt != nil && rt.domain != "" {
-			p.HomeURL = s.siteURL(rt.domain, "/")
-			p.LoginURL = s.siteURL(rt.domain, "/login?next="+queryEscape(s.currentURL(r)))
+			p.HomeURL = s.siteURL(rt.at, "/")
+			p.LoginURL = s.siteURL(rt.at, "/login?next="+queryEscape(s.currentURL(r)))
 		}
+	}
+	if rt := routeOf(r); rt != nil {
+		p.Base = rt.prefix
+	}
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {
+		log.Printf("render %s: %v", name, err)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Pages can show who's signed in, so shared caches mustn't keep them.
 	w.Header().Set("Cache-Control", "private, no-cache")
 	w.WriteHeader(status)
-	if err := t.ExecuteTemplate(w, "layout", p); err != nil {
-		log.Printf("render %s: %v", name, err)
-	}
+	w.Write(withBase(buf.Bytes(), p.Base))
 }
 
 func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {

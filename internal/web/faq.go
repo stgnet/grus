@@ -135,7 +135,7 @@ func (s *Server) faqPage(w http.ResponseWriter, r *http.Request) {
 		// notes, so a public FAQ never points into a private group.
 		for _, p := range pairs {
 			if g, ok := s.sisterCitable(c, p.Other); ok {
-				d.Sisters = append(d.Sisters, faqSister{Name: g.Name, URL: s.groupURL(g, c.rt.domain, "/faq"), Topics: p.Topics})
+				d.Sisters = append(d.Sisters, faqSister{Name: g.Name, URL: s.groupURL(g, c.rt.at, "/faq"), Topics: p.Topics})
 			}
 		}
 	}
@@ -165,7 +165,7 @@ func (s *Server) rootGroups(r *http.Request, c *greq) ([]rootGroupCard, error) {
 		if err != nil || !auth.CanSeeGroup(v, st.Visibility) {
 			continue
 		}
-		card := rootGroupCard{Name: g.Name, Description: st.Description, URL: s.groupURL(g, c.rt.domain, "/faq")}
+		card := rootGroupCard{Name: g.Name, Description: st.Description, URL: s.groupURL(g, c.rt.at, "/faq")}
 		if auth.CanReadFAQ(v, st.Visibility, st.PublicFAQ) {
 			tree, err := s.Store.Topics(g.ID)
 			if err != nil {

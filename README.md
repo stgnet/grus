@@ -85,6 +85,12 @@ sent). Create a group on the admin page and it's live at
 `http://<name>.grus.localhost:8080/`. The first start makes the cluster's
 certificates in `./data/cluster`.
 
+`http://localhost:8080/` works too, on this or any node (every node
+answers `localhost` from its own machine), with groups at
+`http://localhost:8080/g/<name>/`; and any domain answers
+`<domain>/g/<name>/` for a group. See [docs/dns.md](docs/dns.md), "Before
+DNS".
+
 ## Installing for real
 
 `make install`, on a fresh or running Ubuntu or macOS machine: it

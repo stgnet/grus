@@ -57,7 +57,7 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		cards = append(cards, groupCard{Name: g.Name, Description: st.Description,
-			URL: s.groupURL(g, rt.domain, "/"), Visibility: st.Visibility})
+			URL: s.groupURL(g, rt.at, "/"), Visibility: st.Visibility})
 	}
 	s.render(w, r, http.StatusOK, "home", &page{Title: rt.domain, User: u, Data: cards})
 }
@@ -66,6 +66,6 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 // here after.
 func (s *Server) groupLogin(w http.ResponseWriter, r *http.Request) {
 	rt := routeOf(r)
-	back := s.groupURL(rt.group, rt.domain, "/")
-	http.Redirect(w, r, s.siteURL(rt.domain, "/login?next="+queryEscape(back)), http.StatusSeeOther)
+	back := s.groupURL(rt.group, rt.at, "/")
+	http.Redirect(w, r, s.siteURL(rt.at, "/login?next="+queryEscape(back)), http.StatusSeeOther)
 }

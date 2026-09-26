@@ -32,6 +32,18 @@ func (s *Server) mailer(domain string) (*mail.Mailer, error) {
 	if err != nil {
 		return nil, err
 	}
+	if isLocal(domain) {
+		// Email about localhost (a sign-in while testing) goes out in the
+		// name of the first listed domain: login@localhost would bounce.
+		// Its links still lead back to localhost.
+		domains, err := s.Store.Domains()
+		if err != nil {
+			return nil, err
+		}
+		if len(domains) > 0 {
+			domain = domains[0].Name
+		}
+	}
 	m := &mail.Mailer{Host: g.SMTPHost, Port: g.SMTPPort, User: g.SMTPUser, Pass: g.SMTPPass,
 		From: "login@" + domain, Dev: s.MailLog}
 	d, err := s.Store.DomainNamed(domain)

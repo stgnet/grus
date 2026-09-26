@@ -89,6 +89,9 @@ type browser struct {
 	// apart from nfb.group's, and so must this one, to test that each
 	// domain has its own sign-in.
 	other map[string]map[string]*http.Cookie
+	// remote, when set, is the address requests come from ("127.0.0.1:x"
+	// for this machine; the default is httptest's, somewhere else).
+	remote string
 }
 
 func (s *testSite) browser() *browser {
@@ -141,6 +144,9 @@ func (b *browser) do(method, rawURL string, form url.Values) *httptest.ResponseR
 		body = strings.NewReader("")
 	}
 	r := httptest.NewRequest(method, rawURL, body)
+	if b.remote != "" {
+		r.RemoteAddr = b.remote
+	}
 	if form != nil {
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
@@ -347,8 +353,9 @@ func TestNoOpenRedirect(t *testing.T) {
 		"https://user@travato.nfb.group/",
 		"http://travato.nfb.group/", // wrong scheme
 		"https://nope.nfb.group/",   // not a group
+		"http://localhost/",         // localhost only from localhost
 	} {
-		if got := s.srv.safeNext(next, "nfb.group"); got != home {
+		if got := s.srv.safeNext(next, site{domain: "nfb.group"}); got != home {
 			t.Errorf("safeNext(%q) = %q, want the home page", next, got)
 		}
 	}
@@ -356,7 +363,7 @@ func TestNoOpenRedirect(t *testing.T) {
 		"https://travato.nfb.group/p/1?x=2": "https://travato.nfb.group/p/1?x=2",
 		"/welcome":                          "https://nfb.group/welcome",
 	} {
-		if got := s.srv.safeNext(next, "nfb.group"); got != want {
+		if got := s.srv.safeNext(next, site{domain: "nfb.group"}); got != want {
 			t.Errorf("safeNext(%q) = %q, want %q", next, got, want)
 		}
 	}

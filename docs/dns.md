@@ -25,9 +25,34 @@ anything else points at it. The site is the same on each; only the
 address differs, and every link on a page stays in the domain it was
 asked for on.
 
-The Studio needs a name of its own for the cluster port (any domain works;
-it doesn't have to be under `nfb.group`). Use a short TTL (300s) so a new
-home IP takes effect quickly.
+No node needs a DNS name of its own: each finds its own address for the
+cluster port (docs/replication.md, "Where nodes are"), the Studio's
+included.
+
+## Before DNS: /g/ paths and localhost
+
+Two ways to reach the site that need no records at all, for testing a
+node or a domain before its DNS is in place:
+
+- **`<domain>/g/<slug>`** is the group, on any listed domain:
+  `nfb.group/g/travato/` is the same page as `travato.nfb.group/`. Links
+  on a page reached that way stay in the `/g/` form, so a domain whose
+  wildcard record isn't set up yet can still be browsed (the bare domain's
+  record, and its certificate, are still needed).
+- **`localhost`** is built in, as if listed: `http://localhost/` is the
+  home site and `http://localhost/g/travato/` the group. It's plain HTTP
+  on the node's port 80 (no certificate can exist for it), and it's only
+  answered for requests from the node's own machine, so from anywhere
+  else use an ssh tunnel:
+
+  ```sh
+  ssh -L 8080:localhost:80 vps1.example.org
+  # then open http://localhost:8080/ here
+  ```
+
+  Every link stays on `localhost:8080`. Sign-in works: the email goes out
+  in the first listed domain's name, with a link back to localhost. The
+  session is kept apart from the real domains', as any domain's is.
 
 ## Mail: SPF, DKIM, DMARC
 

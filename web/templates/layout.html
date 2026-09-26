@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/app.js" defer></script>
 </head>
-<body>
+<body data-base="{{.Base}}">
 <header class="top">
   <a class="brand" href="{{if .Group}}/{{else}}{{.HomeURL}}{{end}}">{{if .Group}}{{.Group.Name}}{{else}}Home{{end}}</a>
   <nav>

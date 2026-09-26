@@ -52,19 +52,33 @@ func (s *Server) setSession(w http.ResponseWriter, domain, raw string, expires t
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    raw,
-		Domain:   domain,
+		Domain:   cookieDomain(domain),
 		Path:     "/",
 		Expires:  expires,
 		HttpOnly: true,                 // scripts can't read it
-		Secure:   !s.Dev,               // HTTPS only
+		Secure:   s.secure(domain),     // HTTPS only
 		SameSite: http.SameSiteLaxMode, // sent when following a link in, not on cross-site posts
 	})
 }
 
 func (s *Server) clearCookie(w http.ResponseWriter, name, domain string) {
-	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Domain: domain, Path: "/", MaxAge: -1,
-		HttpOnly: true, Secure: !s.Dev, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Domain: cookieDomain(domain), Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: s.secure(domain), SameSite: http.SameSiteLaxMode})
 }
+
+// cookieDomain is the Domain a cookie for domain is set on. localhost's
+// cookies are left to the host alone: some browsers refuse Domain=localhost,
+// and its groups are on the same host anyway (localhost/g/<slug>).
+func cookieDomain(domain string) string {
+	if isLocal(domain) {
+		return ""
+	}
+	return domain
+}
+
+// secure says whether cookies for domain are HTTPS-only: not in dev, and
+// not on localhost, which is plain HTTP.
+func (s *Server) secure(domain string) bool { return !s.Dev && !isLocal(domain) }
 
 type loginData struct {
 	Email string
@@ -73,7 +87,7 @@ type loginData struct {
 
 func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 	rt := routeOf(r)
-	next := s.safeNext(r.URL.Query().Get("next"), rt.domain)
+	next := s.safeNext(r.URL.Query().Get("next"), rt.at)
 	if s.user(r) != nil {
 		http.Redirect(w, r, next, http.StatusSeeOther)
 		return
@@ -84,7 +98,7 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 // loginSend emails a sign-in link and code.
 func (s *Server) loginSend(w http.ResponseWriter, r *http.Request) {
 	rt := routeOf(r)
-	next := s.safeNext(r.FormValue("next"), rt.domain)
+	next := s.safeNext(r.FormValue("next"), rt.at)
 	addr, err := mail.ParseAddress(strings.TrimSpace(r.FormValue("email")))
 	if err != nil || len(addr.Address) > 254 {
 		s.render(w, r, http.StatusBadRequest, "login", &page{Title: "Sign in",
@@ -117,7 +131,7 @@ func (s *Server) loginSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	link := s.siteURL(rt.domain, "/link/"+raw)
+	link := s.siteURL(rt.at, "/link/"+raw)
 	body := fmt.Sprintf("Tap to sign in to %s:\n\n%s\n\n"+
 		"Or type this code on the page where you asked to sign in:\n\n    %s\n\n"+
 		"The link and the code work once, for 15 minutes.\n"+
@@ -132,7 +146,7 @@ func (s *Server) loginSend(w http.ResponseWriter, r *http.Request) {
 	// The cookie holds the token's hash, which can't sign anyone in by
 	// itself; the code (from the email) is still needed.
 	http.SetCookie(w, &http.Cookie{Name: pendingCookie, Value: hash, Path: "/",
-		MaxAge: int(loginTTL.Seconds()), HttpOnly: true, Secure: !s.Dev, SameSite: http.SameSiteLaxMode})
+		MaxAge: int(loginTTL.Seconds()), HttpOnly: true, Secure: s.secure(rt.domain), SameSite: http.SameSiteLaxMode})
 	http.Redirect(w, r, "/code", http.StatusSeeOther)
 }
 
@@ -250,7 +264,7 @@ func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request, t *store.L
 		s.serverError(w, r, err)
 		return
 	}
-	dest := s.safeNext(red.ReturnURL, rt.domain)
+	dest := s.safeNext(red.ReturnURL, rt.at)
 	if u == nil || u.Handle == "" {
 		dest = "/welcome?next=" + queryEscape(dest)
 	}
@@ -266,7 +280,7 @@ type welcomeData struct {
 func (s *Server) welcomeForm(w http.ResponseWriter, r *http.Request) {
 	rt := routeOf(r)
 	u := s.user(r)
-	next := s.safeNext(r.URL.Query().Get("next"), rt.domain)
+	next := s.safeNext(r.URL.Query().Get("next"), rt.at)
 	if u == nil {
 		http.Redirect(w, r, "/login?next="+queryEscape(next), http.StatusSeeOther)
 		return
@@ -278,7 +292,7 @@ func (s *Server) welcomeForm(w http.ResponseWriter, r *http.Request) {
 func (s *Server) welcomeSave(w http.ResponseWriter, r *http.Request) {
 	rt := routeOf(r)
 	u := s.user(r)
-	next := s.safeNext(r.FormValue("next"), rt.domain)
+	next := s.safeNext(r.FormValue("next"), rt.at)
 	if u == nil {
 		http.Redirect(w, r, "/login?next="+queryEscape(next), http.StatusSeeOther)
 		return

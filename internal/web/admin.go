@@ -79,7 +79,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, u *store.Us
 		d.Global = append(d.Global, globalField{Key: k, Value: raw[k]})
 	}
 	for _, g := range groups {
-		d.Groups = append(d.Groups, adminGroup{Group: g, URL: s.groupURL(&g, rt.domain, "/")})
+		d.Groups = append(d.Groups, adminGroup{Group: g, URL: s.groupURL(&g, rt.at, "/")})
 	}
 	if err := s.adminNodes(&d, groups); err != nil {
 		s.serverError(w, r, err)

@@ -110,7 +110,7 @@ func (s *Server) SendNotices() error {
 		}
 		newest := map[int64]int64{}
 		for uid, ns := range byUser {
-			views, err := s.noticeViews(g, s.userDomain(users[uid], domains), ns)
+			views, err := s.noticeViews(g, siteAt(s.userDomain(users[uid], domains)), ns)
 			if err != nil {
 				return err
 			}
@@ -229,7 +229,7 @@ func (s *Server) digestBody(u *store.User, groups []store.Group, domain string, 
 		fmt.Fprintf(&b, "%s\n", g.Name)
 		for _, p := range posts {
 			fmt.Fprintf(&b, "  %s (%s)\n  %s\n", p.Title, plural(p.CommentCount, "comment", "comments"),
-				s.groupURL(g, domain, fmt.Sprintf("/p/%d", p.ID)))
+				s.groupURL(g, siteAt(domain), fmt.Sprintf("/p/%d", p.ID)))
 		}
 		b.WriteString("\n")
 	}
@@ -238,13 +238,13 @@ func (s *Server) digestBody(u *store.User, groups []store.Group, domain string, 
 	}
 	if unread > 0 {
 		fmt.Fprintf(&b, "You have %s: %s\n\n", plural(unread, "unread notification", "unread notifications"),
-			s.siteURL(domain, "/notifications"))
+			s.siteURL(siteAt(domain), "/notifications"))
 	}
 	return b.String(), due, nil
 }
 
 func (s *Server) emailFooter(domain string) string {
-	return "--\nYou asked for these emails. To change or stop them: " + s.siteURL(domain, "/profile") + "\n"
+	return "--\nYou asked for these emails. To change or stop them: " + s.siteURL(siteAt(domain), "/profile") + "\n"
 }
 
 func plural(n int, one, many string) string {

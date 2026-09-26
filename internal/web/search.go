@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -271,14 +272,14 @@ func (s *Server) checkSisterCard(c *greq, g *store.Group, card ai.Card) (cardVie
 		if err != nil || e == nil || e.Status != "active" {
 			return cardView{}, false
 		}
-		return cardView{URL: s.groupURL(g, c.rt.domain, fmt.Sprintf("/faq/e/%d", e.ID)), Title: e.Question,
+		return cardView{URL: s.groupURL(g, c.rt.at, fmt.Sprintf("/faq/e/%d", e.ID)), Title: e.Question,
 			Label: g.Name + " FAQ", Date: e.UpdatedAt, Statement: card.Statement}, true
 	case card.PostID != 0:
 		p, err := s.Store.Post(g.ID, card.PostID)
 		if err != nil || p == nil || p.Status != "visible" {
 			return cardView{}, false
 		}
-		return cardView{URL: s.groupURL(g, c.rt.domain, fmt.Sprintf("/p/%d", p.ID)), Title: p.Title, Label: label,
+		return cardView{URL: s.groupURL(g, c.rt.at, fmt.Sprintf("/p/%d", p.ID)), Title: p.Title, Label: label,
 			Date: p.CreatedAt, Statement: card.Statement}, true
 	}
 	return cardView{}, false // outside pages are cited from the group that has them
@@ -360,11 +361,17 @@ func (s *Server) askAllowed(userID int64) bool {
 // renderFragment writes one piece of HTML (no page layout) for the page's
 // script to put in place.
 func (s *Server) renderFragment(w http.ResponseWriter, r *http.Request, name string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "private, no-store")
-	if err := s.fragments.ExecuteTemplate(w, name, data); err != nil {
+	var buf bytes.Buffer
+	if err := s.fragments.ExecuteTemplate(&buf, name, data); err != nil {
 		log.Printf("render fragment %s: %v", name, err)
 	}
+	base := ""
+	if rt := routeOf(r); rt != nil {
+		base = rt.prefix
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Write(withBase(buf.Bytes(), base)) // links within the group, as on its pages
 }
 
 // relatedIDs parses "1,2,3" (the "Post this question" link's closest

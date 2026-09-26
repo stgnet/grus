@@ -66,7 +66,10 @@ func (s *Server) cacheable(r *http.Request, rt *route) bool {
 func (s *Server) serveCached(w http.ResponseWriter, r *http.Request, rt *route, next http.Handler) {
 	// A copy is current while neither file has changed since it was made.
 	siteIdx, groupIdx := s.Store.Version(0), s.Store.Version(rt.group.ID)
-	key := r.Host + r.URL.RequestURI()
+	// rt.prefix: travato.nfb.group/ and nfb.group/g/travato/ are the same
+	// page with different links, and nfb.group/g/travato/ mustn't be taken
+	// for nfb.group/.
+	key := r.Host + rt.prefix + r.URL.RequestURI()
 	s.cache.mu.Lock()
 	p := s.cache.pages[key]
 	s.cache.mu.Unlock()
