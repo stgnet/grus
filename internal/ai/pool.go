@@ -17,7 +17,7 @@ import (
 
 // Health is a worker's report.
 type Health struct {
-	Applied uint64  `json:"applied"` // its log position, to judge how current its copy is
+	Applied uint64  `json:"applied"` // its site.db's last stamp (ms), to judge how current its copy is
 	Queue   int     `json:"queue"`   // searches in progress
 	AvgAsk  float64 `json:"avg_ask"` // recent seconds per search
 }
@@ -72,7 +72,7 @@ type Pool struct {
 	// added or removed is picked up without a restart.
 	Workers func() []string
 	Client  *cluster.Client
-	Applied func() uint64 // this node's log position
+	Applied func() uint64 // this node's site.db's last stamp, in ms (cluster.Node.SiteStamp)
 
 	mu     sync.Mutex
 	health map[string]workerState
@@ -119,9 +119,10 @@ func (p *Pool) Available() bool {
 	return ok
 }
 
-// Workers' copies more than this many log entries behind are skipped: their
-// answers could miss what was just posted.
-const maxLag = 500
+// Workers whose copy of site.db is more than this far behind this node's
+// (in milliseconds of stamp) are skipped: their answers could miss what
+// was just posted. Copies normally trail by a second or two.
+const maxLag = 30_000
 
 // choose returns the worker that should finish soonest, estimated as
 // (queue + 1) x its average search time. "" means this node.

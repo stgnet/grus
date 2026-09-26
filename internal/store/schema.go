@@ -306,7 +306,84 @@ CREATE TABLE user_aliases (
   user_id  INTEGER NOT NULL
 );
 `,
+	// 9: M9 replication without a leader (see replicationTables).
+	replicationTables,
+	// 10: M9 the node map, for replication. origin: the node's current
+	// origin (its id and incarnation); num: its node number, which goes
+	// into every id it makes, so no two nodes may share one. A removed
+	// node's origins are kept with how far each file had got from them:
+	// operations beyond that are ignored (docs/replication.md).
+	`
+ALTER TABLE nodes ADD COLUMN origin TEXT NOT NULL DEFAULT '';
+ALTER TABLE nodes ADD COLUMN num INTEGER NOT NULL DEFAULT -1;
+CREATE TABLE removed_origins (
+  origin  TEXT    NOT NULL,
+  log     TEXT    NOT NULL,  -- "site", "g42"
+  upto    INTEGER NOT NULL,  -- the last seq accepted
+  PRIMARY KEY (origin, log)
+);
+`,
 }
+
+// replicationTables is the same migration in site.db and in every group's
+// file: each file carries its own operations.
+const replicationTables = `
+-- Replication (docs/replication.md). Every operation this file has: a
+-- command, who made it (origin: node id and incarnation), their count of
+-- operations on this file (seq), and its stamp, which orders it. cause
+-- is set on a follow-up sent by another operation. An operation's row is
+-- written in the same transaction as its effects.
+CREATE TABLE ops (
+  origin  TEXT    NOT NULL,
+  seq     INTEGER NOT NULL,
+  stamp   INTEGER NOT NULL,
+  cause   TEXT    NOT NULL DEFAULT '',
+  command BLOB    NOT NULL,
+  PRIMARY KEY (origin, seq)
+);
+CREATE INDEX ops_order ON ops(stamp, origin, seq);
+
+-- The version vector: for each origin, the highest seq applied here, and
+-- that operation's stamp. Deleting old operations doesn't touch it.
+CREATE TABLE seqs (
+  origin TEXT PRIMARY KEY,
+  seq    INTEGER NOT NULL,
+  stamp  INTEGER NOT NULL
+);
+
+-- The last operation applied, in order, and the Raft index the file had
+-- reached when it was upgraded (so nodes can tell which of them had the
+-- newer copy then).
+CREATE TABLE position (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  stamp      INTEGER NOT NULL,
+  origin     TEXT    NOT NULL,
+  seq        INTEGER NOT NULL,
+  raft_index INTEGER NOT NULL
+);
+INSERT INTO position SELECT 1, 0, '', 0, log_index FROM applied WHERE id = 1;
+
+-- Follow-ups already applied, by the identity of the operation that sent
+-- them, so one sent twice applies once.
+CREATE TABLE causes (
+  cause TEXT PRIMARY KEY
+);
+
+-- Operations that succeeded where they were made but failed in their final
+-- place in the order, with the reason: shown to operators and mods rather
+-- than vanishing.
+CREATE TABLE conflicts (
+  origin  TEXT    NOT NULL,
+  seq     INTEGER NOT NULL,
+  stamp   INTEGER NOT NULL,
+  command TEXT    NOT NULL,  -- the command's name
+  error   TEXT    NOT NULL,
+  PRIMARY KEY (origin, seq)
+);
+
+-- Which operation sent each follow-up (see causes).
+ALTER TABLE outbox ADD COLUMN cause TEXT NOT NULL DEFAULT '';
+`
 
 var groupMigrations = []string{
 	// 1: M0
@@ -833,4 +910,6 @@ CREATE TABLE outbox (
 );
 ALTER TABLE memberships ADD COLUMN digest_sent_at INTEGER NOT NULL DEFAULT 0;
 `,
+	// 9: M9 replication without a leader (see replicationTables).
+	replicationTables,
 }

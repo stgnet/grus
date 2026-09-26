@@ -18,8 +18,8 @@ func TestExamplesLoad(t *testing.T) {
 		}
 	}
 	c, _ := Load("../../deploy/grus.conf.example")
-	if !c.Voter || !c.Bootstrap {
-		t.Errorf("the VPS example should bootstrap as a voter: %+v", c)
+	if !c.Voter || len(c.Join) != 0 {
+		t.Errorf("the VPS example should be the first node, taking new groups: %+v", c)
 	}
 	s, _ := Load("../../deploy/studio.conf.example")
 	if !s.Full || s.Voter || len(s.Join) != 1 || s.Join[0] != "vps1.nfb.group:7946" {
@@ -60,7 +60,7 @@ worker = studio:7946
 	if v["smtp_host"] != "smtp.example.com" || v["faq_hour"] != "3" || v["operators"] != "a@x.com\nb@x.com" {
 		t.Errorf("seed values %q", v)
 	}
-	if len(c.Obsolete) != 1 || c.Obsolete[0] != "worker" {
+	if len(c.Obsolete) != 2 || c.Obsolete[0] != "bootstrap" || c.Obsolete[1] != "worker" {
 		t.Errorf("obsolete %q", c.Obsolete)
 	}
 }

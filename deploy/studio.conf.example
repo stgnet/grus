@@ -1,19 +1,18 @@
-# The Studio in the starting setup: a live, full copy of everything, as a
-# non-voting member. It serves no web traffic of its own (no http_addr or
-# https_addr); a VPS may still pass it a page for a group the VPS doesn't
-# hold. It registers through the VPS on its first start, and each log's
-# leader then adds it.
+# The Studio in the starting setup: a live, full copy of everything. It
+# serves no web traffic of its own (no http_addr or https_addr); a VPS may
+# still pass it a page for a group the VPS doesn't hold. On its first start
+# it copies site.db from the VPS, registers itself, and copies every group.
 
 node_id  = studio
 node_num = 2
-# On the Studio's own disk, not the NAS: SQLite needs local-disk locking.
-# The NAS gets the daily backups (deploy/grus-backup.sh).
+# Anywhere that behaves like a local disk (a disk image on the NAS is fine;
+# a share mounted straight over SMB or NFS isn't: SQLite needs real locks).
 data_dir = /usr/local/var/grus
 
 cluster_addr = :7946
 advertise    = studio.example.net:7946
-# Holds every group, as a non-voter: its home connection can drop without
-# stalling anything.
+# Holds every group. Its home connection can drop without stalling
+# anything: each side carries on, and they merge when it's back.
 full         = true
 join         = vps1.nfb.group:7946
 

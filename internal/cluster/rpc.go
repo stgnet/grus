@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/stgnet/grus/internal/blob"
@@ -23,14 +25,13 @@ import (
 //
 //	GET  /blob/{hash}[?thumb=1]   a photo, for a node that's missing it
 //	PUT  /blob/{hash}[?thumb=1]   store a photo pushed by the node that received it
-//	POST /apply                    submit an encoded command to its log's leader
-//	GET  /applied/{log}            how far this node has applied a log
+//	POST /apply                    make a write, on a node that holds its file
 //	GET  /group/{slug}             a group's id, for operator tools
+//	/sync/...                      replication (sync.go)
 
 // serveRPC starts the node's internal API: the endpoints the cluster itself
-// needs (applying a command, how far a log has got, a group's id). Other
-// packages add theirs to n.RPC(): photos (ServeBlobs), the AI worker's
-// /ai/..., the web server's /web/ pass-through.
+// needs. Other packages add theirs to n.RPC(): photos (ServeBlobs), the AI
+// worker's /ai/..., the web server's /web/ pass-through.
 func (n *Node) serveRPC() {
 	mux := http.NewServeMux()
 	n.rpcMux = mux
@@ -42,15 +43,6 @@ func (n *Node) serveRPC() {
 			return
 		}
 		fmt.Fprint(w, g.ID)
-	})
-	mux.HandleFunc("GET /applied/{log}", func(w http.ResponseWriter, r *http.Request) {
-		l, err := cmd.ParseLogID(r.PathValue("log"))
-		s := n.shard(l)
-		if err != nil || s == nil {
-			http.NotFound(w, r)
-			return
-		}
-		fmt.Fprint(w, s.raft.AppliedIndex())
 	})
 	mux.HandleFunc("POST /apply", func(w http.ResponseWriter, r *http.Request) {
 		data, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
@@ -64,42 +56,32 @@ func (n *Node) serveRPC() {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		// Apply here only if this node leads the command's log. Otherwise
-		// say where to go, rather than forwarding again, so a request
-		// can't bounce around between nodes.
-		misdirected := func(leader string) {
+		// Only a node that holds the file makes the write. Any other says
+		// so, and the sender tries another, rather than this node passing
+		// it on again: a write can't go round in circles.
+		if !n.holds(cmd.LogOf(c)) {
 			w.WriteHeader(http.StatusMisdirectedRequest)
-			json.NewEncoder(w).Encode(applyReply{Error: ErrNotLeader.Error(), Leader: leader})
-		}
-		l := cmd.LogOf(c)
-		s := n.shardFor(l)
-		if s == nil {
-			// Not a log this node holds: point at one that does.
-			targets, _ := n.forwardTargets(l, nil)
-			if len(targets) == 0 {
-				misdirected("")
-			} else {
-				misdirected(targets[0])
-			}
+			json.NewEncoder(w).Encode(applyReply{Error: errNotHeld.Error()})
 			return
 		}
-		v, index, err := n.applyLocal(s, c)
-		if errors.Is(err, ErrNotLeader) {
-			misdirected(s.leaderAddr())
-			return
-		}
+		v, err := n.apply(c, r.Header.Get(causeHeader))
 		if err != nil {
-			// A command that failed was still appended to the log (it
-			// fails the same way everywhere), so the index still matters.
 			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(applyReply{Error: err.Error(), Input: cmd.IsInput(err), Index: index})
+			json.NewEncoder(w).Encode(applyReply{Error: err.Error(), Input: cmd.IsInput(err)})
 			return
 		}
-		json.NewEncoder(w).Encode(applyReply{Value: v, Index: index})
+		json.NewEncoder(w).Encode(applyReply{Value: v})
 	})
+	n.serveSync(mux)
 	n.rpcSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go n.rpcSrv.Serve(n.rpc)
 }
+
+// causeHeader carries a follow-up's cause (cmd.Op.Cause) with /apply.
+const causeHeader = "X-Grus-Cause"
+
+// errNotHeld is a node's answer to /apply for a file it doesn't hold.
+var errNotHeld = errors.New("that node doesn't hold the file")
 
 // RPC is the node's internal API, for other packages to add endpoints to.
 func (n *Node) RPC() *http.ServeMux { return n.rpcMux }
@@ -128,11 +110,9 @@ func ServeBlobs(mux *http.ServeMux, blobs *blob.Store) {
 }
 
 type applyReply struct {
-	Value  any    `json:"value,omitempty"`
-	Error  string `json:"error,omitempty"`
-	Input  bool   `json:"input,omitempty"` // the error is the person's to fix (cmd.IsInput)
-	Leader string `json:"leader,omitempty"`
-	Index  uint64 `json:"index,omitempty"` // the command's place in the log
+	Value any    `json:"value,omitempty"`
+	Error string `json:"error,omitempty"`
+	Input bool   `json:"input,omitempty"` // the error is the person's to fix (cmd.IsInput)
 }
 
 // decodeValue turns a forwarded command's JSON result back into the Go
@@ -162,6 +142,24 @@ func decodeValue(raw json.RawMessage) any {
 // Client calls other nodes' internal API.
 type Client struct {
 	hc *http.Client
+	// blocked lists addresses this client acts as if it can't reach: how
+	// tests split the network. All node-to-node traffic starts from a
+	// client, so two nodes blocking each other are fully apart.
+	blocked sync.Map
+}
+
+// blockingTransport fails requests to blocked addresses, as an unreachable
+// node would.
+type blockingTransport struct {
+	c    *Client
+	next http.RoundTripper
+}
+
+func (t blockingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if _, ok := t.c.blocked.Load(r.URL.Host); ok {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("blocked (a test's network split)")}
+	}
+	return t.next.RoundTrip(r)
 }
 
 // NewClient makes a client that presents this node's certificate and only
@@ -170,10 +168,12 @@ func NewClient(conf *tls.Config) *Client {
 	c := conf.Clone()
 	c.NextProtos = []string{rpcProto}
 	c.ServerName = clusterName
-	return &Client{hc: &http.Client{
+	cl := &Client{}
+	cl.hc = &http.Client{
 		Timeout:   60 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: c, MaxIdleConnsPerHost: 4},
-	}}
+		Transport: blockingTransport{cl, &http.Transport{TLSClientConfig: c, MaxIdleConnsPerHost: 4}},
+	}
+	return cl
 }
 
 func blobURL(addr, hash string, thumb bool) string {
@@ -215,23 +215,6 @@ func (c *Client) PutBlob(addr, hash string, thumb bool, data []byte) error {
 	return nil
 }
 
-// Applied asks a node how far it has applied one log.
-func (c *Client) Applied(addr string, l cmd.LogID) (uint64, error) {
-	resp, err := c.hc.Get("https://" + addr + "/applied/" + l.String())
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("%s doesn't hold log %s", addr, l)
-	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 32))
-	if err != nil {
-		return 0, err
-	}
-	return strconv.ParseUint(string(b), 10, 64)
-}
-
 // Transport is the HTTP transport to other nodes' internal API, for the
 // web server's pass-through to a node holding a group (web.Server.Proxy).
 func (c *Client) Transport() http.RoundTripper { return c.hc.Transport }
@@ -253,50 +236,46 @@ func (c *Client) GroupID(addr, slug string) (int64, error) {
 	return strconv.ParseInt(string(b), 10, 64)
 }
 
-// Apply submits a command to the node at addr, following it to the leader
-// of the command's log if addr isn't it. It returns the command's result as JSON.
+// Apply submits a command to the node at addr, which makes the write if
+// it holds the command's file. It returns the command's result as JSON.
 func (c *Client) Apply(addr string, cm cmd.Command) (json.RawMessage, error) {
-	raw, _, err := c.apply(addr, cm)
-	return raw, err
+	return c.apply(addr, cm, "")
 }
 
-// apply is Apply plus the command's log index, which a forwarding node
-// waits for before reading its own copy.
-func (c *Client) apply(addr string, cm cmd.Command) (json.RawMessage, uint64, error) {
+// apply is Apply with a follow-up's cause.
+func (c *Client) apply(addr string, cm cmd.Command, cause string) (json.RawMessage, error) {
 	data, err := cmd.Encode(cm)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	for tries := 0; tries < 4; tries++ { // the node asked, and up to three redirects
-		resp, err := c.hc.Post("https://"+addr+"/apply", "application/octet-stream", bytes.NewReader(data))
-		if err != nil {
-			return nil, 0, err
-		}
-		var rep struct {
-			Value  json.RawMessage `json:"value"`
-			Error  string          `json:"error"`
-			Input  bool            `json:"input"`
-			Leader string          `json:"leader"`
-			Index  uint64          `json:"index"`
-		}
-		err = json.NewDecoder(resp.Body).Decode(&rep)
-		resp.Body.Close()
-		if err != nil {
-			return nil, 0, fmt.Errorf("apply via %s: %s: %v", addr, resp.Status, err)
-		}
-		if resp.StatusCode == http.StatusMisdirectedRequest {
-			if rep.Leader == "" || rep.Leader == addr {
-				return nil, 0, ErrNotLeader
-			}
-			addr = rep.Leader
-			continue
-		}
-		if rep.Error != "" {
-			return nil, rep.Index, cmd.Remote(rep.Error, rep.Input)
-		}
-		return rep.Value, rep.Index, nil
+	req, err := http.NewRequest(http.MethodPost, "https://"+addr+"/apply", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
 	}
-	return nil, 0, ErrNotLeader
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if cause != "" {
+		req.Header.Set(causeHeader, cause)
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var rep struct {
+		Value json.RawMessage `json:"value"`
+		Error string          `json:"error"`
+		Input bool            `json:"input"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil {
+		return nil, fmt.Errorf("apply via %s: %s: %v", addr, resp.Status, err)
+	}
+	if resp.StatusCode == http.StatusMisdirectedRequest {
+		return nil, errNotHeld
+	}
+	if rep.Error != "" {
+		return nil, cmd.Remote(rep.Error, rep.Input)
+	}
+	return rep.Value, nil
 }
 
 // PostJSON sends in as JSON to another node's internal API and decodes the

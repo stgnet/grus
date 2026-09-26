@@ -4,8 +4,6 @@
 //	grus serve   -config /etc/grus/grus.conf    run the node
 //	grus ca init  -dir /etc/grus/cluster        make the cluster CA (once)
 //	grus ca issue -dir /etc/grus/cluster <id>   make a node's certificate
-//	grus backup  -config ... -to <dir>          consistent copy of every database
-//	grus recover -config ...                    make this node every log's only voter (disaster runbook)
 //	grus import-archive -config ... -group <slug> <file>   load a knowledge base as archive threads
 //	grus bench-llm -model <name> <archive.json>            measure a model on real threads
 //	grus loadtest -url https://<group address> [-c 10] [-d 30s]   read public pages hard, report timings
@@ -52,10 +50,6 @@ func main() {
 		err = serve(os.Args[2:])
 	case "ca":
 		err = ca(os.Args[2:])
-	case "backup":
-		err = backup(os.Args[2:])
-	case "recover":
-		err = recoverCmd(os.Args[2:])
 	case "import-archive":
 		err = importArchive(os.Args[2:])
 	case "bench-llm":
@@ -77,8 +71,6 @@ func usage() {
   grus serve   -config /etc/grus/grus.conf
   grus ca init  -dir <dir>
   grus ca issue -dir <dir> <node-id>
-  grus backup  -config <file> -to <dir>
-  grus recover -config <file>
   grus import-archive -config <file> -group <slug> [-n] <archive.json>
   grus bench-llm -model <name> [-url ...] [-n 20] [-questions q.json] <archive.json>
   grus loadtest -url https://<group address> [-c 10] [-d 30s] [-paths /a,/b]
@@ -104,7 +96,7 @@ func clusterOptions(c *config.Config) (cluster.Options, error) {
 	}
 	return cluster.Options{
 		ID: c.NodeID, Listen: c.ClusterAddr, Advertise: c.Advertise, TLS: t,
-		Bootstrap: c.Bootstrap, Voter: c.Voter, Full: c.Full, Join: c.Join, AI: c.AIURL != "",
+		Num: c.NodeNum, Voter: c.Voter, Full: c.Full, Join: c.Join, AI: c.AIURL != "",
 	}, nil
 }
 
@@ -118,6 +110,14 @@ func serve(args []string) error {
 		return err
 	}
 	defer st.Close()
+
+	// Raft's files, from before replication without a leader
+	// (docs/replication.md, "Upgrading from Raft"). The databases carry
+	// everything over; the old log isn't needed.
+	if _, err := os.Stat(filepath.Join(c.DataDir, "raft")); err == nil {
+		log.Printf("removing %s: Raft's files, no longer used", filepath.Join(c.DataDir, "raft"))
+		os.RemoveAll(filepath.Join(c.DataDir, "raft"))
+	}
 
 	opts, err := clusterOptions(c)
 	if err != nil {
@@ -136,15 +136,11 @@ func serve(args []string) error {
 	// The first time the cluster runs (or the first time after upgrading
 	// to the global level), the global settings are seeded from this
 	// config. SeedGlobal does nothing after the first time: from then on
-	// site.db is the truth, and the admin page changes it.
-	if err := node.WaitLeader(30 * time.Second); err != nil {
-		log.Printf("warning: %v; continuing, waiting for the cluster", err)
-	}
-	if node.IsLeader() {
-		seed := &cmd.SeedGlobal{Values: c.Seed.Values, Domains: c.Seed.Domains, MailFrom: c.Seed.MailFrom, At: time.Now().Unix()}
-		if _, err := node.Apply(seed); err != nil {
-			return fmt.Errorf("seeding the global settings from %s: %w", c.NodeID, err)
-		}
+	// site.db is the truth, and the admin page changes it. Any node may
+	// send it; a node that joined has site.db already, seeded.
+	seed := &cmd.SeedGlobal{Values: c.Seed.Values, Domains: c.Seed.Domains, MailFrom: c.Seed.MailFrom, At: time.Now().Unix()}
+	if _, err := node.Apply(seed); err != nil {
+		return fmt.Errorf("seeding the global settings from %s: %w", c.NodeID, err)
 	}
 	for _, k := range c.Obsolete {
 		log.Printf("config: %s no longer does anything and can be deleted", k)
@@ -191,7 +187,7 @@ func serve(args []string) error {
 			return g.AIModel, g.AIContext
 		}
 		engine = &ai.Engine{LLM: llm, Store: st, Meter: meter}
-		engine.Handler(rpcMux, node.AppliedIndex)
+		engine.Handler(rpcMux, node.SiteStamp)
 		// The worker also reads outside pages for their summaries, with a
 		// fetcher that only reads what a group allows (internal/fetch).
 		w := &ai.Worker{Engine: engine, Log: node, IDs: gen, Name: c.NodeID, Now: time.Now, Fetch: fetch.New()}
@@ -203,7 +199,7 @@ func serve(args []string) error {
 	}
 	// Searches go to this node's own model and to every other node with
 	// one, from the node map (each node records there whether it has one).
-	pool := &ai.Pool{Local: engine, Client: client, Applied: node.AppliedIndex,
+	pool := &ai.Pool{Local: engine, Client: client, Applied: node.SiteStamp,
 		Workers: func() []string {
 			nodes, err := st.Nodes()
 			if err != nil {
@@ -232,7 +228,7 @@ func serve(args []string) error {
 		Holds:      node.Holds,
 		HoldsAll:   node.HoldsAll,
 		PassOn:     node.PassOn,
-		Leads:      node.Leads,
+		Leads:      node.OnDutyFor,
 		AI:         pool,
 		Meter:      meter,
 	})
@@ -242,7 +238,8 @@ func serve(args []string) error {
 	// Other nodes pass this one requests for groups it holds (and they
 	// don't), on the cluster port.
 	node.ServeWeb(srv.Handler())
-	// Notification emails and the digest go out from each group's leader.
+	// Notification emails and the digest go out from the node on duty for
+	// each group (cluster.Node.OnDutyFor).
 	go srv.RunMail(ctx)
 
 	if c.HTTPAddr == "" && c.HTTPSAddr == "" {
@@ -319,10 +316,12 @@ func listen(ctx context.Context, c *config.Config, srv *web.Server) error {
 	return nil
 }
 
-// purgeDaily has the site log's leader submit a Purge once a day (and
-// shortly after start), which hard-deletes whatever's past its retention on
-// every node; it sends each group's part to that group's log. Only the
-// leader submits it, so it happens once per day, not once per node.
+// purgeDaily has the node on duty (cluster.Node.OnDuty) submit a Purge once
+// a day (and shortly after start), which hard-deletes whatever's past its
+// retention on every node; it sends each group's part to that group's
+// file. Only the node on duty submits it, so it's normally once a day for
+// the whole site. When duty moves to another node it may run a second
+// time that day, which is harmless: a purge deletes only what's due.
 func purgeDaily(ctx context.Context, node *cluster.Node) {
 	var last time.Time
 	tick := time.NewTicker(time.Hour)
@@ -335,7 +334,7 @@ func purgeDaily(ctx context.Context, node *cluster.Node) {
 		case <-first:
 		case <-tick.C:
 		}
-		if !node.IsLeader() || time.Since(last) < 24*time.Hour {
+		if !node.OnDuty() || time.Since(last) < 24*time.Hour {
 			continue
 		}
 		if _, err := node.Apply(&cmd.Purge{Before: time.Now().Unix()}); err != nil {
@@ -346,7 +345,7 @@ func purgeDaily(ctx context.Context, node *cluster.Node) {
 	}
 }
 
-// faqNightly has the leader queue the nightly FAQ batch (cmd.QueueFAQ) once
+// faqNightly has the node on duty queue the nightly FAQ batch (cmd.QueueFAQ) once
 // a day at the faq_hour global setting (UTC), when the model is otherwise
 // idle, and the weekly outline pass and outside-page re-checks on Sundays.
 // The batch only queues jobs; workers do them.
@@ -366,7 +365,7 @@ func faqNightly(ctx context.Context, node *cluster.Node, st *store.Store) {
 		}
 		now := time.Now().UTC()
 		day := now.Format("2006-01-02")
-		if !node.IsLeader() || now.Hour() != g.FAQHour || day == lastDay {
+		if !node.OnDuty() || now.Hour() != g.FAQHour || day == lastDay {
 			continue
 		}
 		weekly := now.Weekday() == time.Sunday
@@ -380,11 +379,11 @@ func faqNightly(ctx context.Context, node *cluster.Node, st *store.Store) {
 
 // exportSettings copies the settings of groups made before settings moved
 // to site.db up from each group's own file, once (cmd.ExportSettings).
-// Only a group's leader can: it's a command on the group's log, and at
-// start the group's log may not have a leader yet. So it checks every few
-// seconds (one small query) until no group is left, which after an
-// upgrade is within moments of each group electing its leader, and then
-// stops for good; a new site has none to start with.
+// The node on duty for the group does it: it's a command on the group's
+// file, and needs a node that holds it. It checks every few seconds (one
+// small query) until no group is left, which after an upgrade is within
+// moments of the nodes hearing from each other, and then stops for good;
+// a new site has none to start with.
 func exportSettings(ctx context.Context, node *cluster.Node, st *store.Store) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
@@ -394,7 +393,7 @@ func exportSettings(ctx context.Context, node *cluster.Node, st *store.Store) {
 			return
 		}
 		for _, g := range missing {
-			if node.Leads(g) {
+			if node.OnDutyFor(g) {
 				if _, err := node.Apply(&cmd.ExportSettings{GroupID: g, At: time.Now().Unix()}); err != nil {
 					log.Printf("copying group %d's settings to site.db: %v", g, err)
 				}
@@ -436,54 +435,5 @@ func ca(args []string) error {
 	default:
 		usage()
 	}
-	return nil
-}
-
-// backup writes a consistent copy of every database to a directory, safe to
-// run while the server is running. The Studio runs it daily into a dated
-// directory on the NAS (deploy/grus-backup.*).
-func backup(args []string) error {
-	var to *string
-	c, _, err := loadConfig(args, "backup", func(fs *flag.FlagSet) {
-		to = fs.String("to", "", "directory to write the copy into (must not exist)")
-	})
-	if err != nil {
-		return err
-	}
-	if *to == "" {
-		return errors.New("backup: -to is required")
-	}
-	if _, err := os.Stat(*to); err == nil {
-		return fmt.Errorf("backup: %s already exists", *to)
-	}
-	st, err := store.Open(c.DataDir)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	return st.CopyTo(*to)
-}
-
-// recoverCmd is the disaster runbook's key step: with the server stopped,
-// make this node the only voter of every log it has, keeping its data and
-// logs. Its next start takes the lost voters out of the node map.
-func recoverCmd(args []string) error {
-	c, _, err := loadConfig(args, "recover", nil)
-	if err != nil {
-		return err
-	}
-	st, err := store.Open(c.DataDir)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	opts, err := clusterOptions(c)
-	if err != nil {
-		return err
-	}
-	if err := cluster.Recover(opts, st); err != nil {
-		return err
-	}
-	fmt.Printf("recovered: %s is now the only voter; start it with `grus serve`, and it takes over from the lost voters\n", c.NodeID)
 	return nil
 }

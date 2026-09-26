@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"database/sql"
+	"sort"
 	"strings"
 )
 
@@ -18,12 +19,14 @@ const GroupVoters = 3
 // node submits one when it starts, from its config file, so the map
 // follows the config. A new full node is placed on every group.
 type RegisterNode struct {
-	ID    string
-	Addr  string
-	Voter bool
-	Full  bool
-	AI    bool // runs a model
-	At    int64
+	ID     string
+	Addr   string
+	Voter  bool
+	Full   bool
+	AI     bool   // runs a model
+	Origin string // its current origin (id and incarnation), for replication
+	Num    int    // its node number (internal/ids); -1 if not known
+	At     int64
 }
 
 func (c *RegisterNode) Apply(a *Applier) (any, error) {
@@ -31,10 +34,10 @@ func (c *RegisterNode) Apply(a *Applier) (any, error) {
 		return nil, Invalid("a node needs an id and an address")
 	}
 	return nil, a.Site(func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`INSERT INTO nodes (id, addr, voter, full, ai, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+		if _, err := tx.Exec(`INSERT INTO nodes (id, addr, voter, full, ai, origin, num, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (id) DO UPDATE SET addr = excluded.addr, voter = excluded.voter, full = excluded.full,
-			  ai = excluded.ai, updated_at = excluded.updated_at`,
-			c.ID, c.Addr, c.Voter, c.Full, c.AI, c.At, c.At); err != nil {
+			  ai = excluded.ai, origin = excluded.origin, num = excluded.num, updated_at = excluded.updated_at`,
+			c.ID, c.Addr, c.Voter, c.Full, c.AI, c.Origin, c.Num, c.At, c.At); err != nil {
 			return err
 		}
 		if c.Voter {
@@ -58,17 +61,37 @@ func (c *RegisterNode) Apply(a *Applier) (any, error) {
 }
 
 // RemoveNode takes a node out of the map, and off every group it held.
-// It's for a node that's gone for good; its logs' leaders drop it from
-// their membership. A group left with no voter gets Replacement (another
-// node's id) as its only voter, so no group is stranded.
+// It's for a node that's gone for good: the stable point stops waiting
+// for it (docs/replication.md). A group left with no primary host gets
+// Replacement (another node's id), so no group is stranded.
+//
+// Upto is how many of the node's operations each file had here when it
+// was removed, by log name ("site", "g42"), for its current origin.
+// Anything more from that origin is ignored everywhere from then on; if
+// the node was not gone after all, it finds itself removed when it comes
+// back and sends those again under a new origin.
 type RemoveNode struct {
 	ID          string
 	Replacement string
+	Origin      string
+	Upto        map[string]int64
 	At          int64
 }
 
 func (c *RemoveNode) Apply(a *Applier) (any, error) {
 	return nil, a.Site(func(tx *sql.Tx) error {
+		// In log-name order, so every node writes the rows the same way.
+		logs := make([]string, 0, len(c.Upto))
+		for l := range c.Upto {
+			logs = append(logs, l)
+		}
+		sort.Strings(logs)
+		for _, l := range logs {
+			if _, err := tx.Exec(`INSERT INTO removed_origins (origin, log, upto) VALUES (?, ?, ?)
+				ON CONFLICT (origin, log) DO UPDATE SET upto = MAX(upto, excluded.upto)`, c.Origin, l, c.Upto[l]); err != nil {
+				return err
+			}
+		}
 		if c.Replacement != "" {
 			var n int
 			tx.QueryRow(`SELECT COUNT(*) FROM nodes WHERE id = ? AND id != ?`, c.Replacement, c.ID).Scan(&n)
@@ -153,15 +176,22 @@ func (c *UnplaceGroup) Apply(a *Applier) (any, error) {
 }
 
 // placeNewGroup chooses a new group's hosts: the first GroupVoters voter
-// nodes (by id) as its voters, which start its log, and every full node
-// as a non-voter. With no nodes registered (tests, tools), it places
-// nothing.
+// nodes (by id), and every full node. With no voter at all, every node
+// holds it, so a group is never placed nowhere. With no nodes registered
+// (tests, tools), it places nothing.
 func placeNewGroup(tx *sql.Tx, groupID, at int64) error {
-	if _, err := tx.Exec(`INSERT INTO group_hosts (group_id, node_id, voter, bootstrap, created_at)
-		SELECT ?, id, 1, 1, ? FROM nodes WHERE voter = 1 ORDER BY id LIMIT ?`, groupID, at, GroupVoters); err != nil {
+	res, err := tx.Exec(`INSERT INTO group_hosts (group_id, node_id, voter, bootstrap, created_at)
+		SELECT ?, id, 1, 1, ? FROM nodes WHERE voter = 1 ORDER BY id LIMIT ?`, groupID, at, GroupVoters)
+	if err != nil {
 		return err
 	}
-	_, err := tx.Exec(`INSERT OR IGNORE INTO group_hosts (group_id, node_id, voter, bootstrap, created_at)
+	if n, _ := res.RowsAffected(); n == 0 {
+		if _, err := tx.Exec(`INSERT INTO group_hosts (group_id, node_id, voter, bootstrap, created_at)
+			SELECT ?, id, 1, 1, ? FROM nodes`, groupID, at); err != nil {
+			return err
+		}
+	}
+	_, err = tx.Exec(`INSERT OR IGNORE INTO group_hosts (group_id, node_id, voter, bootstrap, created_at)
 		SELECT ?, id, 0, 0, ? FROM nodes WHERE full = 1`, groupID, at)
 	return err
 }

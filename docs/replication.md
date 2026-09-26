@@ -152,10 +152,10 @@ records of what was sent are operations that merge.
 ### Node numbers
 
 Ids (internal/ids) include a node number, and two nodes with the same
-number could make the same id. The node map records each node's number.
-A node that sees its number held by another node refuses to accept writes
-and says so in its log. A node that starts with no `node_num` gets a free
-one from the node it joins through.
+number could make the same id. The node map records each node's number
+(`node_num` in its grus.conf). A node that sees its number held by another
+node refuses to accept writes and says so in its log and on the admin
+page, until one of them is given another number.
 
 ### Removing a node that's gone for good
 

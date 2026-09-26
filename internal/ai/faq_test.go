@@ -120,7 +120,7 @@ func TestFAQBatch(t *testing.T) {
 	// Roll back to the first version.
 	var entry, first int64
 	db, _ := e.st.Group(1)
-	db.QueryRow(`SELECT entry_id, MIN(id) FROM faq_history`).Scan(&entry, &first)
+	db.QueryRow(`SELECT entry_id, id FROM faq_history WHERE answer NOT LIKE '%still rattles%'`).Scan(&entry, &first)
 	e.apply(&cmd.RollbackFAQEntry{GroupID: 1, EntryID: entry, HistoryID: first, By: 5, At: e.now.Unix()})
 	if n := e.count(`SELECT COUNT(*) FROM faq_entries WHERE answer NOT LIKE '%still rattles%'`); n != 1 {
 		t.Fatal("rollback")

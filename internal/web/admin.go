@@ -36,10 +36,10 @@ type adminGroup struct {
 // adminNode is one row of the node map: a node and the groups on it.
 type adminNode struct {
 	store.Node
-	Groups []string // slugs, "(voter)" marked
+	Groups []string // slugs, "(main)" marked
 }
 
-// statser is implemented by the Raft node (not by the local test log).
+// statser is implemented by the cluster node (not by the local test log).
 type statser interface{ Stats() map[string]string }
 
 func (s *Server) operator(w http.ResponseWriter, r *http.Request) *store.User {
@@ -84,12 +84,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, u *store.Us
 		d.Groups = append(d.Groups, adminGroup{Group: g, URL: s.groupURL(&g, rt.domain, "/")})
 	}
 	if st, ok := s.Log.(statser); ok {
-		all := st.Stats()
-		// A few lines worth glancing at, not Raft's whole dump.
-		d.Cluster = map[string]string{}
-		for _, k := range []string{"node", "logs", "state", "term", "commit_index", "applied_index", "last_snapshot_index", "latest_configuration"} {
-			d.Cluster[k] = all[k]
-		}
+		d.Cluster = st.Stats()
 	}
 	if err := s.adminNodes(&d, groups); err != nil {
 		s.serverError(w, r, err)
@@ -322,7 +317,7 @@ func (s *Server) adminNodes(d *adminData, groups []store.Group) error {
 			continue
 		}
 		if h.Voter {
-			name += " (voter)"
+			name += " (main)"
 		}
 		on[h.NodeID] = append(on[h.NodeID], name)
 	}
@@ -333,7 +328,7 @@ func (s *Server) adminNodes(d *adminData, groups []store.Group) error {
 }
 
 // adminPlace puts a group on a node, or takes it off (plan section 8,
-// "Who holds what"). The node copies the group from its leader, or deletes
+// "Who holds what"). The node copies the group from a node that has it, or deletes
 // its copy, by itself.
 func (s *Server) adminPlace(w http.ResponseWriter, r *http.Request) {
 	u := s.operator(w, r)
@@ -364,7 +359,7 @@ func (s *Server) adminPlace(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminRemoveNode takes a node that's gone for good out of the map. Any
-// group it was the only voter of goes to the replacement.
+// group it was the only main host of goes to the replacement.
 func (s *Server) adminRemoveNode(w http.ResponseWriter, r *http.Request) {
 	u := s.operator(w, r)
 	if u == nil {

@@ -1,23 +1,22 @@
 # Operations
 
-The starting setup (plan section 8): one VPS serves everything and is the
-only voter, so it leads every log. The Studio is a non-voting member with a
-live full copy, reached over mutual TLS on one port. Losing the Studio
-changes nothing for users; losing the VPS is handled by "Recovering from a
-lost VPS" below. Section 12 covers adding more nodes.
+The starting setup: one VPS serves every page, and the Studio holds a live,
+complete copy of everything. Neither is in charge. Each applies every
+write it takes at once and passes it to the other, and both end up with
+the same files ([replication.md](replication.md) has how). Either can be
+down, or unable to reach the other, and the one that's up carries on,
+reads and writes, and they merge when they're back in touch.
 
 ```
-VPS (n1)    voter, leader     site.db + every group file, HTTPS for every host
-   │  mTLS :7946, one replicated log per file ↓
-Studio      full, non-voter   the same files, live; daily backups to the NAS
+VPS (n1)    takes new groups   site.db + every group file, HTTPS for every host
+   │  mTLS :7946, operations both ways ↕
+Studio      full copy          the same files, live
 ```
 
-Each file has its own log (plan section 8, "Who holds what"): site.db's,
-which every node follows, the root FAQ's, which every node follows too, and
-one per group, followed only by the nodes the group is placed on. The node
-map in site.db says which nodes there are and which groups each holds; every
-node reads it and starts or stops its group logs to match, and each log's
-leader keeps the log's membership matching it.
+Each file has its own operations: site.db's, which every node holds, the
+root FAQ's, which every node holds too, and one set per group, held only
+by the nodes the group is placed on. The node map in site.db says which
+nodes there are and which groups each holds.
 
 ## 1. The cluster CA (once, on your own machine)
 
@@ -90,7 +89,7 @@ domains become full, equal domains (they no longer redirect). A group's
 own domain and host aliases are dropped: add a domain to the list instead
 if it should keep being answered. `worker` lines are ignored (nodes with a
 model are found from the node map). Each group's settings are copied up
-to site.db by its leader within a minute or two of the start; settings
+to site.db by the node on duty for it within moments of the start; settings
 changes wait for that. Afterwards the seed lines can be deleted.
 
 ## 3. The Studio
@@ -101,66 +100,53 @@ run installs the binary, the directories and the launchd job, and puts
 certificates, and run `sudo make install` again to start it. The job runs
 as the account that ran sudo (the Studio's node binds no low ports, so it
 needs no service account), and logs to `/usr/local/var/log/grus/grus.log`.
-Keep its `data_dir` on the Studio's own disk: SQLite needs local file
-locking, which network shares don't reliably provide. The NAS gets the
-backups.
+`data_dir` is just a directory: put it wherever the Studio keeps its
+data, as long as it behaves like a local disk (a disk image on the NAS
+does; a share mounted straight over SMB or NFS can corrupt SQLite files).
 
 The Studio's config has `full = true` and `join = <VPS cluster address>`.
-On its first start it registers itself in the node map through the VPS;
-the site log's leader then adds it, and, being a full node, it's placed on
-every group, whose leaders add it to their logs. A brand-new or
-long-offline Studio receives a snapshot of each file, then streams changes.
+On its first start it copies site.db from the VPS, registers itself in
+the node map, and, being a full node, is placed on every group and copies
+each one. After that the two pass operations back and forth; a Studio
+that was offline catches up by itself when it's back.
 
-The admin page's Cluster section shows `logs` (every log running on the
-node, marked where it leads), `latest_configuration` of the site log, which
-should list the Studio as a Nonvoter, and `applied_index`.
+The admin page's Cluster section shows, for this node, each file it
+holds and how many of its operations aren't stable yet, when it last
+heard from each other node, and how many rewinds it has done.
 
-## 4. Backups
+## 4. No backups, no restores
 
-The Studio's copy is live, not a backup: a mistaken delete reaches it
-within a second. Point-in-time copies come from `grus backup`, which writes
-a consistent copy of every database while the server keeps running:
+There's nothing to back up and nothing to restore. Every full node (the
+Studio, and any other) is a live, complete copy of everything, and every
+write is on the node that took it before the page says it worked. If
+nodes are lost, start new ones with a `join` line pointing at any node
+still running: they copy what they need and carry on. The copy of last
+resort is the Studio's.
 
-```sh
-# crontab on the Studio
-30 3 * * * /usr/local/bin/grus-backup.sh /Volumes/NAS/grus/backups
-```
+## 5. When nodes are lost
 
-`deploy/grus-backup.sh` writes `<dir>/YYYY-MM-DD/` and keeps 30 days. To
-restore one onto a fresh node, copy its files into the node's `data_dir`
-(`site.db`, `groups/`) before the first start, and copy `<dir>/blobs/`
-to `data_dir/blobs/`. Photos are content-addressed files that never change,
-so the script keeps one shared copy of them with rsync rather than one per
-day. A node that's missing photos also fetches them from the others by
-itself within a minute.
+Nothing needs doing for the site to keep working: the nodes still up
+carry on, including one left entirely alone.
 
-To load the Travato knowledge base, see [archive-format.md](archive-format.md).
+- **A node that will come back** (a reboot, the Studio's home connection
+  dropping): do nothing. It catches up when it's back.
+- **The VPS is gone for good:** start a new VPS with a config that has
+  `voter = true` and `join = <the Studio's cluster address>`, and point
+  DNS at it. It copies everything from the Studio and serves from then on.
+  Then remove the old VPS on the admin page (below), giving its groups to
+  the new one.
+- **A node gone for good**, whatever it was: remove it on the admin page's
+  Nodes section. Until it's removed, the others wait for it before
+  treating any operation as final, and keep every operation for it: the
+  site works, but a little more slowly and with more on disk. If a node you
+  removed turns out not to be gone, it finds out when it's back in touch,
+  sends again anything the others hadn't got (as a new node), and carries
+  on. Nothing it took is lost.
 
-## 5. Recovering from a lost VPS
-
-`TestReplicateAndRecover` in `internal/cluster` runs this drill on every CI
-run, and `TestPlacementAndFailover` kills a group's leader among three
-voters and checks the other two carry on.
-
-1. Stop grus on the Studio (so its files are still).
-2. Copy the Studio's whole `data_dir` (including `raft/`) to the new VPS.
-3. Issue the new VPS a certificate if it has a new id
-   (`grus ca issue -dir ./cluster n2`), and write its `grus.conf`: its own
-   `node_id`, `advertise`, certificate, and `voter = true`. `bootstrap`
-   doesn't matter; the copied state already exists.
-4. On the new VPS: `grus recover -config /etc/grus/grus.conf`. This rewrites
-   every log's membership so the new VPS is its only voter, keeping every
-   database and log.
-5. Start grus on the new VPS. Its first act, as the leader, is to take the
-   lost voters out of the node map and take over their groups (otherwise
-   the leader would add them straight back and wait for them). Point DNS
-   (`nfb.group`, `*.nfb.group`) at it, and start the Studio again; the new
-   leaders re-add it as a non-voter and it catches up.
-
-Nothing is lost but writes the Studio hadn't received when the VPS died
-(normally under a second's worth). With more than one VPS, losing one
-isn't a recovery at all: the others hold a majority of each log's voters
-and carry on. `recover` is for when the voters are gone.
+`TestRebuildFromSurvivor` in `internal/cluster` runs the "everything but
+the Studio is gone" case on every CI run, and `TestRandomSplits` splits
+three nodes at random while they take writes and checks every copy ends
+up the same.
 
 ## 6. Adding and removing domains
 
@@ -208,7 +194,7 @@ about it. Nothing is ever sent to an outside AI service.
 
 ## 8. The FAQ and outside sources
 
-Each night at `faq_hour` (a global setting; UTC, default 8) the leader queues the FAQ batch:
+Each night at `faq_hour` (a global setting; UTC, default 8) the node on duty queues the FAQ batch:
 entries whose threads changed are rewritten, and threads that grew into a
 well-answered cluster get a new entry (at most 20 a night per group). On
 Sundays the batch also tidies the topic outline and re-reads outside pages
@@ -286,20 +272,21 @@ when something of theirs is hidden or removed unless the group turns off
 "notify_hidden" (quiet hiding).
 
 Email is off for everyone until they turn it on at `/profile`. Each
-group's email is sent by the node leading that group's log: every 5
+group's email is sent by the node on duty for it (the lowest-id node
+holding it that the others have heard from in the last minute): every 5
 minutes it sends each person one email with whatever has waited 10 minutes
 unread, and the daily digest (the day's top new posts in each of their
-groups) goes at `digest_hour` UTC, default 12. When one node leads every
-group, as in the starting setup, that's one email per person for all
-their groups. Both go through the same SMTP relay as sign-in links, so
-every node that can lead a group needs the SMTP settings. If the leader
-changes between sending and recording, a batch can go twice; nothing is
-lost.
+groups) goes at `digest_hour` UTC, default 12. When one node is on duty
+for every group, as in the starting setup, that's one email per person
+for all their groups. Each person's email goes out in the domain they
+last signed in on, through that domain's relay. If duty moves between
+sending and recording, or nodes are split and each side has one on duty,
+a batch can go twice; nothing is lost.
 
 ## Retention
 
-The site log's leader submits a `Purge` command once a day, which sends
-each group's part to that group's log. It removes expired sign-in
+The node on duty submits a `Purge` command once a day, which sends each
+group's part to that group's file. It removes expired sign-in
 links and sessions, the personal details of accounts deleted more than 30
 days ago, and posts, comments and old versions past their `purge_after`,
 except anything under legal hold. Every node applies the same purge.
@@ -307,40 +294,39 @@ except anything under legal hold. Every node applies the same purge.
 ## 12. More nodes
 
 A second or third VPS: issue it a certificate, and give it a config with
-`voter = true` and `join = <an existing node's cluster address>`. It
-registers itself on first start and becomes a voter of the site log once
-it has caught up. New groups are placed on the first three voters (by
-node id); a group with three voters survives losing any one of them.
+`voter = true` and `join = <any existing node's cluster address>`. It
+copies site.db on first start, registers itself, and new groups are
+placed on it from then on: on the first three nodes with `voter = true`
+(by node id), and on every full node.
 
 A small VPS that holds only a few groups: neither `voter` nor `full`, and
 a `join` line. It holds nothing until groups are placed on it, from the
-admin page's Nodes section ("Place a group", optionally as a voter). A node a group is placed on copies it from
-the group's leader (a snapshot, then the stream), and a node it's taken
-off deletes its copy.
+admin page's Nodes section ("Place a group"). A node a group is placed on
+copies it from a node that has it, then keeps in step; a node it's taken
+off deletes its copy once another node has everything it wrote there.
 
 Every node answers for every host name: a request for a group this node
 doesn't hold is passed over the cluster port to one that does, and the
 pages that gather from every group (the home page, notifications) go to a
 full node when this one isn't. So DNS can point everything at any node, and
 moving a group needs no DNS change. Writes work the same from anywhere:
-they're forwarded to the leader of the command's log.
+one for a group this node doesn't hold is made on a node that does.
 
 Photos follow their groups: the node that receives one pushes it to the
 other nodes holding the group, and a node fetches any it's missing, on a
 page view or within a minute otherwise.
 
-A node that's gone for good is taken out of the map on the admin page
-("Remove a node", with a replacement for any group it was the only voter
-of); the logs' leaders then drop it from their membership.
+Every node's `node_num` must be different: it goes into every id the node
+makes. A node that finds its number in use by another stops taking writes
+and says so in its log and on the admin page.
 
-### An off-site mirror
+### An off-site copy
 
-The Studio's copy is live but it's in the same house as the NAS. For a
-copy somewhere else, run another full node: a cheap VPS in another region
-with `full = true` and a `join` line. It holds every group as a non-voter,
-so it never slows writes down, and it's a ready source for `recover` if the
-house and the VPS are both lost. Run `grus backup` there too (to its own
-disk) if you want dated copies off-site as well.
+The Studio's copy is live but it's in one house. For a copy somewhere
+else, run another full node: a cheap VPS in another region with `full =
+true` and a `join` line. It holds every group, takes writes like any other
+node, and is a complete copy to rebuild from if the house and the VPS are
+both lost.
 
 ## 13. Before opening a group: load test
 
@@ -348,8 +334,8 @@ disk) if you want dated copies off-site as well.
 group's public pages (its front page, FAQ, and every post the front page
 links to) as 20 signed-out visitors at once, and reports pages a second
 and how long pages took. It only reads. Run it from another machine, and
-try stopping a node partway through: the other nodes should carry on,
-with a blip while a new leader is elected.
+try stopping a node partway through: the other nodes should carry on
+without a pause.
 
 Signed-out views of a public group come from the render cache: each page
 is rendered once and kept until the group or site.db changes, so a busy

@@ -11,6 +11,10 @@ type Node struct {
 	Voter bool
 	Full  bool
 	AI    bool // runs a model: searches and background jobs can go to it
+	// Origin is the node's current origin for replication (id and
+	// incarnation); Num its node number in ids, -1 if not known.
+	Origin string
+	Num    int
 }
 
 // Host is one node's part in one group.
@@ -24,7 +28,7 @@ type Host struct {
 
 // Nodes lists every node, by id.
 func (s *Store) Nodes() ([]Node, error) {
-	rows, err := s.Site().Query(`SELECT id, addr, voter, full, ai FROM nodes ORDER BY id`)
+	rows, err := s.Site().Query(`SELECT id, addr, voter, full, ai, origin, num FROM nodes ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +36,7 @@ func (s *Store) Nodes() ([]Node, error) {
 	var out []Node
 	for rows.Next() {
 		var n Node
-		if err := rows.Scan(&n.ID, &n.Addr, &n.Voter, &n.Full, &n.AI); err != nil {
+		if err := rows.Scan(&n.ID, &n.Addr, &n.Voter, &n.Full, &n.AI, &n.Origin, &n.Num); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -79,4 +83,27 @@ func (s *Store) HostedBy(nodeID string) (map[int64]Host, error) {
 		}
 	}
 	return out, nil
+}
+
+// RemovedOrigins lists the origins of removed nodes: for each, by log name
+// ("site", "g42"), the last seq accepted from it.
+func (s *Store) RemovedOrigins() (map[string]map[string]int64, error) {
+	rows, err := s.Site().Query(`SELECT origin, log, upto FROM removed_origins`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]int64{}
+	for rows.Next() {
+		var o, l string
+		var upto int64
+		if err := rows.Scan(&o, &l, &upto); err != nil {
+			return nil, err
+		}
+		if out[o] == nil {
+			out[o] = map[string]int64{}
+		}
+		out[o][l] = upto
+	}
+	return out, rows.Err()
 }

@@ -43,10 +43,9 @@ type Config struct {
 	// Cluster.
 	ClusterAddr string   // listen address for node-to-node mTLS, e.g. ":7946"
 	Advertise   string   // host:port other nodes use to reach this one
-	Bootstrap   bool     // first start of the first node creates the cluster (implies voter)
-	Voter       bool     // votes in the site log; new groups are placed on it (a VPS)
-	Full        bool     // holds every group as a non-voter (the Studio)
-	Join        []string // other nodes' cluster addresses, to register through
+	Voter       bool     // new groups are placed on it (a VPS that serves pages)
+	Full        bool     // holds every group (the Studio)
+	Join        []string // other nodes' cluster addresses; none means this is the first node
 	TLSCA       string   // cluster CA certificate (made by `grus ca init`)
 	TLSCert     string   // this node's certificate (made by `grus ca issue`)
 	TLSKey      string   // this node's key
@@ -128,8 +127,6 @@ func (c *Config) set(key, val string) error {
 		c.ClusterAddr = val
 	case "advertise":
 		c.Advertise = val
-	case "bootstrap":
-		c.Bootstrap, err = strconv.ParseBool(val)
 	case "voter":
 		c.Voter, err = strconv.ParseBool(val)
 	case "full":
@@ -161,8 +158,10 @@ func (c *Config) set(key, val string) error {
 		}
 		c.Seed.Values["operators"] = ops + strings.ToLower(val)
 
-	// worker lines listed the nodes with a model; the node map has them now.
-	case "worker":
+	// worker lines listed the nodes with a model; the node map has them
+	// now. bootstrap created a Raft cluster; a node with no join line is
+	// the first node now.
+	case "worker", "bootstrap":
 		c.Obsolete = append(c.Obsolete, key)
 	default:
 		if seedKeys[key] {
@@ -187,10 +186,10 @@ func (c *Config) check() error {
 	if c.NodeNum < 0 || c.NodeNum > ToolNodeNum-1 {
 		return fmt.Errorf("node_num must be 0-%d", ToolNodeNum-1)
 	}
-	if c.Bootstrap && len(c.Seed.Domains) == 0 {
-		// The node that creates the cluster lists its first domain, or
-		// the site would have no address to reach the admin page on.
-		return fmt.Errorf("the bootstrap node needs a domain line")
+	if len(c.Join) == 0 && len(c.Seed.Domains) == 0 {
+		// The first node lists the site's first domain, or the site
+		// would have no address to reach the admin page on.
+		return fmt.Errorf("the first node (no join line) needs a domain line")
 	}
 	if c.ClusterAddr == "" || c.Advertise == "" {
 		return fmt.Errorf("cluster_addr and advertise are required")
@@ -201,12 +200,9 @@ func (c *Config) check() error {
 	if c.TLSCA == "" || c.TLSCert == "" || c.TLSKey == "" {
 		return fmt.Errorf("tls_ca, tls_cert and tls_key are required (see `grus ca`)")
 	}
-	if c.Bootstrap {
-		// The node that creates the cluster is its first voter.
+	if len(c.Join) == 0 {
+		// The first node takes new groups; there's nowhere else for them.
 		c.Voter = true
-	}
-	if !c.Bootstrap && len(c.Join) == 0 {
-		return fmt.Errorf("a node that doesn't bootstrap the cluster needs a join address")
 	}
 	return nil
 }

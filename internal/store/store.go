@@ -7,8 +7,16 @@
 //	site.db                  identity, domains, the list of groups
 //	groups/<id>/group.db     one file per group
 //
-// Keeping each group in its own file is what lets a group later be moved,
-// exported, or replicated to its own set of nodes: it's a directory.
+// Each of those is the file's **live** copy, which pages read. Beside each
+// is its **stable** copy (site.stable.db, groups/<id>/stable.db), which
+// only the replication engine uses: it holds the file as of its stable
+// point, and a rewind starts from it (docs/replication.md). A rewind makes
+// a new live file and switches to it, so the live file's name carries a
+// generation number after the first one (site.3.db); the highest on disk
+// is the current one.
+//
+// Keeping each group in its own directory is what lets a group be moved,
+// exported, or replicated to its own set of nodes.
 package store
 
 import (
@@ -17,9 +25,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	_ "modernc.org/sqlite" // pure Go SQLite: no cgo, truly static builds
 )
@@ -28,11 +39,19 @@ import (
 type Store struct {
 	dir string
 
-	// mu guards the handles, which are swapped out wholesale when a Raft
-	// snapshot is restored (Replace). Every accessor takes it briefly.
-	mu     sync.Mutex
-	site   *sql.DB
-	groups map[int64]*sql.DB
+	// mu guards the handles and paths, which change when a live file is
+	// swapped for a rebuilt one (SwapLive). Every accessor takes it
+	// briefly.
+	mu      sync.Mutex
+	site    *sql.DB
+	groups  map[int64]*sql.DB
+	live    map[int64]string  // current live path, by file (0 = site.db)
+	stables map[int64]*sql.DB // stable copies, opened by the engine
+
+	// versions counts changes to each live file (by file, 0 = site.db),
+	// so the page cache can tell whether a cached page is still current.
+	vmu      sync.Mutex
+	versions map[int64]*atomic.Int64
 }
 
 // Open opens (creating if needed) site.db under dir. Group files are opened
@@ -41,9 +60,13 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "groups"), 0o750); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, groups: map[int64]*sql.DB{}}
-	var err error
-	s.site, err = openDB(s.sitePath(), siteMigrations)
+	s := &Store{dir: dir, groups: map[int64]*sql.DB{}, live: map[int64]string{},
+		stables: map[int64]*sql.DB{}, versions: map[int64]*atomic.Int64{}}
+	path, err := s.livePath(0)
+	if err != nil {
+		return nil, err
+	}
+	s.site, err = openDB(path, siteMigrations)
 	if err != nil {
 		return nil, err
 	}
@@ -53,10 +76,83 @@ func Open(dir string) (*Store, error) {
 // Dir is the data directory.
 func (s *Store) Dir() string { return s.dir }
 
-func (s *Store) sitePath() string { return filepath.Join(s.dir, "site.db") }
+// fileDir and fileBase say where a file's copies live: site.db in the data
+// directory, a group's in groups/<id>/ as group.db.
+func (s *Store) fileDir(id int64) string {
+	if id == 0 {
+		return s.dir
+	}
+	return filepath.Join(s.dir, "groups", strconv.FormatInt(id, 10))
+}
 
-func (s *Store) groupPath(id int64) string {
-	return filepath.Join(s.dir, "groups", strconv.FormatInt(id, 10), "group.db")
+func fileBase(id int64) string {
+	if id == 0 {
+		return "site"
+	}
+	return "group"
+}
+
+// livePath is the current live file's path. It's found on disk the first
+// time (the highest generation), and older generations left behind by a
+// crash mid-swap are removed then.
+func (s *Store) livePath(id int64) (string, error) {
+	if p, ok := s.live[id]; ok {
+		return p, nil
+	}
+	dir, base := s.fileDir(id), fileBase(id)
+	re := regexp.MustCompile(`^` + base + `(?:\.(\d+))?\.db$`)
+	ents, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	best, bestGen := "", -1
+	var all []string
+	for _, e := range ents {
+		m := re.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		gen := 0
+		if m[1] != "" {
+			gen, _ = strconv.Atoi(m[1])
+		}
+		all = append(all, e.Name())
+		if gen > bestGen {
+			best, bestGen = e.Name(), gen
+		}
+	}
+	for _, name := range all {
+		if name != best {
+			removeDB(filepath.Join(dir, name))
+		}
+	}
+	if best == "" {
+		best = base + ".db"
+	}
+	p := filepath.Join(dir, best)
+	s.live[id] = p
+	return p, nil
+}
+
+// nextLivePath is the path for the live file's next generation.
+func nextLivePath(current string) string {
+	dir, name := filepath.Split(current)
+	m := regexp.MustCompile(`^(site|group)(?:\.(\d+))?\.db$`).FindStringSubmatch(name)
+	gen := 0
+	if m != nil && m[2] != "" {
+		gen, _ = strconv.Atoi(m[2])
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s.%d.db", m[1], gen+1))
+}
+
+// hasLive reports whether a group's live file exists.
+func (s *Store) hasLive(id int64) bool {
+	p, err := s.livePath(id)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(p)
+	return err == nil
 }
 
 // Site returns the site database.
@@ -80,7 +176,7 @@ func (s *Store) Group(id int64) (*sql.DB, error) {
 	if db := s.groups[id]; db != nil {
 		return db, nil
 	}
-	if _, err := os.Stat(s.groupPath(id)); err != nil && id != RootGroupID {
+	if !s.hasLive(id) && id != RootGroupID {
 		return nil, ErrNoGroupFile
 	}
 	// (Every node holds the root FAQ's file, so it may be created here:
@@ -104,7 +200,10 @@ func (s *Store) GroupOrCreate(id int64) (*sql.DB, error) {
 }
 
 func (s *Store) openGroupLocked(id int64) (*sql.DB, error) {
-	p := s.groupPath(id)
+	p, err := s.livePath(id)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		return nil, err
 	}
@@ -117,8 +216,6 @@ func (s *Store) openGroupLocked(id int64) (*sql.DB, error) {
 }
 
 // GroupFileIDs lists the groups that have a file on disk, in id order.
-// Snapshots and backups use this rather than the groups table, so they copy
-// exactly what's on disk.
 func (s *Store) GroupFileIDs() ([]int64, error) {
 	ents, err := os.ReadDir(filepath.Join(s.dir, "groups"))
 	if err != nil {
@@ -130,7 +227,10 @@ func (s *Store) GroupFileIDs() ([]int64, error) {
 		if err != nil || !e.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(s.groupPath(id)); err == nil {
+		s.mu.Lock()
+		ok := s.hasLive(id)
+		s.mu.Unlock()
+		if ok {
 			out = append(out, id)
 		}
 	}
@@ -151,6 +251,10 @@ func (s *Store) closeLocked() error {
 		errs = append(errs, db.Close())
 		delete(s.groups, id)
 	}
+	for id, db := range s.stables {
+		errs = append(errs, db.Close())
+		delete(s.stables, id)
+	}
 	return errors.Join(errs...)
 }
 
@@ -158,12 +262,12 @@ func (s *Store) closeLocked() error {
 // its schema up to date.
 func openDB(path string, migrations []string) (*sql.DB, error) {
 	// WAL: readers never block the writer, and page views are all reads.
-	// synchronous=NORMAL: a power cut can lose the last few commits, but
-	// that's fine here because the Raft log (fsynced) is the durable record
-	// and the `applied` index rolls back with them, so they're re-applied.
-	// busy_timeout: the log applier and a backup can briefly contend.
+	// synchronous=FULL: a write is on disk when its commit returns. The
+	// file is the only durable record of an operation (there's no separate
+	// log), and a page says "done" only after the commit.
+	// busy_timeout: the engine and a page's read can briefly contend.
 	dsn := "file:" + path +
-		"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)" +
+		"?_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)" +
 		"&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -252,12 +356,12 @@ func (s *Store) HasGroup(id int64) bool {
 	if s.groups[id] != nil {
 		return true
 	}
-	_, err := os.Stat(s.groupPath(id))
-	return err == nil
+	return s.hasLive(id)
 }
 
-// FileApplied is the last index of its own log applied to site.db
-// (groupID 0) or a group's file; 0 for a group file that doesn't exist.
+// FileApplied is the last index applied to site.db (groupID 0) or a group's
+// file by the log that ran it: cmd.Direct's count, for tests and tools. 0
+// for a group file that doesn't exist.
 func (s *Store) FileApplied(groupID int64) (uint64, error) {
 	if groupID == 0 {
 		return AppliedIndex(s.Site())
@@ -270,4 +374,36 @@ func (s *Store) FileApplied(groupID int64) (uint64, error) {
 		return 0, err
 	}
 	return AppliedIndex(db)
+}
+
+func (s *Store) version(id int64) *atomic.Int64 {
+	s.vmu.Lock()
+	defer s.vmu.Unlock()
+	v := s.versions[id]
+	if v == nil {
+		v = &atomic.Int64{}
+		s.versions[id] = v
+	}
+	return v
+}
+
+// Touch records that a live file changed (0 = site.db). Every commit to a
+// live file and every swap calls it.
+func (s *Store) Touch(id int64) { s.version(id).Add(1) }
+
+// Version is a count of changes to a live file since this process started:
+// if it's the same as before, so is the file.
+func (s *Store) Version(id int64) int64 { return s.version(id).Load() }
+
+// closeLater closes a replaced handle after readers have had time to finish
+// with it, then removes its files if path is set. A page that took the old
+// handle a moment before a swap finishes reading the old copy, which is
+// what it would have seen anyway.
+func closeLater(db *sql.DB, path string) {
+	time.AfterFunc(time.Minute, func() {
+		db.Close()
+		if path != "" {
+			removeDB(path)
+		}
+	})
 }

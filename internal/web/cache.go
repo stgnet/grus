@@ -13,10 +13,11 @@ import (
 // once and served from memory until something changes.
 //
 // "Until something changes" needs no invalidation code at all: each cached
-// page is stored with the applied index of the group's file and of site.db
-// (handles, the group list and domains live there), and it's only used
-// while both are still the same. Any write to either moves its index on, so
-// the next request renders afresh. A page can never be served stale; the
+// page is stored with the version (store.Version) of the group's file and
+// of site.db (handles, the group list and domains live there), and it's
+// only used while both are still the same. Any write to either, or a
+// rewind that rebuilds it, moves its version on, so the next request
+// renders afresh. A page can never be served stale; the
 // cost is that a busy group re-renders after each write, which is still
 // far fewer renders than one per view.
 
@@ -32,7 +33,7 @@ type pageCache struct {
 }
 
 type cachedPage struct {
-	site, group uint64 // applied indexes it was rendered at
+	site, group int64 // the files' versions (store.Version) it was rendered at
 	header      http.Header
 	body        []byte
 }
@@ -63,12 +64,8 @@ func (s *Server) cacheable(r *http.Request, rt *route) bool {
 // copy made at the current indexes is there, otherwise by rendering it with
 // next and keeping the result if it's a plain 200 page.
 func (s *Server) serveCached(w http.ResponseWriter, r *http.Request, rt *route, next http.Handler) {
-	siteIdx, err1 := s.Store.FileApplied(0)
-	groupIdx, err2 := s.Store.FileApplied(rt.group.ID)
-	if err1 != nil || err2 != nil {
-		next.ServeHTTP(w, r)
-		return
-	}
+	// A copy is current while neither file has changed since it was made.
+	siteIdx, groupIdx := s.Store.Version(0), s.Store.Version(rt.group.ID)
 	key := r.Host + r.URL.RequestURI()
 	s.cache.mu.Lock()
 	p := s.cache.pages[key]

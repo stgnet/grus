@@ -168,3 +168,27 @@ func TestSameEmailTwoAccounts(t *testing.T) {
 		t.Fatalf("alias handle: %v", h)
 	}
 }
+
+// TestFollowUpTwice: a follow-up delivered twice (two nodes sent it) is
+// applied once: the second is recorded, and skipped.
+func TestFollowUpTwice(t *testing.T) {
+	st := newStore(t)
+	d := &Direct{Store: st}
+	if _, err := d.Apply(&CreateGroup{GroupID: 1, Slug: "travato", Name: "Travato", At: 1}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := Encode(&ModLogEntry{GroupID: 1, By: 5, Action: "x", TargetType: "group", TargetID: 1, At: 2})
+	for i, origin := range []string{"a@1", "b@1"} {
+		op := &Op{Origin: origin, Seq: 1, Stamp: int64(10 + i), Cause: "s@1/7#3", Command: data}
+		if _, err := ApplyOp(st, 1, nil, op, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, _ := st.Group(1)
+	var logged, ops int
+	db.QueryRow(`SELECT COUNT(*) FROM mod_log WHERE action = 'x'`).Scan(&logged)
+	db.QueryRow(`SELECT COUNT(*) FROM ops`).Scan(&ops)
+	if logged != 1 || ops != 2 {
+		t.Fatalf("applied %d times, %d operations recorded", logged, ops)
+	}
+}

@@ -7,8 +7,8 @@
 # them), mail, operators, AI settings, and every group with its settings.
 #
 # This example is the VPS in the starting setup (plan section 8, "Where it
-# starts"): the only voter, serving every group, with the Studio as a
-# non-voting full copy. deploy/studio.conf.example is the Studio's side.
+# starts"): the first node, serving every group, with the Studio as a
+# full copy. deploy/studio.conf.example is the Studio's side.
 
 # This node's stable id in the cluster, and its number for ids (0-1023,
 # different on every node).
@@ -30,16 +30,13 @@ https_addr = :443
 # Cluster: node-to-node mutual TLS on one port.
 cluster_addr = :7946
 advertise    = vps1.nfb.group:7946
-# Only on the very first start of the first node; harmless afterwards.
-# The node that bootstraps is always a voter.
-bootstrap    = true
-# A voter votes in the site's log, and new groups are placed on the first
-# three voters. A second or third VPS sets voter = true and a join line;
-# a small VPS that holds only the groups placed on it sets neither.
+# New groups are placed on nodes with voter = true (a VPS that serves
+# pages); the first node always is one. A small VPS that holds only the
+# groups placed on it sets neither voter nor full.
 voter        = true
-# Every other node sets join (repeatable): an existing node to register
-# through the first time it starts. After that the node map (site.db) is
-# how the nodes find each other.
+# Every node but the first sets join (repeatable): an existing node to copy
+# site.db from the first time it starts. After that the node map (site.db)
+# is how the nodes find each other.
 # join = vps2.nfb.group:7946
 
 tls_ca   = /etc/grus/cluster/ca.crt
@@ -52,7 +49,7 @@ tls_key  = /etc/grus/cluster/n1.key
 # in the global settings. After that the admin page is the truth and
 # these lines are ignored; they can be deleted.
 
-# The site's first domain (repeat for more). The bootstrap node needs one.
+# The site's first domain (repeat for more). The first node needs one.
 domain = nfb.group
 
 # Accounts with these emails become site operators when they sign in.

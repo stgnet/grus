@@ -4,34 +4,19 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/hashicorp/raft"
-
-	"github.com/stgnet/grus/internal/cmd"
 )
 
-// One port carries all node-to-node traffic:
+// One port carries all node-to-node traffic: a small internal HTTP API
+// ("RPC" below) over mutual TLS. Replication (sync.go), submitting a
+// write to a node that holds its file, fetching photos, and passing on
+// web requests for a group this node doesn't hold all use it.
 //
-//   - Raft's own protocol (log replication, votes, snapshots) for each log
-//     this node follows: site.db's, and one per group it holds, and
-//   - a small internal HTTP API ("RPC" below): submitting commands to a
-//     log's leader, fetching photos, passing on web requests for a group
-//     this node doesn't hold.
-//
-// They're told apart by TLS ALPN, the protocol name a client offers during
-// the handshake: an HTTP client asks for rpcProto, and a Raft connection
-// for one log asks for raftProto(log), "grus-raft/site" or "grus-raft/g42".
-// So there's one port to open and one certificate check for everything,
-// and each log's Raft instance only ever sees its own connections.
-const (
-	rpcProto        = "grus-rpc"
-	raftProtoPrefix = "grus-raft/"
-)
-
-func raftProto(log cmd.LogID) string { return raftProtoPrefix + log.String() }
+// The listener still picks the protocol by TLS ALPN (the name a client
+// offers during the handshake), as it did when Raft shared the port, so a
+// future protocol can be added beside the API without a second port.
+const rpcProto = "grus-rpc"
 
 // muxListener accepts TLS connections on the cluster port and hands each to
 // the listener registered for its protocol.
@@ -46,14 +31,11 @@ type muxListener struct {
 func newMux(listen string, conf *tls.Config) (*muxListener, error) {
 	sconf := conf.Clone()
 	sconf.NextProtos = nil
-	// A TLS server normally has a fixed list of protocols it speaks, but
-	// ours depends on which logs this node holds right now, which changes
-	// as groups are placed. So pick per connection: agree to whichever of
-	// our protocols the client asked for. (An unknown log still completes
-	// the handshake; route then hangs up, as nobody's listening for it.)
+	// Agree to our protocol when the client asks for it; anything else
+	// completes the handshake and route then hangs up.
 	sconf.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		for _, p := range hello.SupportedProtos {
-			if p == rpcProto || strings.HasPrefix(p, raftProtoPrefix) {
+			if p == rpcProto {
 				c := conf.Clone()
 				c.NextProtos = []string{p}
 				return c, nil
@@ -95,9 +77,7 @@ func (m *muxListener) route(c *tls.Conn) {
 	sub := m.subs[proto]
 	m.mu.Unlock()
 	if sub == nil {
-		// A log this node doesn't follow (yet, or any more). The other
-		// side's Raft retries, which is right: it may be a moment early.
-		c.Close()
+		c.Close() // a protocol nobody here speaks
 		return
 	}
 	conn := net.Conn(c)
@@ -139,8 +119,7 @@ func (m *muxListener) Close() error {
 type plainConn struct{ net.Conn }
 
 // subListener is one protocol's side of the mux, as a net.Listener.
-// Closing it stops only that protocol (one log's Raft leaving this node),
-// not the port.
+// Closing it stops only that protocol, not the port.
 type subListener struct {
 	m     *muxListener
 	proto string
@@ -176,29 +155,6 @@ func (l *subListener) Close() error {
 }
 
 func (l *subListener) Addr() net.Addr { return l.addr }
-
-// tlsStream is one log's Raft network layer over mutual TLS: its side of
-// the mux for incoming connections, and a Dial that asks the far end for
-// the same log.
-type tlsStream struct {
-	*subListener
-	conf *tls.Config
-}
-
-func newTLSStream(m *muxListener, log cmd.LogID, advertise string, conf *tls.Config) *tlsStream {
-	proto := raftProto(log)
-	dconf := conf.Clone()
-	dconf.NextProtos = []string{proto}
-	return &tlsStream{subListener: m.listen(proto, hostAddr(advertise)), conf: dconf}
-}
-
-// Dial connects to another node. The address is host:port and the host is
-// resolved on every dial, so changing a node's DNS record is enough to move
-// it.
-func (s *tlsStream) Dial(addr raft.ServerAddress, timeout time.Duration) (net.Conn, error) {
-	d := &net.Dialer{Timeout: timeout}
-	return tls.DialWithDialer(d, "tcp", string(addr), s.conf)
-}
 
 // hostAddr is a host:port that isn't resolved until it's dialed.
 type hostAddr string

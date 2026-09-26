@@ -1,36 +1,22 @@
 package cluster
 
 import (
-	"bytes"
-	"errors"
+	"database/sql"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/hashicorp/raft"
 
 	"github.com/stgnet/grus/internal/cmd"
 	"github.com/stgnet/grus/internal/store"
 )
 
-// fast shortens Raft's timeouts so a single-node test cluster elects itself
-// in milliseconds instead of a second or two.
-func fast(c *raft.Config) {
-	c.HeartbeatTimeout = 100 * time.Millisecond
-	c.ElectionTimeout = 100 * time.Millisecond
-	c.LeaderLeaseTimeout = 50 * time.Millisecond
-	c.CommitTimeout = 5 * time.Millisecond
-}
+// These tests run real nodes in one process, over real mutual TLS on
+// localhost, and check the guarantees in docs/replication.md by name.
 
 // freeAddr finds a free localhost port.
 func freeAddr(t *testing.T) string {
@@ -56,46 +42,87 @@ func testCA(t *testing.T, ids ...string) string {
 	return dir
 }
 
-func opts(t *testing.T, caDir, certID, id, addr string) Options {
-	conf, err := LoadTLS(filepath.Join(caDir, "ca.crt"), filepath.Join(caDir, certID+".crt"), filepath.Join(caDir, certID+".key"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return Options{ID: id, Listen: addr, Advertise: addr, TLS: conf, LogOutput: io.Discard, tune: fast, tick: 50 * time.Millisecond}
+// testNode is one node in a test: its options, data directory and store,
+// so it can be stopped and started again on the same files.
+type testNode struct {
+	t   *testing.T
+	o   Options
+	dir string
+	st  *store.Store
+	n   *Node
 }
 
-// startNode starts a node and waits until it's registered and holds what
-// the map places on it.
-func startNode(t *testing.T, o Options, st *store.Store) *Node {
-	n, err := Start(o, st)
+// newNode makes (but doesn't start) a node. num is its node number.
+func newNode(t *testing.T, caDir, id string, num int, join ...string) *testNode {
+	conf, err := LoadTLS(filepath.Join(caDir, "ca.crt"), filepath.Join(caDir, id+".crt"), filepath.Join(caDir, id+".key"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := n.Ready(20 * time.Second); err != nil {
-		n.Shutdown()
-		t.Fatal(err)
-	}
-	return n
+	addr := freeAddr(t)
+	o := Options{ID: id, Num: num, Listen: addr, Advertise: addr, TLS: conf, Join: join,
+		tick: 30 * time.Millisecond, ackWait: 200 * time.Millisecond}
+	// As in config: the first node (no join) takes new groups.
+	o.Voter = len(join) == 0
+	return &testNode{t: t, o: o, dir: t.TempDir()}
 }
 
-func openStore(t *testing.T, dir string) *store.Store {
-	st, err := store.Open(dir)
+// start starts the node on its data directory.
+func (tn *testNode) start() *testNode {
+	tn.t.Helper()
+	st, err := store.Open(tn.dir)
 	if err != nil {
-		t.Fatal(err)
+		tn.t.Fatal(err)
 	}
-	return st
+	n, err := Start(tn.o, st)
+	if err != nil {
+		st.Close()
+		tn.t.Fatal(err)
+	}
+	tn.st, tn.n = st, n
+	tn.t.Cleanup(tn.stop)
+	return tn
 }
 
-func groupCount(t *testing.T, st *store.Store) int {
-	gs, err := st.Groups()
-	if err != nil {
-		t.Fatal(err)
+// stop shuts the node down, keeping its files.
+func (tn *testNode) stop() {
+	if tn.n != nil {
+		tn.n.Shutdown()
+		tn.st.Close()
+		tn.n, tn.st = nil, nil
 	}
-	return len(gs)
+}
+
+func (tn *testNode) addr() string { return tn.o.Advertise }
+
+func (tn *testNode) apply(c cmd.Command) any {
+	tn.t.Helper()
+	v, err := tn.n.Apply(c)
+	if err != nil {
+		tn.t.Fatalf("%s: %T: %v", tn.o.ID, c, err)
+	}
+	return v
+}
+
+// split cuts the network between two groups of nodes, both ways.
+func split(a, b []*testNode) {
+	for _, x := range a {
+		for _, y := range b {
+			x.n.client.blocked.Store(y.addr(), true)
+			y.n.client.blocked.Store(x.addr(), true)
+		}
+	}
+}
+
+// heal puts the network back together.
+func heal(all ...*testNode) {
+	for _, x := range all {
+		x.n.client.blocked.Clear()
+	}
 }
 
 func waitFor(t *testing.T, what string, ok func() bool) {
-	deadline := time.Now().Add(10 * time.Second)
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if ok() {
 			return
@@ -105,437 +132,504 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// TestReplicateAndRecover walks the disaster drill end to end, over real
-// mutual TLS on localhost:
-//
-//  1. n1 (the VPS) bootstraps as the only voter; studio joins as a
-//     full-copy non-voter.
-//  2. Writes on n1 appear in studio's own SQLite files: site.db, and each
-//     group's file, through that group's own log.
-//  3. n1 "dies". studio's data directory is copied to a new node n1b, which
-//     runs Recover and becomes the only voter of every log, with every
-//     write intact.
-//  4. n1b accepts new writes, including a new group.
-func TestReplicateAndRecover(t *testing.T) {
-	caDir := testCA(t, "n1", "studio", "n1b")
-	n1Addr, studioAddr := freeAddr(t), freeAddr(t)
-
-	n1St := openStore(t, t.TempDir())
-	o := opts(t, caDir, "n1", "n1", n1Addr)
-	o.Bootstrap, o.Voter = true, true
-	n1 := startNode(t, o, n1St)
-
-	studioDir := t.TempDir()
-	studioSt := openStore(t, studioDir)
-	so := opts(t, caDir, "studio", "studio", studioAddr)
-	so.Full, so.Join = true, []string{n1Addr}
-	studio := startNode(t, so, studioSt)
-
-	for i, slug := range []string{"travato", "promaster"} {
-		c := &cmd.CreateGroup{GroupID: int64(100 + i), Slug: slug, Name: slug, At: 1}
-		if _, err := n1.Apply(c); err != nil {
+// ready waits until every node has heard from every other.
+func ready(t *testing.T, nodes ...*testNode) {
+	t.Helper()
+	for _, tn := range nodes {
+		if err := tn.n.Ready(20 * time.Second); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// A failing command fails the same way everywhere and changes nothing.
-	if _, err := n1.Apply(&cmd.CreateGroup{GroupID: 999, Slug: "travato", Name: "dup", At: 1}); err == nil {
-		t.Fatal("duplicate slug was accepted")
-	}
-	// The group's own file is written on n1 by the time Apply returns (n1
-	// leads every log here, and relays the group's first settings itself).
-	if gs, err := n1St.GroupSettings(100); err != nil || gs == nil || gs.Name != "travato" {
-		t.Fatalf("n1's group file: %+v, %v", gs, err)
-	}
-	waitFor(t, "studio to have both groups", func() bool { return groupCount(t, studioSt) == 2 })
-	// A group write goes through the group's log, which studio follows.
-	if _, err := studio.Apply(&cmd.UpdateSettings{GroupID: 100, Set: map[string]any{"name": "Travato"}, At: 2}); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "studio's group file", func() bool {
-		gs, err := studioSt.GroupSettings(100)
-		return err == nil && gs != nil && gs.Name == "Travato"
-	})
-	// ...and the new name came back to site.db through the outbox.
-	waitFor(t, "the name in studio's site.db", func() bool {
-		g, err := studioSt.GroupByID(100)
-		return err == nil && g != nil && g.Name == "Travato"
-	})
-
-	// n1 is gone. Stop studio too (as `grus recover` requires), and copy its
-	// data directory to the replacement node.
-	n1.Shutdown()
-	n1St.Close()
-	studio.Shutdown()
-	studioSt.Close()
-
-	n1bDir := t.TempDir()
-	if out, err := exec.Command("cp", "-a", studioDir+"/.", n1bDir).CombinedOutput(); err != nil {
-		t.Fatalf("copy: %v %s", err, out)
-	}
-	n1bAddr := freeAddr(t)
-	n1bSt := openStore(t, n1bDir)
-	bo := opts(t, caDir, "n1b", "n1b", n1bAddr)
-	bo.Voter = true
-	if err := Recover(bo, n1bSt); err != nil {
-		t.Fatal(err)
-	}
-	n1b := startNode(t, bo, n1bSt)
-	defer n1b.Shutdown()
-	waitFor(t, "n1b to lead", n1b.IsLeader)
-
-	if n := groupCount(t, n1bSt); n != 2 {
-		t.Fatalf("after recover: %d groups, want 2", n)
-	}
-	// n1 is out of the map, and n1b has taken its groups.
-	nodes, _ := n1bSt.Nodes()
-	for _, nd := range nodes {
-		if nd.ID == "n1" {
-			t.Fatal("n1 still in the node map")
-		}
-	}
-	waitFor(t, "n1b to lead group 100", func() bool { return n1b.Leads(100) })
-	if _, err := n1b.Apply(&cmd.UpdateSettings{GroupID: 100, Set: map[string]any{"name": "Travato owners"}, At: 3}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := n1b.Apply(&cmd.CreateGroup{GroupID: 102, Slug: "ekko", Name: "ekko", At: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if n := groupCount(t, n1bSt); n != 3 {
-		t.Fatalf("after new write: %d groups, want 3", n)
-	}
-	if gs, err := n1bSt.GroupSettings(102); err != nil || gs == nil || gs.Name != "ekko" {
-		t.Fatalf("new group's file after recover: %+v, %v", gs, err)
-	}
 }
 
-// TestRejectsForeignCertificate checks that a node with a certificate from a
-// different CA can't talk to the cluster.
-func TestRejectsForeignCertificate(t *testing.T) {
-	ours := testCA(t, "n1")
-	theirs := testCA(t, "intruder")
-	addr := freeAddr(t)
+// bookkeeping tables differ between copies of a file by design: which old
+// operations each node has deleted, which follow-ups it has sent, and the
+// counts cmd.Direct keeps. Everything else must be the same everywhere.
+var bookkeeping = map[string]bool{"ops": true, "outbox": true, "applied": true, "sqlite_sequence": true}
 
-	st := openStore(t, t.TempDir())
-	o := opts(t, ours, "n1", "n1", addr)
-	o.Bootstrap, o.Voter = true, true
-	n1 := startNode(t, o, st)
-	defer n1.Shutdown()
-
-	intruder := opts(t, theirs, "intruder", "intruder", "")
-	intruder.TLS.NextProtos = []string{raftProto(cmd.SiteLog)}
-	s := &tlsStream{conf: intruder.TLS}
-	conn, err := s.Dial(raft.ServerAddress(addr), time.Second)
-	if err == nil {
-		// TLS 1.3 may report the server's rejection on the first read.
-		conn.SetDeadline(time.Now().Add(time.Second))
-		_, err = conn.Read(make([]byte, 1))
-		conn.Close()
-	}
-	if err == nil {
-		t.Fatal("connection with a foreign certificate was accepted")
-	}
-}
-
-// TestSnapshotRoundTrip checks that a log's snapshot restores into an
-// identical file: site.db for the site log, a group's file for its log.
-func TestSnapshotRoundTrip(t *testing.T) {
-	src := openStore(t, t.TempDir())
-	log, err := NewLocal(src)
+// digest is a file's content as text: every row of every table (but the
+// bookkeeping ones and search's internals), sorted. Two copies are the
+// same when their digests are.
+func digest(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'search_fts%' ORDER BY name`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := log.Apply(&cmd.CreateGroup{GroupID: 7, Slug: "travato", Name: "Travato", At: 1}); err != nil {
-		t.Fatal(err)
+	var tables []string
+	for rows.Next() {
+		var name string
+		rows.Scan(&name)
+		if !bookkeeping[name] {
+			tables = append(tables, name)
+		}
 	}
-	dst := openStore(t, t.TempDir())
-	for _, l := range []cmd.LogID{cmd.SiteLog, 7} {
-		var buf bytes.Buffer
-		if err := WriteSnapshot(src, l, &buf); err != nil {
+	rows.Close()
+	var b strings.Builder
+	for _, name := range tables {
+		rows, err := db.Query(`SELECT * FROM "` + name + `"`)
+		if err != nil {
 			t.Fatal(err)
 		}
-		f := &fsm{st: dst, log: l}
-		if err := f.Restore(io.NopCloser(&buf)); err != nil {
-			t.Fatal(err)
+		cols, _ := rows.Columns()
+		var lines []string
+		for rows.Next() {
+			vals := make([]any, len(cols))
+			ptrs := make([]any, len(cols))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			rows.Scan(ptrs...)
+			lines = append(lines, fmt.Sprint(vals...))
 		}
+		rows.Close()
+		sort.Strings(lines)
+		fmt.Fprintf(&b, "%s\n  %s\n", name, strings.Join(lines, "\n  "))
 	}
-	if n := groupCount(t, dst); n != 1 {
-		t.Fatalf("restored %d groups, want 1", n)
-	}
-	gs, err := dst.GroupSettings(7)
-	if err != nil || gs == nil || gs.Name != "Travato" {
-		t.Fatalf("restored group file: %+v, %v", gs, err)
-	}
-	// No temp files left behind in the data directory.
-	ents, _ := os.ReadDir(dst.Dir())
-	for _, e := range ents {
-		if e.Name() != "site.db" && e.Name() != "groups" && e.Name() != "site.db-wal" && e.Name() != "site.db-shm" {
-			t.Errorf("leftover %s in data dir", e.Name())
-		}
-	}
+	return b.String()
 }
 
-// TestPlacementAndFailover runs four nodes the way a grown site would: three
-// voters (a, b, c) and a small node d that holds only what it's given. It
-// checks that a new group lands on the three voters and not on d, that d
-// can still write to it (forwarded to the group's leader), that placing
-// the group on d copies it there and taking it off deletes d's copy, and
-// that killing the group's leader leaves the other two carrying on.
-func TestPlacementAndFailover(t *testing.T) {
-	caDir := testCA(t, "a", "b", "c", "d")
-	addrs := map[string]string{}
-	for _, id := range []string{"a", "b", "c", "d"} {
-		addrs[id] = freeAddr(t)
-	}
-	nodes := map[string]*Node{}
-	stores := map[string]*store.Store{}
-	for _, id := range []string{"a", "b", "c", "d"} {
-		o := opts(t, caDir, id, id, addrs[id])
-		o.Voter = id != "d"
-		o.Bootstrap = id == "a"
-		if id != "a" {
-			o.Join = []string{addrs["a"]}
-		}
-		stores[id] = openStore(t, t.TempDir())
-		nodes[id] = startNode(t, o, stores[id])
-	}
-	defer func() {
-		for _, n := range nodes {
-			n.Shutdown()
-		}
-	}()
-	// b and c were added to the site log as non-voters, then promoted.
-	waitFor(t, "three site voters", func() bool {
-		f := nodes["a"].site().raft.GetConfiguration()
-		v := 0
-		for _, s := range f.Configuration().Servers {
-			if s.Suffrage == raft.Voter {
-				v++
-			}
-		}
-		return f.Error() == nil && v == 3
-	})
-
-	if _, err := nodes["a"].Apply(&cmd.CreateGroup{GroupID: 11, Slug: "travato", Name: "Travato", At: 1}); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"a", "b", "c"} {
-		n := nodes[id]
-		waitFor(t, id+" to hold the group", func() bool { return n.Holds(11) })
-	}
-	if nodes["d"].Holds(11) || stores["d"].HasGroup(11) {
-		t.Fatal("d holds a group nobody placed on it")
-	}
-	// d writes to a group it doesn't hold: forwarded to the group's leader.
-	rename := func(from, name string) error {
-		_, err := nodes[from].Apply(&cmd.UpdateSettings{GroupID: 11, Set: map[string]any{"name": name}, At: 2})
-		return err
-	}
-	if err := rename("d", "Travato owners"); err != nil {
-		t.Fatal(err)
-	}
-	if stores["d"].HasGroup(11) {
-		t.Fatal("forwarding a write left a group file on d")
-	}
-	// The site's copy of the name reaches d through the site log.
-	waitFor(t, "the new name in d's site.db", func() bool {
-		g, _ := stores["d"].GroupByID(11)
-		return g != nil && g.Name == "Travato owners"
-	})
-
-	// A web request to d for the group is passed on to a node that holds
-	// it, with the site's host name and the visitor's address kept.
-	for _, id := range []string{"a", "b", "c"} {
-		id := id
-		nodes[id].ServeWeb(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintf(w, "%s|%s|%s|%s", id, r.Host, r.URL.RequestURI(), r.RemoteAddr)
-		}))
-	}
-	req := httptest.NewRequest("GET", "https://travato.nfb.group/p/5?sort=top", nil)
-	req.RemoteAddr = "203.0.113.9:5555"
-	rec := httptest.NewRecorder()
-	if !nodes["d"].PassOn(rec, req, 11) {
-		t.Fatal("d didn't pass the request on")
-	}
-	if got := rec.Body.String(); !strings.Contains(got, "|travato.nfb.group|/p/5?sort=top|203.0.113.9:") {
-		t.Fatalf("passed-on request arrived as %q", got)
-	}
-	// No full-copy node here, so the pages that gather from every group
-	// have nowhere to go.
-	if nodes["d"].PassOn(httptest.NewRecorder(), req, 0) {
-		t.Fatal("passed on to a full node that doesn't exist")
-	}
-
-	// Place the group on d: d copies it from the group's leader.
-	if _, err := nodes["d"].Apply(&cmd.PlaceGroup{GroupID: 11, NodeID: "d", At: 3}); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "d's copy of the group", func() bool {
-		gs, err := stores["d"].GroupSettings(11)
-		return err == nil && gs != nil && gs.Name == "Travato owners"
-	})
-	// ...and take it off again: d's copy goes.
-	if _, err := nodes["a"].Apply(&cmd.UnplaceGroup{GroupID: 11, NodeID: "d", At: 4}); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "d to drop the group", func() bool { return !nodes["d"].Holds(11) && !stores["d"].HasGroup(11) })
-
-	// Kill the group's leader. The other two elect a new one, and writes
-	// (from d, which knows only the map) carry on.
-	var dead string
-	waitFor(t, "a group leader", func() bool {
-		for _, id := range []string{"a", "b", "c"} {
-			if nodes[id].Leads(11) {
-				dead = id
-				return true
-			}
-		}
-		return false
-	})
-	nodes[dead].Shutdown()
-	delete(nodes, dead)
-	waitFor(t, "a write after the leader died", func() bool { return rename("d", "Travato") == nil })
-	for id, st := range stores {
-		if id == dead || id == "d" {
-			continue
-		}
-		waitFor(t, id+" to have the write", func() bool {
-			gs, _ := st.GroupSettings(11)
-			return gs != nil && gs.Name == "Travato"
-		})
-	}
-	// The site log survives too (it may have lost its leader as well).
-	waitFor(t, "a site write after the leader died", func() bool {
-		_, err := nodes["d"].Apply(&cmd.CreateGroup{GroupID: 12, Slug: "ekko", Name: "Ekko", At: 5})
-		return err == nil || errors.Is(err, cmd.ErrSlugTaken)
-	})
-}
-
-// TestWritesSurviveLeaderKill is the "kill nodes during a load test" drill
-// (plan, M7): three voters take a steady stream of posts to one group,
-// through all three nodes at once, and the group's leader is killed partway
-// through. Writes must carry on through the other two, and every write
-// that was acknowledged, before or after the kill, must be on both
-// survivors: an acknowledged write is never lost.
-func TestWritesSurviveLeaderKill(t *testing.T) {
-	caDir := testCA(t, "a", "b", "c")
-	ids := []string{"a", "b", "c"}
-	nodes := map[string]*Node{}
-	stores := map[string]*store.Store{}
-	var addrA string
-	for _, id := range ids {
-		addr := freeAddr(t)
-		o := opts(t, caDir, id, id, addr)
-		o.Voter = true
-		if id == "a" {
-			o.Bootstrap, addrA = true, addr
-		} else {
-			o.Join = []string{addrA}
-		}
-		stores[id] = openStore(t, t.TempDir())
-		nodes[id] = startNode(t, o, stores[id])
-	}
-	defer func() {
-		for _, n := range nodes {
-			n.Shutdown()
-		}
-	}()
-	const gid, owner = 21, 7
-	if _, err := nodes["a"].Apply(&cmd.CreateGroup{GroupID: gid, Slug: "travato", Name: "Travato", OwnerID: owner, At: 1}); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range ids {
-		st := stores[id]
-		waitFor(t, id+" to have the group's owner", func() bool {
-			m, _ := st.Membership(gid, owner)
-			return m != nil
-		})
-	}
-
-	var (
-		mu     sync.Mutex
-		acked  []int64
-		dead   = map[string]bool{}
-		nextID atomic.Int64
-		after  atomic.Int64 // writes acknowledged after the kill
-		killed atomic.Bool
-		stop   = make(chan struct{})
-		wg     sync.WaitGroup
-	)
-	nextID.Store(1000)
-	for _, id := range ids {
-		wg.Add(1)
-		go func(id string) {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				mu.Lock()
-				gone := dead[id]
-				mu.Unlock()
-				if gone {
-					return
-				}
-				pid := nextID.Add(1)
-				_, err := nodes[id].Apply(&cmd.CreatePost{GroupID: gid, PostID: pid, UserID: owner, Title: fmt.Sprint("post ", pid), At: 2})
-				if err != nil {
-					continue // not acknowledged: it may or may not have landed
-				}
-				mu.Lock()
-				acked = append(acked, pid)
-				mu.Unlock()
-				if killed.Load() {
-					after.Add(1)
-				}
-			}
-		}(id)
-	}
-
-	time.Sleep(500 * time.Millisecond)
-	var victim string
-	waitFor(t, "a group leader", func() bool {
-		for _, id := range ids {
-			if nodes[id].Leads(gid) {
-				victim = id
-				return true
-			}
-		}
-		return false
-	})
-	mu.Lock()
-	dead[victim] = true
-	mu.Unlock()
-	nodes[victim].Shutdown()
-	killed.Store(true)
-	waitFor(t, "writes to resume after the kill", func() bool { return after.Load() >= 20 })
-	close(stop)
-	wg.Wait()
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(acked) < 40 {
-		t.Fatalf("only %d writes acknowledged", len(acked))
-	}
-	for _, id := range ids {
-		if id == victim {
-			continue
-		}
-		st := stores[id]
-		waitFor(t, id+" to have every acknowledged write", func() bool {
-			db, err := st.Group(gid)
+// same waits until every node has the same copy of a file (0 = site.db).
+func same(t *testing.T, gid int64, nodes ...*testNode) {
+	t.Helper()
+	var last []string
+	ok := func() bool {
+		last = last[:0]
+		for _, tn := range nodes {
+			db, err := tn.st.Live(gid)
 			if err != nil {
 				return false
 			}
-			for _, pid := range acked {
-				var n int
-				if db.QueryRow(`SELECT COUNT(*) FROM posts WHERE id = ?`, pid).Scan(&n); n != 1 {
-					return false
+			last = append(last, digest(t, db))
+		}
+		for _, d := range last[1:] {
+			if d != last[0] {
+				return false
+			}
+		}
+		return true
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	for i, d := range last {
+		t.Logf("%s's copy of %d:\n%s", nodes[i].o.ID, gid, d)
+	}
+	t.Fatalf("copies of file %d never became the same", gid)
+}
+
+func postTitles(t *testing.T, st *store.Store, gid int64) []string {
+	db, err := st.Group(gid)
+	if err != nil {
+		return nil
+	}
+	rows, err := db.Query(`SELECT title FROM posts ORDER BY title`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		rows.Scan(&s)
+		out = append(out, s)
+	}
+	return out
+}
+
+// newGroup creates a group with an owner who can post in it.
+func newGroup(tn *testNode, gid int64, slug string, owner int64) {
+	tn.apply(&cmd.CreateGroup{GroupID: gid, Slug: slug, Name: slug, OwnerID: owner, At: 1})
+}
+
+// waitHolds waits until a node holds a group, with its owner in place.
+func waitHolds(t *testing.T, tn *testNode, gid, owner int64) {
+	t.Helper()
+	waitFor(t, tn.o.ID+" to hold group", func() bool {
+		if !tn.n.Holds(gid) {
+			return false
+		}
+		m, err := tn.st.Membership(gid, owner)
+		return err == nil && m != nil
+	})
+}
+
+func post(tn *testNode, gid, id, user int64, title string) {
+	tn.apply(&cmd.CreatePost{GroupID: gid, PostID: id, UserID: user, Title: title, At: time.Now().Unix()})
+}
+
+// TestOneNodeAlone: a node with no other node carries on, reads and writes,
+// and everything it has becomes stable at once.
+func TestOneNodeAlone(t *testing.T) {
+	caDir := testCA(t, "n1")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	newGroup(n1, 100, "travato", 7)
+	waitHolds(t, n1, 100, 7)
+	post(n1, 100, 1001, 7, "Solar")
+	if got := postTitles(t, n1.st, 100); len(got) != 1 {
+		t.Fatalf("posts: %v", got)
+	}
+	e := n1.n.engineFor(100)
+	waitFor(t, "the stable copy to catch up", func() bool {
+		stable, _ := n1.st.Stable(100)
+		live, _ := n1.st.Live(100)
+		sp, _ := store.PositionOf(stable)
+		lp, _ := store.PositionOf(live)
+		return sp == lp
+	})
+	e.mu.Lock()
+	f := n1.n.stablePoint(e)
+	e.mu.Unlock()
+	if f == 0 {
+		t.Fatal("alone, the stable point should move with the clock")
+	}
+}
+
+// TestTwoNodesReplicate: a node joins through another, copies site.db,
+// registers, gets every group (it's a full node), and writes on either
+// reach the other.
+func TestTwoNodesReplicate(t *testing.T) {
+	caDir := testCA(t, "n1", "studio")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	newGroup(n1, 100, "travato", 7)
+
+	sOpts := newNode(t, caDir, "studio", 2, n1.addr())
+	sOpts.o.Full = true
+	studio := sOpts.start()
+	ready(t, n1, studio)
+	waitHolds(t, studio, 100, 7)
+
+	post(n1, 100, 1001, 7, "From n1")
+	post(studio, 100, 1002, 7, "From studio")
+	waitFor(t, "both posts on both nodes", func() bool {
+		return len(postTitles(t, n1.st, 100)) == 2 && len(postTitles(t, studio.st, 100)) == 2
+	})
+	same(t, 0, n1, studio)
+	same(t, 100, n1, studio)
+}
+
+// TestSplitAndRejoin: two nodes lose touch, both keep taking writes to the
+// same group, including a comment on a post the other side then locks,
+// and a group address claimed on both sides. When they can reach each
+// other again, both end with the same files and nothing is lost.
+func TestSplitAndRejoin(t *testing.T) {
+	caDir := testCA(t, "n1", "studio")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	newGroup(n1, 100, "travato", 7)
+	s := newNode(t, caDir, "studio", 2, n1.addr())
+	s.o.Full = true
+	studio := s.start()
+	ready(t, n1, studio)
+	waitHolds(t, studio, 100, 7)
+	post(n1, 100, 1000, 7, "Before the split")
+	same(t, 100, n1, studio)
+
+	split([]*testNode{n1}, []*testNode{studio})
+	for i := 0; i < 5; i++ {
+		post(n1, 100, 2000+int64(i), 7, fmt.Sprintf("n1 %d", i))
+		post(studio, 100, 3000+int64(i), 7, fmt.Sprintf("studio %d", i))
+	}
+	// A comment on one side, the post locked on the other.
+	studio.apply(&cmd.CreateComment{GroupID: 100, CommentID: 4000, PostID: 1000, UserID: 7, Body: "late", At: 5})
+	n1.apply(&cmd.SetPostFlag{GroupID: 100, PostID: 1000, Flag: "locked", On: true, By: 7, At: 4})
+	// The same new group address on both sides.
+	newGroup(n1, 200, "promaster", 7)
+	newGroup(studio, 300, "promaster", 7)
+
+	heal(n1, studio)
+	same(t, 0, n1, studio)
+	same(t, 100, n1, studio)
+	if got := postTitles(t, n1.st, 100); len(got) != 11 {
+		t.Fatalf("posts after rejoining: %v", got)
+	}
+	a, _ := n1.st.GroupByID(200)
+	b, _ := n1.st.GroupByID(300)
+	if a == nil || b == nil || a.Slug == b.Slug {
+		t.Fatalf("both groups, with different addresses: %+v %+v", a, b)
+	}
+	// The comment and the lock: whichever came second in the final order,
+	// the outcome is the same on both, and a comment refused for the lock
+	// is on record rather than gone.
+	db, _ := n1.st.Group(100)
+	var comments, conflicts int
+	db.QueryRow(`SELECT COUNT(*) FROM comments`).Scan(&comments)
+	db.QueryRow(`SELECT COUNT(*) FROM conflicts WHERE command = 'CreateComment'`).Scan(&conflicts)
+	if comments+conflicts != 1 {
+		t.Fatalf("the late comment: %d kept, %d recorded as conflicts", comments, conflicts)
+	}
+}
+
+// TestOfflineNodeCatchesUp: a node that was stopped while the other wrote
+// catches up by itself when it starts again, and one whose operations were
+// meanwhile deleted everywhere else gets a fresh copy instead.
+func TestOfflineNodeCatchesUp(t *testing.T) {
+	caDir := testCA(t, "n1", "studio")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	newGroup(n1, 100, "travato", 7)
+	s := newNode(t, caDir, "studio", 2, n1.addr())
+	s.o.Full = true
+	studio := s.start()
+	ready(t, n1, studio)
+	waitHolds(t, studio, 100, 7)
+
+	studio.stop()
+	for i := 0; i < 20; i++ {
+		post(n1, 100, 5000+int64(i), 7, fmt.Sprintf("while away %d", i))
+	}
+	studio.start()
+	same(t, 100, n1, studio)
+	if got := postTitles(t, studio.st, 100); len(got) != 20 {
+		t.Fatalf("studio caught up to %d posts", len(got))
+	}
+}
+
+// TestRewindOrder: operations made on two nodes at nearly the same time
+// arrive at each in a different order; both end up applying them in the
+// same final order (checked by a counter that depends on order).
+func TestRewindOrder(t *testing.T) {
+	caDir := testCA(t, "n1", "studio")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	newGroup(n1, 100, "travato", 7)
+	s := newNode(t, caDir, "studio", 2, n1.addr())
+	s.o.Full = true
+	studio := s.start()
+	ready(t, n1, studio)
+	waitHolds(t, studio, 100, 7)
+	post(n1, 100, 1000, 7, "Thread")
+	same(t, 100, n1, studio)
+
+	split([]*testNode{n1}, []*testNode{studio})
+	for i := 0; i < 10; i++ {
+		n1.apply(&cmd.CreateComment{GroupID: 100, CommentID: 6000 + int64(i), PostID: 1000, UserID: 7, Body: "a", At: 10})
+		studio.apply(&cmd.CreateComment{GroupID: 100, CommentID: 7000 + int64(i), PostID: 1000, UserID: 7, Body: "b", At: 10})
+	}
+	heal(n1, studio)
+	same(t, 100, n1, studio)
+	if n1.n.rewinds.Load()+studio.n.rewinds.Load() == 0 {
+		t.Fatal("interleaved writes should have made at least one node rewind")
+	}
+}
+
+// TestRebuildFromSurvivor: every node but the Studio is lost. The Studio
+// carries on alone; a new node started pointing at it gets everything;
+// removing the lost node lets the stable point move again.
+func TestRebuildFromSurvivor(t *testing.T) {
+	caDir := testCA(t, "n1", "studio", "n2")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	newGroup(n1, 100, "travato", 7)
+	s := newNode(t, caDir, "studio", 2, n1.addr())
+	s.o.Full = true
+	studio := s.start()
+	ready(t, n1, studio)
+	waitHolds(t, studio, 100, 7)
+	post(n1, 100, 1000, 7, "Before")
+	same(t, 100, n1, studio)
+
+	// n1 is destroyed: stopped, and its files gone.
+	n1.stop()
+	os.RemoveAll(n1.dir)
+
+	post(studio, 100, 1001, 7, "Studio alone")
+	n2o := newNode(t, caDir, "n2", 3, studio.addr())
+	n2o.o.Voter = true
+	n2 := n2o.start()
+	waitFor(t, "n2 registered, as the Studio sees it", func() bool {
+		nodes, _ := studio.st.Nodes()
+		for _, nd := range nodes {
+			if nd.ID == "n2" {
+				return true
+			}
+		}
+		return false
+	})
+	studio.apply(&cmd.PlaceGroup{GroupID: 100, NodeID: "n2", Voter: true, At: 2})
+	waitHolds(t, n2, 100, 7)
+	same(t, 100, studio, n2)
+	if got := postTitles(t, n2.st, 100); len(got) != 2 {
+		t.Fatalf("n2 has %v", got)
+	}
+
+	// The stable point waits for n1 until it's removed: it stays at the
+	// last clock reading n1 sent, before the Studio's writes since.
+	stableAt := func(tn *testNode) int64 {
+		e := tn.n.engineFor(100)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return tn.n.stablePoint(e)
+	}
+	live, _ := studio.st.Live(100)
+	last, _ := store.PositionOf(live)
+	time.Sleep(100 * time.Millisecond)
+	if stableAt(studio) >= last.Stamp {
+		t.Fatal("the stable point passed a write while a node in the map was silent")
+	}
+	studio.apply(&cmd.RemoveNode{ID: "n1", Replacement: "studio", At: 3})
+	waitFor(t, "the stable point to move", func() bool { return stableAt(studio) > last.Stamp && stableAt(n2) > last.Stamp })
+}
+
+// TestRandomSplits is the convergence test: three nodes, writes on random
+// nodes to two groups, the network split and healed at random. At the end
+// every copy of every file is the same, and holds every post made.
+func TestRandomSplits(t *testing.T) {
+	caDir := testCA(t, "a", "b", "c")
+	a := newNode(t, caDir, "a", 1)
+	a.o.Full = true
+	a.start()
+	ready(t, a)
+	newGroup(a, 100, "one", 7)
+	newGroup(a, 200, "two", 7)
+	b := newNode(t, caDir, "b", 2, a.addr())
+	b.o.Full = true
+	b.start()
+	c := newNode(t, caDir, "c", 3, a.addr())
+	c.o.Full = true
+	c.start()
+	nodes := []*testNode{a, b, c}
+	ready(t, nodes...)
+	for _, tn := range nodes {
+		waitHolds(t, tn, 100, 7)
+		waitHolds(t, tn, 200, 7)
+	}
+
+	seed := time.Now().UnixNano()
+	t.Logf("seed %d", seed)
+	rnd := func(n int) int {
+		seed = seed*6364136223846793005 + 1442695040888963407
+		return int(uint64(seed)>>33) % n
+	}
+	want := 0
+	for round := 0; round < 6; round++ {
+		heal(nodes...)
+		// Split one node off from the other two, or none.
+		if k := rnd(4); k < 3 {
+			var rest []*testNode
+			for i, tn := range nodes {
+				if i != k {
+					rest = append(rest, tn)
 				}
 			}
-			return true
-		})
+			split([]*testNode{nodes[k]}, rest)
+		}
+		for i := 0; i < 8; i++ {
+			tn := nodes[rnd(3)]
+			gid := int64(100 * (1 + rnd(2)))
+			post(tn, gid, int64(10000+round*100+i), 7, fmt.Sprintf("r%d-%d", round, i))
+			want++
+		}
+		time.Sleep(time.Duration(rnd(100)) * time.Millisecond)
 	}
-	t.Logf("%d writes acknowledged, %d after killing %s", len(acked), after.Load(), victim)
+	heal(nodes...)
+	same(t, 0, nodes...)
+	same(t, 100, nodes...)
+	same(t, 200, nodes...)
+	if got := len(postTitles(t, a.st, 100)) + len(postTitles(t, a.st, 200)); got != want {
+		t.Fatalf("%d posts, want %d", got, want)
+	}
+}
+
+// TestRejectsForeignCertificate: a node with a certificate from another CA
+// can't join.
+func TestRejectsForeignCertificate(t *testing.T) {
+	caDir := testCA(t, "n1")
+	other := testCA(t, "intruder")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	in := newNode(t, other, "intruder", 5, n1.addr())
+	in.o.joinWait = time.Second
+	st, err := store.Open(in.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if n, err := Start(in.o, st); err == nil {
+		n.Shutdown()
+		t.Fatal("an outside node got a copy of site.db")
+	}
+}
+
+// TestRemovedNodeComesBack: a node removed while it was only out of
+// touch comes back, finds itself removed, and sends what it wrote in the
+// meantime again as a new node: nothing is lost, and the copies agree.
+func TestRemovedNodeComesBack(t *testing.T) {
+	caDir := testCA(t, "n1", "n2")
+	n1 := newNode(t, caDir, "n1", 1).start()
+	ready(t, n1)
+	newGroup(n1, 100, "travato", 7)
+	o2 := newNode(t, caDir, "n2", 2, n1.addr())
+	o2.o.Full = true
+	n2 := o2.start()
+	ready(t, n1, n2)
+	waitHolds(t, n2, 100, 7)
+	oldOrigin := n2.n.id.origin()
+
+	split([]*testNode{n1}, []*testNode{n2})
+	post(n2, 100, 9001, 7, "written while apart")
+	n1.apply(&cmd.RemoveNode{ID: "n2", Replacement: "n1", At: 5})
+	heal(n1, n2)
+
+	waitFor(t, "n2 to come back as a new node", func() bool { return n2.n.id.origin() != oldOrigin && n2.n.registered() })
+	waitFor(t, "n2's post on n1", func() bool {
+		for _, title := range postTitles(t, n1.st, 100) {
+			if title == "written while apart" {
+				return true
+			}
+		}
+		return false
+	})
+	same(t, 0, n1, n2)
+}
+
+// TestUpgradeFromRaft: two nodes upgraded from Raft, one of whose copies
+// was behind. The one that's behind takes the other's copy, keeping
+// anything it made since.
+func TestUpgradeFromRaft(t *testing.T) {
+	caDir := testCA(t, "n1", "studio")
+	n1 := newNode(t, caDir, "n1", 1)
+	studio := newNode(t, caDir, "studio", 2, n1.addr())
+	studio.o.Full = true
+	// Both nodes' files as Raft left them: the same history, the studio's
+	// a few entries short.
+	build := func(tn *testNode, posts int, base int64) {
+		st, err := store.Open(tn.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := &cmd.Direct{Store: st}
+		for _, c := range []cmd.Command{
+			&cmd.RegisterNode{ID: "n1", Addr: n1.addr(), Voter: true, Num: -1, At: 1},
+			&cmd.RegisterNode{ID: "studio", Addr: studio.addr(), Full: true, Num: -1, At: 1},
+			&cmd.CreateGroup{GroupID: 100, Slug: "travato", Name: "Travato", OwnerID: 7, At: 1},
+		} {
+			if _, err := d.Apply(c); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := 0; i < posts; i++ {
+			d.Apply(&cmd.CreatePost{GroupID: 100, PostID: int64(100 + i), UserID: 7, Title: fmt.Sprint("post ", i), At: 1})
+		}
+		site, _ := st.Live(0)
+		group, _ := st.Live(100)
+		store.SetBase(site, base)
+		store.SetBase(group, base)
+		st.Close()
+	}
+	build(n1, 5, 20)
+	build(studio, 3, 18)
+	n1.start()
+	studio.start()
+	ready(t, n1, studio)
+	same(t, 100, n1, studio)
+	if got := postTitles(t, studio.st, 100); len(got) != 5 {
+		t.Fatalf("studio after the upgrade: %v", got)
+	}
 }
