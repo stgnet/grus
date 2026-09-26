@@ -161,7 +161,7 @@ func (s *Server) rootGroups(r *http.Request, c *greq) ([]rootGroupCard, error) {
 		if err != nil || st == nil {
 			continue
 		}
-		v, err := s.viewer(c.u, g.ID)
+		v, err := s.viewer(r, c.u, g.ID)
 		if err != nil || !auth.CanSeeGroup(v, st.Visibility) {
 			continue
 		}

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"github.com/stgnet/grus/internal/cmd"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -122,4 +123,48 @@ func ownLinksUnder(t *testing.T, page, prefix string) {
 			t.Errorf("link %q isn't under %s", l[1], prefix)
 		}
 	}
+}
+
+// TestLocalhostReadsEverything: signed out on localhost, every group can be
+// read, private and hidden ones included, and nothing can be written.
+// Nowhere else changes.
+func TestLocalhostReadsEverything(t *testing.T) {
+	s := newSite(t)
+	s.signedIn("alice@example.com", "alice")
+	var aliceID int64
+	s.st.Site().QueryRow(`SELECT id FROM users WHERE handle = 'alice'`).Scan(&aliceID)
+	must(t, s.log, &cmd.CreateGroup{GroupID: 43, Slug: "secret", Name: "Secret Society", At: 1})
+	must(t, s.log, &cmd.JoinGroup{GroupID: 43, UserID: aliceID, At: 2})
+	must(t, s.log, &cmd.CreatePost{GroupID: 43, PostID: 500, UserID: aliceID, Title: "Where we meet", At: 3})
+	must(t, s.log, &cmd.UpdateSettings{GroupID: 43, Set: map[string]any{"visibility": "hidden"}, By: 1, At: 4})
+
+	local := s.browser()
+	local.remote = "127.0.0.1:50000"
+	home := local.do("GET", "http://localhost/", nil).Body.String()
+	if !strings.Contains(home, "Secret Society") {
+		t.Fatal("the hidden group isn't listed on localhost")
+	}
+	if !strings.Contains(home, "Read-only view from this machine") {
+		t.Fatal("no read-only notice on localhost")
+	}
+	w := local.do("GET", "http://localhost/g/secret/p/500", nil)
+	expect(t, w, 200, "")
+	if !strings.Contains(w.Body.String(), "Where we meet") {
+		t.Fatal("the hidden group's post can't be read on localhost")
+	}
+
+	// Writing still needs signing in: the submit form sends you to sign in,
+	// and a post sent anyway isn't made.
+	expect(t, local.do("GET", "http://localhost/g/secret/submit", nil), 303, "")
+	local.do("POST", "http://localhost/g/secret/submit", url.Values{"title": {"Sneaky"}})
+	db, _ := s.st.Group(43)
+	var posts int
+	db.QueryRow(`SELECT COUNT(*) FROM posts`).Scan(&posts)
+	if posts != 1 {
+		t.Fatalf("a post was made on localhost signed out: %d posts", posts)
+	}
+
+	// Anywhere else, the hidden group still doesn't exist for outsiders.
+	expect(t, s.browser().do("GET", "https://secret.nfb.group/p/500", nil), 404, "")
+	expect(t, s.browser().do("GET", "https://nfb.group/g/secret/p/500", nil), 404, "")
 }

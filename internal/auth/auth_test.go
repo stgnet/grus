@@ -13,6 +13,7 @@ func TestCanRead(t *testing.T) {
 	mod := Viewer{UserID: 4, Role: "mod", Status: "active"}
 	author := Viewer{UserID: 5, Role: "member", Status: "active"}
 	op := Viewer{UserID: 6, Operator: true}
+	local := Viewer{Local: true}
 
 	item := func(status string) *Item { return &Item{AuthorID: 5, Status: status} }
 
@@ -39,6 +40,10 @@ func TestCanRead(t *testing.T) {
 		{"deleted: not readers", anon, "public", item("deleted"), false},
 		{"operator reads everything", op, "hidden", item("deleted"), true},
 		{"unknown status fails closed", mod, "public", item("bogus"), false},
+		{"local reader reads private", local, "private", item("visible"), true},
+		{"local reader reads hidden", local, "hidden", nil, true},
+		{"local reader: not held posts", local, "public", item("held"), false},
+		{"local reader: not removed posts", local, "private", item("removed"), false},
 	}
 	for _, c := range cases {
 		if got := CanRead(c.v, c.visibility, c.item); got != c.want {
@@ -59,6 +64,14 @@ func TestCanSeeGroup(t *testing.T) {
 	}
 	if CanSeeGroup(Viewer{UserID: 1, Role: "member", Status: "banned"}, "public") {
 		t.Error("banned members don't see the group")
+	}
+	if !CanSeeGroup(Viewer{Local: true}, "hidden") {
+		t.Error("the local reader sees hidden groups")
+	}
+	// Reading everything never makes the local reader a member, mod or
+	// owner: every write checks one of these.
+	if l := (Viewer{Local: true}); IsMember(l) || CanModerate(l) || CanManage(l) {
+		t.Error("the local reader can write")
 	}
 }
 

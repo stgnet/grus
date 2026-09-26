@@ -402,6 +402,7 @@ type page struct {
 	Error    string
 	Unread   int    // the bell: unread notifications (set by render)
 	Base     string // "/g/<slug>" on a group reached by path (set by render), for app.js
+	Local    bool   // signed out on localhost: reading everything, writing nothing (set by render)
 	Data     any    // the page's own data
 }
 
@@ -422,6 +423,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 	}
 	if rt := routeOf(r); rt != nil {
 		p.Base = rt.prefix
+		p.Local = rt.domain == localDomain && p.User == nil
 	}
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "layout", p); err != nil {

@@ -31,6 +31,7 @@
 </form>
 {{end}}
 <main>
+{{if .Local}}<p class="notice">Read-only view from this machine: every group, private and hidden ones too. Sign in to post or change anything.</p>{{end}}
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 {{template "content" .}}
 </main>

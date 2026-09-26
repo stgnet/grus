@@ -50,9 +50,19 @@ node or a domain before its DNS is in place:
   # then open http://localhost:8080/ here
   ```
 
-  Every link stays on `localhost:8080`. Sign-in works: the email goes out
-  in the first listed domain's name, with a link back to localhost. The
-  session is kept apart from the real domains', as any domain's is.
+  Every link stays on `localhost:8080`.
+
+  **Signed out, localhost is a read-only view of everything:** every
+  group's posts and comments, private and hidden groups included, as a
+  member would see them (not what only mods see: held or removed posts).
+  Nothing can be posted or changed without signing in, and a page says
+  so. This is safe because only someone already on the node's machine
+  (or with ssh to it, who could read its files anyway) can get there.
+
+  Signing in works too, for testing as a particular account: the email
+  goes out in the first listed domain's name, with a link back to
+  localhost. The session is kept apart from the real domains', as any
+  domain's is.
 
 ## Mail: SPF, DKIM, DMARC
 

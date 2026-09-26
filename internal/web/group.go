@@ -32,7 +32,7 @@ func (s *Server) group(w http.ResponseWriter, r *http.Request) *greq {
 		s.serverError(w, r, err)
 		return nil
 	}
-	if c.v, err = s.viewer(c.u, c.g.ID); err != nil {
+	if c.v, err = s.viewer(r, c.u, c.g.ID); err != nil {
 		s.serverError(w, r, err)
 		return nil
 	}

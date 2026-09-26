@@ -11,6 +11,13 @@ type Viewer struct {
 	Operator bool   // site operator: can read everything, everywhere
 	Role     string // in this group: owner | mod | member | "" (not a member)
 	Status   string // in this group: active | pending | banned | ""
+	// Local: a signed-out reader at the node's own machine (localhost,
+	// which is only answered from the machine itself: web/hosts.go). It
+	// reads every group as a member would, so a node's content can be
+	// checked without an account. It never makes anyone a member, mod or
+	// owner, so nothing that writes is allowed by it: localhost without
+	// signing in is read-only.
+	Local bool
 }
 
 // Item is the part of a post or comment the rule needs.
@@ -40,7 +47,7 @@ func CanSeeGroup(v Viewer, visibility string) bool {
 		return false
 	}
 	if visibility == "hidden" {
-		return v.member()
+		return v.member() || v.Local
 	}
 	return true
 }
@@ -56,7 +63,7 @@ func CanRead(v Viewer, visibility string, item *Item) bool {
 	}
 	// Group level: public groups are open to everyone, logged in or not;
 	// private and hidden groups only to active members.
-	if visibility != "public" && !v.member() {
+	if visibility != "public" && !v.member() && !v.Local {
 		return false
 	}
 	if item == nil {

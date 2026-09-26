@@ -8,9 +8,13 @@ import (
 )
 
 // viewer builds the access-rule view of the current user for one group.
-func (s *Server) viewer(u *store.User, groupID int64) (auth.Viewer, error) {
+// Signed out on localhost, it's a local reader (auth.Viewer.Local): every
+// group readable, nothing writable.
+func (s *Server) viewer(r *http.Request, u *store.User, groupID int64) (auth.Viewer, error) {
 	if u == nil {
-		return auth.Viewer{}, nil
+		// resolveRequest only lets localhost through from this machine.
+		rt := routeOf(r)
+		return auth.Viewer{Local: rt != nil && rt.domain == localDomain}, nil
 	}
 	v := auth.Viewer{UserID: u.ID, Operator: u.IsOperator}
 	m, err := s.Store.Membership(groupID, u.ID)
@@ -52,7 +56,7 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 		if err != nil || st == nil {
 			continue // a group whose file isn't here yet; skip it rather than fail the page
 		}
-		v, err := s.viewer(u, g.ID)
+		v, err := s.viewer(r, u, g.ID)
 		if err != nil || !auth.CanSeeGroup(v, st.Visibility) {
 			continue
 		}

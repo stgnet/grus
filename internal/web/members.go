@@ -90,7 +90,7 @@ func (s *Server) inviteCtx(w http.ResponseWriter, r *http.Request) (*greq, *stor
 	c := &greq{rt: rt, g: rt.group, u: s.user(r)}
 	var err error
 	if c.st, err = s.Store.GroupSettings(c.g.ID); err == nil {
-		c.v, err = s.viewer(c.u, c.g.ID)
+		c.v, err = s.viewer(r, c.u, c.g.ID)
 	}
 	if err != nil {
 		s.serverError(w, r, err)
